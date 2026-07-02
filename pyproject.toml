@@ -1,0 +1,28 @@
+[project]
+name = "court-auction-crawler"
+version = "0.1.0"
+description = "법원경매정보 사이트 검색 결과를 수집해 Excel로 저장하는 CLI 도구"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "openpyxl>=3.1.2",
+    "playwright>=1.44.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+]
+
+[project.scripts]
+auction-crawler = "court_auction_crawler.cli:main"
+
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+court_auction_crawler = ["web_static/*.html", "web_static/*.css", "web_static/*.js"]

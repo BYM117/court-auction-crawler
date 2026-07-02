@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>법원 경매 모니터</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <header class="topbar">
+      <div>
+        <h1>법원 경매 모니터</h1>
+        <p id="syncLine">동기화 상태를 불러오는 중</p>
+      </div>
+      <div class="actions">
+        <button id="collectorStartButton" type="button">수집 시작</button>
+        <button id="collectorStopButton" type="button">수집 종료</button>
+      </div>
+    </header>
+
+    <main class="layout">
+      <section class="listPane" aria-label="경매 물건 목록">
+        <div class="collector" id="collectorStatus">
+          <div class="collectorMain">
+            <span class="collectorDot" id="collectorDot"></span>
+            <strong id="collectorState">수집 상태 확인 중</strong>
+            <span id="collectorCurrent"></span>
+          </div>
+          <div class="collectorMeta">
+            <span id="collectorResult"></span>
+            <span id="collectorAge"></span>
+          </div>
+          <div class="progressTrack" aria-hidden="true">
+            <div class="progressBar" id="collectorProgress"></div>
+          </div>
+        </div>
+        <div class="metrics" id="metrics"></div>
+        <div class="filters">
+          <input id="searchInput" type="search" placeholder="사건번호, 주소, 용도 검색">
+          <select id="regionSelect" aria-label="지역 필터">
+            <option value="">전체 지역</option>
+            <option value="서울">서울</option>
+            <option value="경기">경기</option>
+            <option value="인천">인천</option>
+            <option value="부산">부산</option>
+            <option value="대구">대구</option>
+            <option value="광주">광주</option>
+            <option value="대전">대전</option>
+            <option value="울산">울산</option>
+            <option value="세종">세종</option>
+            <option value="강원">강원</option>
+            <option value="충북">충북</option>
+            <option value="충남">충남</option>
+            <option value="전북">전북</option>
+            <option value="전남">전남</option>
+            <option value="경북">경북</option>
+            <option value="경남">경남</option>
+            <option value="제주">제주</option>
+          </select>
+          <select id="sourceSelect" aria-label="수집구분 필터">
+            <option value="">전체 구분</option>
+          </select>
+          <select id="statusSelect" aria-label="진행상태 필터">
+            <option value="">전체 상태</option>
+          </select>
+        </div>
+        <div class="tableWrap">
+          <table>
+            <thead>
+              <tr>
+                <th>구분</th>
+                <th>사건번호</th>
+                <th>물건</th>
+                <th>소재지</th>
+                <th>용도</th>
+                <th>최저가</th>
+                <th>매각기일</th>
+                <th>상태</th>
+              </tr>
+            </thead>
+            <tbody id="itemRows"></tbody>
+          </table>
+          <div id="listStatus" class="listStatus">목록을 불러오는 중</div>
+        </div>
+      </section>
+
+      <aside class="detailPane" aria-label="경매 물건 상세">
+        <div id="detailEmpty" class="empty">목록에서 물건을 선택하세요.</div>
+        <div id="detailContent" hidden>
+          <div class="detailHead">
+            <div>
+              <h2 id="detailTitle"></h2>
+              <p id="detailSub"></p>
+            </div>
+            <a id="detailLink" href="#" target="_blank" rel="noreferrer" hidden>원문</a>
+          </div>
+          <dl id="detailFields" class="fieldGrid"></dl>
+          <h3>변경 이력</h3>
+          <ol id="eventList" class="eventList"></ol>
+        </div>
+      </aside>
+    </main>
+
+    <script src="/app.js"></script>
+  </body>
+</html>
