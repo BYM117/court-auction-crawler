@@ -5,11 +5,15 @@ from datetime import date, datetime, timedelta, timezone
 import hashlib
 import json
 from pathlib import Path
+import re
 import sqlite3
 from typing import Any
 
 from .models import AuctionItem, SyncSummary
 from .utils import clean_text, parse_date
+
+
+SCHEMA_VERSION = 2
 
 
 CASE_KEYS = ("사건번호", "사건", "case_no")
@@ -23,8 +27,10 @@ STATUS_KEYS = ("진행상태", "상태", "status")
 COURT_KEYS = ("법원", "담당법원", "court")
 DETAIL_URL_KEYS = ("상세URL", "detail_url")
 SOURCE_KEYS = ("수집구분", "source")
+# 예정/진행 검색이 같은 물건을 번갈아 목격할 때 해시가 출렁이지 않도록
+# 수집 경로에 따라 달라지는 키는 해시에서 제외한다.
+VOLATILE_HASH_KEYS = frozenset({"수집구분", "source", "상세URL", "detail_url"})
 LIST_HASH_KEYS = (
-    "수집구분",
     "법원",
     "사건번호",
     "물건번호",
@@ -35,6 +41,8 @@ LIST_HASH_KEYS = (
     "소재지",
     "용도",
 )
+CASE_NO_RE = re.compile(r"\d{4}타경\d+")
+PARCEL_LIST_KEY = "소재지목록"
 TERMINAL_STATUS_KEYWORDS = ("낙찰", "매각", "취하", "기각", "정지", "취소", "종결", "배당")
 REGION_ALIASES = {
     "서울": ("서울", "서울특별시"),
@@ -71,8 +79,12 @@ class AuctionStore:
         self._init_db()
 
     def connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, timeout=30.0)
         conn.row_factory = sqlite3.Row
+        # 웹서버·수집 서브프로세스·watch 러너가 같은 파일을 동시에 쓰므로
+        # WAL이 없으면 database is locked가 난다.
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=30000")
         return conn
 
     def _init_db(self) -> None:
@@ -139,6 +151,13 @@ class AuctionStore:
                     summary_json TEXT NOT NULL DEFAULT '{}',
                     error TEXT
                 );
+
+                CREATE TABLE IF NOT EXISTS court_run_stats (
+                    finished_at TEXT NOT NULL,
+                    mode TEXT NOT NULL,
+                    court TEXT NOT NULL,
+                    item_count INTEGER NOT NULL
+                );
                 """
             )
             columns = {row["name"] for row in conn.execute("PRAGMA table_info(auction_items)").fetchall()}
@@ -172,10 +191,18 @@ class AuctionStore:
                 conn.execute("ALTER TABLE auction_items ADD COLUMN geocode_query TEXT NOT NULL DEFAULT ''")
             if "geocoded_at" not in columns:
                 conn.execute("ALTER TABLE auction_items ADD COLUMN geocoded_at TEXT")
-            conn.execute("UPDATE auction_items SET source = '진행' WHERE source = ''")
-            conn.execute("UPDATE auction_items SET list_hash = content_hash WHERE list_hash = ''")
-            conn.execute("UPDATE auction_items SET last_changed_at = updated_at WHERE last_changed_at IS NULL")
-            conn.execute("UPDATE auction_items SET next_check_at = updated_at WHERE next_check_at IS NULL")
+            if "official_price" not in columns:
+                conn.execute("ALTER TABLE auction_items ADD COLUMN official_price REAL")
+            if "official_price_type" not in columns:
+                conn.execute("ALTER TABLE auction_items ADD COLUMN official_price_type TEXT NOT NULL DEFAULT ''")
+            if "official_price_year" not in columns:
+                conn.execute("ALTER TABLE auction_items ADD COLUMN official_price_year TEXT NOT NULL DEFAULT ''")
+            if "official_price_detail" not in columns:
+                conn.execute("ALTER TABLE auction_items ADD COLUMN official_price_detail TEXT NOT NULL DEFAULT ''")
+            if "official_price_status" not in columns:
+                conn.execute("ALTER TABLE auction_items ADD COLUMN official_price_status TEXT NOT NULL DEFAULT ''")
+            if "official_price_at" not in columns:
+                conn.execute("ALTER TABLE auction_items ADD COLUMN official_price_at TEXT")
             conn.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_auction_items_next_check
@@ -188,7 +215,78 @@ class AuctionStore:
                     ON auction_items(lat, lng)
                 """
             )
-            self._backfill_schedule(conn)
+            version = conn.execute("PRAGMA user_version").fetchone()[0]
+            if version < SCHEMA_VERSION:
+                if version < 1:
+                    conn.execute("UPDATE auction_items SET source = '진행' WHERE source = ''")
+                    conn.execute("UPDATE auction_items SET list_hash = content_hash WHERE list_hash = ''")
+                    conn.execute("UPDATE auction_items SET last_changed_at = updated_at WHERE last_changed_at IS NULL")
+                    conn.execute("UPDATE auction_items SET next_check_at = updated_at WHERE next_check_at IS NULL")
+                    self._backfill_schedule(conn)
+                if version < 2:
+                    self._migrate_v2_rekey_and_merge(conn)
+                conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+
+    def _migrate_v2_rekey_and_merge(self, conn: sqlite3.Connection) -> None:
+        """구 키(auction:사건번호:물건 / auction:scheduled:...)를 법원 포함 키로 통일하고,
+        같은 물건으로 판명된 행(예정/진행 쌍둥이)을 병합한다."""
+        rows = conn.execute("SELECT * FROM auction_items").fetchall()
+        if not rows:
+            return
+
+        groups: dict[str, list[sqlite3.Row]] = {}
+        for row in rows:
+            try:
+                values = json.loads(row["raw_json"] or "{}")
+            except json.JSONDecodeError:
+                values = {}
+            new_key = build_item_key(values) if values else row["item_key"]
+            groups.setdefault(new_key, []).append(row)
+
+        now = utc_now()
+        for new_key, group in groups.items():
+            primary = max(group, key=_migration_row_rank)
+            merged = dict(primary)
+            merged["item_key"] = new_key
+            merged["first_seen_at"] = min(row["first_seen_at"] for row in group)
+            merged["last_seen_at"] = max(row["last_seen_at"] for row in group)
+            if any(row["source"] == "진행" for row in group):
+                merged["source"] = "진행"
+            if not (merged["lat"] and merged["lng"]):
+                located = next((row for row in group if row["lat"] and row["lng"]), None)
+                if located is not None:
+                    for column in (
+                        "lat", "lng", "pnu", "coordinate_source", "coordinate_quality",
+                        "normalized_address", "geocode_query", "geocoded_at",
+                    ):
+                        merged[column] = located[column]
+
+            try:
+                values = json.loads(primary["raw_json"] or "{}")
+            except json.JSONDecodeError:
+                values = {}
+            if values:
+                merged["content_hash"] = stable_hash(values)
+                merged["list_hash"] = stable_list_hash(values)
+                merged["is_active"] = 1 if is_active_status(merged["status"] or "") else 0
+                merged["next_check_at"] = calculate_next_check_at(
+                    merged["status"] or "", merged["sale_date"] or "", changed=False, now=now
+                )
+                merged["crawl_priority"] = calculate_crawl_priority(merged["status"] or "", merged["sale_date"] or "")
+
+            old_keys = [row["item_key"] for row in group]
+            conn.executemany("DELETE FROM auction_items WHERE item_key = ?", [(key,) for key in old_keys])
+            columns = list(merged.keys())
+            conn.execute(
+                f"INSERT INTO auction_items({', '.join(columns)}) VALUES({', '.join('?' for _ in columns)})",
+                [merged[column] for column in columns],
+            )
+            for old_key in old_keys:
+                if old_key != new_key:
+                    conn.execute(
+                        "UPDATE auction_events SET item_key = ? WHERE item_key = ?",
+                        (new_key, old_key),
+                    )
 
     def _backfill_schedule(self, conn: sqlite3.Connection) -> None:
         now = utc_now()
@@ -252,20 +350,30 @@ class AuctionStore:
         result = UpsertResult()
         now = utc_now()
         with self.connect() as conn:
-            for item in items:
-                values = item.normalized()
-                if not is_valid_auction_item(values):
-                    continue
-                item_key = build_item_key(values)
+            for item_key, values in aggregate_items_by_key(items):
                 raw_json = json_dumps(values)
                 content_hash = stable_hash(values)
                 list_hash = stable_list_hash(values)
                 existing = conn.execute(
-                    "SELECT raw_json, content_hash, list_hash FROM auction_items WHERE item_key = ?",
+                    "SELECT raw_json, content_hash, list_hash, sale_date FROM auction_items WHERE item_key = ?",
                     (item_key,),
                 ).fetchone()
 
                 extracted = extract_common_fields(values)
+
+                # 과거 기일 구간 검색은 같은 물건의 지난 회차를 다시 보여준다.
+                # 이미 더 새 기일을 아는 행을 과거 목격으로 되돌리지 않는다.
+                if existing is not None:
+                    incoming_date = sale_date_of(extracted["sale_date"])
+                    existing_date = sale_date_of(existing["sale_date"] or "")
+                    if incoming_date and existing_date and incoming_date < existing_date:
+                        conn.execute(
+                            "UPDATE auction_items SET last_seen_at = ? WHERE item_key = ?",
+                            (now, item_key),
+                        )
+                        result.unchanged += 1
+                        continue
+
                 changed = existing is None or existing["list_hash"] != list_hash
                 active = is_active_status(extracted["status"])
                 next_check_at = calculate_next_check_at(
@@ -457,7 +565,10 @@ class AuctionStore:
                 SELECT item_key, source, case_no, item_no, court, address, category, appraisal,
                        minimum_bid, sale_date, status, detail_url, lat, lng, pnu,
                        coordinate_source, coordinate_quality, normalized_address,
-                       geocode_query, geocoded_at, first_seen_at,
+                       geocode_query, geocoded_at,
+                       official_price, official_price_type, official_price_year,
+                       official_price_detail, official_price_status, official_price_at,
+                       first_seen_at,
                        last_seen_at, last_changed_at, next_check_at, is_active,
                        crawl_priority, updated_at
                   FROM auction_items
@@ -475,19 +586,31 @@ class AuctionStore:
             "items": [dict(row) for row in rows],
         }
 
-    def list_missing_coordinates(self, limit: int = 200, active: bool | None = True) -> list[dict[str, Any]]:
-        clauses = ["lat IS NULL OR lng IS NULL"]
+    def list_missing_coordinates(
+        self,
+        limit: int = 200,
+        active: bool | None = True,
+        retry_failed_after_days: int = 7,
+    ) -> list[dict[str, Any]]:
+        clauses = ["lat IS NULL OR lng IS NULL", "coordinate_quality != 'not_applicable'"]
         params: list[Any] = []
         if active is not None:
             clauses.append("is_active = ?")
             params.append(1 if active else 0)
+        if retry_failed_after_days is not None:
+            # 실패했던 주소를 매 실행 재시도하면 API 쿼터만 태운다. 유예 기간이 지난 뒤 다시 시도.
+            cutoff = (
+                datetime.now(timezone.utc) - timedelta(days=retry_failed_after_days)
+            ).isoformat(timespec="seconds")
+            clauses.append("geocoded_at IS NULL OR geocoded_at < ?")
+            params.append(cutoff)
         with self.connect() as conn:
             rows = conn.execute(
                 f"""
-                SELECT item_key, address, coordinate_quality, geocoded_at
+                SELECT item_key, address, category, coordinate_quality, geocoded_at
                   FROM auction_items
                  WHERE {' AND '.join(f'({clause})' for clause in clauses)}
-                 ORDER BY crawl_priority DESC, last_seen_at DESC
+                 ORDER BY (geocoded_at IS NULL) DESC, crawl_priority DESC, last_seen_at DESC
                  LIMIT ?
                 """,
                 [*params, min(max(limit, 1), 5000)],
@@ -557,18 +680,92 @@ class AuctionStore:
                 ),
             )
 
+    def update_official_price(
+        self,
+        item_key: str,
+        *,
+        value: float | None,
+        price_type: str = "",
+        year: str = "",
+        detail: dict[str, Any] | None = None,
+        status: str,
+    ) -> None:
+        """공시기준가 조회 결과를 저장한다. 조회 실패/대상외는 value=None, status로만 기록한다."""
+        with self.connect() as conn:
+            conn.execute(
+                """
+                UPDATE auction_items
+                   SET official_price = ?,
+                       official_price_type = ?,
+                       official_price_year = ?,
+                       official_price_detail = ?,
+                       official_price_status = ?,
+                       official_price_at = ?,
+                       updated_at = ?
+                 WHERE item_key = ?
+                """,
+                (
+                    value,
+                    price_type,
+                    year,
+                    json.dumps(detail or {}, ensure_ascii=False),
+                    status,
+                    utc_now(),
+                    utc_now(),
+                    item_key,
+                ),
+            )
+
+    def list_missing_official_price(
+        self,
+        *,
+        limit: int = 200,
+        active: bool | None = True,
+        retry_failed_after_days: int = 14,
+    ) -> list[dict[str, Any]]:
+        """PNU는 있으나 공시기준가를 아직 못 채운(또는 재시도 대상) 물건을 고른다."""
+        clauses = ["pnu != ''"]
+        params: list[Any] = []
+        if active is not None:
+            clauses.append("is_active = ?")
+            params.append(1 if active else 0)
+        # 미시도이거나, 실패한 지 오래된 것만 재시도
+        clauses.append(
+            "(official_price_status = ''"
+            " OR (official_price_status IN ('geocode_miss','price_miss','error')"
+            "     AND (official_price_at IS NULL OR official_price_at <= ?)))"
+        )
+        params.append(
+            (datetime.now(timezone.utc) - timedelta(days=retry_failed_after_days)).isoformat()
+        )
+        where = " AND ".join(clauses)
+        params.append(limit)
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT item_key, address, category, pnu, official_price_status
+                  FROM auction_items
+                 WHERE {where}
+                 ORDER BY crawl_priority DESC, sale_date ASC
+                 LIMIT ?
+                """,
+                params,
+            ).fetchall()
+            return [dict(row) for row in rows]
+
     def mark_coordinate_missing(
         self,
         item_key: str,
         *,
         normalized_address: str = "",
         geocode_query: str = "",
+        quality: str = "missing",
     ) -> None:
         with self.connect() as conn:
             conn.execute(
                 """
                 UPDATE auction_items
-                   SET coordinate_quality = 'missing',
+                   SET coordinate_quality = ?,
                        normalized_address = ?,
                        geocode_query = ?,
                        geocoded_at = ?,
@@ -576,6 +773,7 @@ class AuctionStore:
                  WHERE item_key = ?
                 """,
                 (
+                    quality,
                     normalized_address,
                     geocode_query,
                     utc_now(),
@@ -636,6 +834,90 @@ class AuctionStore:
             "active": active,
             "due": due,
         }
+
+    def apply_lifecycle(
+        self,
+        *,
+        past_grace_days: int = 3,
+        unseen_no_date_days: int = 21,
+        now: str | None = None,
+    ) -> dict[str, int]:
+        """낙찰·취하된 물건은 상태 변경 없이 검색결과에서 사라지므로 상태 텍스트로는
+        종결을 알 수 없다. 매각기일이 유예기간 이상 지났는데 새 기일이 잡히지 않은
+        물건을 비활성 처리한다. 유찰 후 새 기일이 잡히면 upsert가 다시 활성화한다."""
+        now_text = now or utc_now()
+        now_dt = parse_iso_datetime(now_text)
+        today = now_dt.date()
+        unseen_cutoff = (now_dt - timedelta(days=unseen_no_date_days)).isoformat(timespec="seconds")
+        deactivated = 0
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT item_key, sale_date, last_seen_at, raw_json FROM auction_items WHERE is_active = 1"
+            ).fetchall()
+            for row in rows:
+                sale_date = sale_date_of(row["sale_date"] or "")
+                if sale_date is not None:
+                    expired = (today - sale_date).days > past_grace_days
+                else:
+                    expired = (row["last_seen_at"] or "") < unseen_cutoff
+                if not expired:
+                    continue
+                conn.execute(
+                    """
+                    UPDATE auction_items
+                       SET is_active = 0, crawl_priority = -100, next_check_at = ?
+                     WHERE item_key = ?
+                    """,
+                    ((now_dt + timedelta(days=7)).isoformat(timespec="seconds"), row["item_key"]),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO auction_events(item_key, event_type, new_json, created_at)
+                    VALUES(?, 'deactivated', ?, ?)
+                    """,
+                    (row["item_key"], row["raw_json"], now_text),
+                )
+                deactivated += 1
+        return {"checked": len(rows), "deactivated": deactivated}
+
+    def record_court_stats(
+        self,
+        counts: dict[tuple[str, str], int],
+        *,
+        drop_ratio: float = 0.3,
+        min_baseline: int = 20,
+    ) -> list[str]:
+        """전체 수집의 법원별 건수를 기록하고, 직전 기록 대비 급감·누락 경고를 돌려준다.
+
+        사이트 개편으로 추출이 조용히 깨지는 것이 가장 위험한 누락 시나리오라서,
+        법원 단위 건수 급감을 감지해 로그로 드러낸다."""
+        if not counts:
+            return []
+        now = utc_now()
+        warnings: list[str] = []
+        with self.connect() as conn:
+            previous: dict[tuple[str, str], int] = {}
+            rows = conn.execute(
+                """
+                SELECT mode, court, item_count FROM court_run_stats
+                 WHERE finished_at = (SELECT MAX(finished_at) FROM court_run_stats)
+                """
+            ).fetchall()
+            for row in rows:
+                previous[(row["mode"], row["court"])] = row["item_count"]
+
+            for (mode, court), count in sorted(counts.items()):
+                conn.execute(
+                    "INSERT INTO court_run_stats(finished_at, mode, court, item_count) VALUES(?, ?, ?, ?)",
+                    (now, mode, court, count),
+                )
+                baseline = previous.get((mode, court))
+                if baseline is not None and baseline >= min_baseline and count < baseline * drop_ratio:
+                    warnings.append(f"{court} {mode} 수집 급감: {baseline}건 -> {count}건")
+            for (mode, court), baseline in sorted(previous.items()):
+                if (mode, court) not in counts and baseline >= min_baseline:
+                    warnings.append(f"{court} {mode} 이번 수집에서 누락 (이전 {baseline}건)")
+        return warnings
 
     def regions(self) -> list[dict[str, Any]]:
         regions: list[dict[str, Any]] = []
@@ -707,12 +989,28 @@ def infer_court_from_case(case_no: str) -> str:
     return ""
 
 
+def _migration_row_rank(row: sqlite3.Row) -> tuple[str, str]:
+    """병합 대상 중 대표 행 선택: 가장 새 매각기일(=갱신된 회차)이 우선, 다음은 최근 목격."""
+    sale_date = sale_date_of(row["sale_date"] or "")
+    return (sale_date.isoformat() if sale_date else "", row["last_seen_at"] or "")
+
+
+def representative_case_no(case_no: str) -> str:
+    """병합·중복사건은 사건번호가 여러 개 붙는다. 첫 번째(선행) 사건번호로 물건을 식별한다."""
+    text = clean_text(case_no)
+    match = CASE_NO_RE.search(text)
+    if match:
+        return match.group(0)
+    return text
+
+
 def build_item_key(values: dict[str, str]) -> str:
     common = extract_common_fields(values)
-    parts = [common["case_no"], common["item_no"]]
-    if any(parts):
-        if common["source"] in {"예정", "매각예정"}:
-            return "auction:scheduled:" + ":".join(part or "-" for part in parts)
+    case_no = representative_case_no(common["case_no"])
+    if case_no and common["item_no"]:
+        # 사건번호는 법원별로 중복될 수 있으므로 법원이 키에 반드시 포함되어야 한다.
+        # 예정/진행은 같은 물건이므로 수집구분은 키에 넣지 않는다.
+        parts = [common["court"], case_no, common["item_no"]]
         return "auction:" + ":".join(part or "-" for part in parts)
     digest_source = json_dumps(values)
     return "hash:" + hashlib.sha256(digest_source.encode("utf-8")).hexdigest()[:24]
@@ -742,12 +1040,59 @@ def list_order_by(sort: str) -> str:
 
 
 def stable_hash(values: dict[str, str]) -> str:
-    return hashlib.sha256(json_dumps(values).encode("utf-8")).hexdigest()
+    filtered = {key: value for key, value in values.items() if key not in VOLATILE_HASH_KEYS}
+    return hashlib.sha256(json_dumps(filtered).encode("utf-8")).hexdigest()
 
 
 def stable_list_hash(values: dict[str, str]) -> str:
     normalized = {key: clean_text(values.get(key)) for key in LIST_HASH_KEYS if clean_text(values.get(key))}
     return hashlib.sha256(json_dumps(normalized).encode("utf-8")).hexdigest()
+
+
+def sale_date_of(values_or_text: dict[str, str] | str) -> date | None:
+    if isinstance(values_or_text, dict):
+        text = first_value(values_or_text, SALE_DATE_KEYS)
+    else:
+        text = clean_text(values_or_text)
+    try:
+        return parse_date(text.replace(" ", ""))
+    except ValueError:
+        return None
+
+
+def merge_parcel_rows(group: list[dict[str, str]]) -> dict[str, str]:
+    """일괄매각 물건은 필지마다 목록 행이 하나씩 나온다.
+
+    같은 키의 행들을 대표 소재지(정렬 최솟값) 기준으로 하나로 합치고,
+    나머지 필지는 소재지목록으로 보존한다. 수집 순서와 무관하게 결정적이어야
+    해시가 출렁이지 않는다.
+    """
+    if len(group) == 1:
+        return group[0]
+    addresses = sorted({first_value(values, ADDRESS_KEYS) for values in group} - {""})
+    representative = min(
+        group,
+        key=lambda values: (first_value(values, ADDRESS_KEYS) or "￿", json_dumps(values)),
+    )
+    merged = dict(representative)
+    if len(addresses) > 1:
+        merged[PARCEL_LIST_KEY] = " | ".join(addresses)
+    return merged
+
+
+def aggregate_items_by_key(items: list[AuctionItem]) -> list[tuple[str, dict[str, str]]]:
+    grouped: dict[str, list[dict[str, str]]] = {}
+    order: list[str] = []
+    for item in items:
+        values = item.normalized()
+        if not is_valid_auction_item(values):
+            continue
+        key = build_item_key(values)
+        if key not in grouped:
+            grouped[key] = []
+            order.append(key)
+        grouped[key].append(values)
+    return [(key, merge_parcel_rows(grouped[key])) for key in order]
 
 
 def is_active_status(status: str) -> bool:

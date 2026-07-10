@@ -5,6 +5,7 @@ description = "법원경매정보 사이트 검색 결과를 수집해 Excel로 
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
+    "certifi>=2024.2.2",
     "openpyxl>=3.1.2",
     "playwright>=1.44.0",
 ]

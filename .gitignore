@@ -7,3 +7,6 @@ outputs/
 data/
 logs/
 *.egg-info/
+.env
+.env.*
+.DS_Store

@@ -1,5 +1,7 @@
 import json
+import os
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -91,10 +93,10 @@ class WebApiTests(unittest.TestCase):
         self.assertEqual(payload["items"][0]["property"]["area"]["building_sqm"], 59.87)
 
     def test_detail_endpoint_returns_public_shape(self):
-        item = self.store.get_item("auction:서울중앙지방법원 2026타경100:1")
+        item = self.store.get_item("auction:서울중앙지방법원:2026타경100:1")
         payload = public_auction_detail(item)
 
-        self.assertEqual(payload["id"], "auction:서울중앙지방법원 2026타경100:1")
+        self.assertEqual(payload["id"], "auction:서울중앙지방법원:2026타경100:1")
         self.assertEqual(payload["address"], "서울특별시 중구 세종대로 110 101동 201호 [집합건물 철근콘크리트구조 59.87㎡]")
         self.assertEqual(payload["case"]["case_no"], "2026타경100")
         self.assertEqual(payload["property"]["type_guess"], "아파트")
@@ -122,6 +124,20 @@ class WebApiTests(unittest.TestCase):
         self.assertEqual(command[command.index("--current-end-date") + 1], "2027-07-02")
         self.assertEqual(command[command.index("--scheduled-start-date") + 1], "2026-07-02")
         self.assertEqual(command[command.index("--scheduled-end-date") + 1], "2026-12-29")
+        self.assertEqual(command[command.index("--date-chunk-days") + 1], "31")
+
+    def test_collector_windows_start_today_without_past_range(self):
+        import time
+
+        runner = CollectorControlRunner(self.store)
+        today = time.strftime("%Y-%m-%d")
+
+        quick = runner._collection_window("quick")
+        full = runner._collection_window("full")
+
+        self.assertEqual(quick["current_start"], today)
+        self.assertEqual(full["current_start"], today)
+        self.assertEqual(quick["scheduled_start"], today)
 
     def test_collect_log_status_treats_waiting_cycle_as_idle(self):
         log_path = Path(self.tmp.name) / "collect-all.log"
@@ -146,6 +162,25 @@ class WebApiTests(unittest.TestCase):
         self.assertEqual(payload["current"], "3시간 주기 대기 중")
         self.assertEqual(payload["last_result"], "===== 다음 자동 수집까지 10800초 대기 =====")
         self.assertEqual(payload["progress_percent"], 100)
+
+    def test_collect_log_status_prefers_live_process_over_stale_log_age(self):
+        log_path = Path(self.tmp.name) / "collect-all.log"
+        err_path = Path(self.tmp.name) / "collect-all.err.log"
+        pid_path = Path(self.tmp.name) / "collect-all.pid"
+        log_path.write_text(
+            "[7/3960] 예정 서울중앙지방법원 2026-09-28~2026-10-11 수집 중\n",
+            encoding="utf-8",
+        )
+        old_time = time.time() - 600
+        os.utime(log_path, (old_time, old_time))
+        pid_path.write_text(f"{os.getpid()}\n", encoding="utf-8")
+
+        payload = collect_log_status(log_path=log_path, err_path=err_path, pid_path=pid_path)
+
+        self.assertEqual(payload["state"], "running")
+        self.assertEqual(payload["state_label"], "수집 중")
+        self.assertTrue(payload["process_running"])
+        self.assertGreaterEqual(payload["seconds_since_log"], 590)
 
     def test_control_api_key_accepts_header_or_bearer(self):
         self.assertTrue(control_api_key_valid("", "", ""))

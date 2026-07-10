@@ -6,6 +6,7 @@ import hmac
 import json
 import os
 import re
+import signal
 from pathlib import Path
 import subprocess
 import sys
@@ -99,15 +100,18 @@ class WatchRunner:
 
 
 class CollectorControlRunner:
+    # 과거 기일 검색은 지난 회차 이력만 돌려줘서(후퇴 가드가 무시) 수집 시간만 태운다.
+    # 물건상세검색(진행)은 사이트가 '오늘~2주 후 기일'까지만 검색을 허용하므로
+    # current 윈도우는 13일이 상한이고, 그 너머의 미래는 매각예정물건 검색이 커버한다.
     def __init__(
         self,
         store: AuctionStore,
         interval_seconds: int = 10_800,
-        quick_current_days_before: int = 30,
-        quick_current_days_ahead: int = 90,
+        quick_current_days_before: int = 0,
+        quick_current_days_ahead: int = 13,
         quick_scheduled_days_ahead: int = 60,
-        full_current_days_before: int = 365,
-        full_current_days_ahead: int = 365,
+        full_current_days_before: int = 0,
+        full_current_days_ahead: int = 13,
         full_scheduled_days_ahead: int = 180,
         full_interval_seconds: int = 86_400,
     ) -> None:
@@ -229,6 +233,14 @@ class CollectorControlRunner:
             self.last_error = ""
             if run_kind == "full":
                 self.last_full_path.write_text(str(time.time()), encoding="utf-8")
+            try:
+                lifecycle = self.store.apply_lifecycle()
+                self._write_log(
+                    f"===== 생명주기 정리: 활성 {lifecycle['checked']}개 중 "
+                    f"{lifecycle['deactivated']}개 종결 처리 ====="
+                )
+            except Exception as exc:
+                self._write_log(f"===== 생명주기 정리 실패: {exc} =====")
         else:
             self.last_error = f"수집 프로세스 종료 코드 {exit_code}"
         self._write_log(
@@ -255,11 +267,13 @@ class CollectorControlRunner:
             "--scheduled-end-date",
             window["scheduled_end"],
             "--date-chunk-days",
-            "14",
+            "31",
             "--max-pages",
             "50",
             "--delay",
             "2.0",
+            "--geocode-limit",
+            "2000",
         ]
 
     def _collection_window(self, run_kind: str) -> dict[str, str]:
@@ -599,10 +613,23 @@ def run_server(
     server = ThreadingHTTPServer((host, port), handler)
     if runner:
         runner.start()
+    previous_sigint = signal.getsignal(signal.SIGINT)
+    previous_sigterm = signal.getsignal(signal.SIGTERM)
+
+    def handle_shutdown_signal(signum: int, _frame: Any) -> None:
+        if runner:
+            runner.stop()
+        collector_runner.shutdown()
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGINT, handle_shutdown_signal)
+    signal.signal(signal.SIGTERM, handle_shutdown_signal)
     try:
         print(f"웹 대시보드: http://{host}:{port}")
         server.serve_forever()
     finally:
+        signal.signal(signal.SIGINT, previous_sigint)
+        signal.signal(signal.SIGTERM, previous_sigterm)
         if runner:
             runner.stop()
         collector_runner.shutdown()
@@ -694,6 +721,24 @@ def public_auction_summary(item: dict[str, Any]) -> dict[str, Any]:
     return summary
 
 
+def build_official_price(item: dict[str, Any]) -> dict[str, Any] | None:
+    """사전 계산해 DB에 저장한 공시기준가를 공개 스키마로 내보낸다. 없으면 None."""
+    value = parse_optional_float(item.get("official_price"))
+    if not value or value <= 0:
+        return None
+    detail_raw = item.get("official_price_detail", "")
+    try:
+        detail = json.loads(detail_raw) if detail_raw else {}
+    except (ValueError, TypeError):
+        detail = {}
+    return {
+        "value": value,
+        "type": item.get("official_price_type", ""),
+        "year": item.get("official_price_year", ""),
+        "detail": detail,
+    }
+
+
 def public_auction_enrichment(item: dict[str, Any]) -> dict[str, Any]:
     appraisal = parse_first_money(item.get("appraisal"))
     minimum_bid = parse_first_money(item.get("minimum_bid"))
@@ -732,6 +777,7 @@ def public_auction_enrichment(item: dict[str, Any]) -> dict[str, Any]:
             "minimum_bid": minimum_bid,
             "minimum_bid_rate": round(minimum_bid_percent / 100, 4) if minimum_bid_percent is not None else None,
             "minimum_bid_percent": minimum_bid_percent,
+            "official": build_official_price(item),
             "raw": {
                 "appraisal": item.get("appraisal", ""),
                 "minimum_bid": item.get("minimum_bid", ""),
@@ -1224,7 +1270,10 @@ def collect_log_status(
         elapsed = max(0, int(now - mtime))
         status["last_log_at"] = time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(mtime))
         status["seconds_since_log"] = elapsed
-        if elapsed <= 180 and (process_running or pid is None):
+        if process_running:
+            status["state"] = "running"
+            status["state_label"] = "수집 중"
+        elif elapsed <= 180 and pid is None:
             status["state"] = "running"
             status["state_label"] = "수집 중"
         elif current_line:

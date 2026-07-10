@@ -152,6 +152,23 @@ cat data/collect-all.pid
 cat data/server.pid
 ```
 
+## 공시기준가 채우기 (공시지가·공동주택가격·개별주택가격)
+
+지오코딩으로 확보한 PNU를 이용해 물건별 공시기준가를 미리 계산해 DB에 저장합니다. 이렇게 하면 꽁지맵은 런타임 조회 없이 즉시 공시기준가를 표시합니다.
+
+- `geocode-missing`을 실행하면 좌표를 새로 찾는 물건은 그 자리에서 공시기준가도 함께 채웁니다.
+- 이미 좌표·PNU가 있는 물건은 아래 백필 커맨드로 채웁니다(재지오코딩 불필요).
+
+```bash
+PYTHONPATH=src .venv/bin/python -m court_auction_crawler.cli enrich-prices \
+  --db data/auction.sqlite3 \
+  --limit 500          # 하루 VWorld API 한도에 맞춰 나눠 실행
+```
+
+- 지오코딩과 같은 `VWORLD_API_KEY`를 씁니다(추가 승인 불필요).
+- 토지·아파트·빌라·다세대·단독주택을 다룹니다. 오피스텔·상가는 국세청 기준시가(로컬 파일)라 꽁지맵이 자체 인덱스로 처리합니다.
+- 조회 실패/미시도만 골라 처리하므로 여러 번 나눠 실행해도 안전합니다. `--limit`로 하루 한도에 맞추세요.
+
 ## HTML 파일에서 Excel 만들기
 
 이미 저장해둔 결과 페이지 HTML이 있다면 브라우저 없이 변환할 수 있습니다.

@@ -19,7 +19,53 @@ AREA_RE = re.compile(r"\b\d+(?:\.\d+)?\s*㎡")
 ROAD_CORE_RE = re.compile(
     r"^(.+?(?:로|길|대로|번길|순환로|중앙로|해안로|산업로|테크노밸리로|국회단지길|국회단지\d+길)\s+\d+(?:-\d+)?)\b"
 )
-LOT_CORE_RE = re.compile(r"^(.+?(?:읍|면|동(?:\d+가)?|리)\s+산?\s*\d+(?:-\d+)?)\b")
+# 명륜3가·종로1가처럼 '동' 없이 숫자+가로 끝나는 법정동도 지번 코어로 인정한다.
+LOT_CORE_RE = re.compile(r"^(.+?(?:읍|면|동(?:\d+가)?|\d+가|리)\s+산?\s*\d+(?:-\d+)?)\b")
+
+# 법원 주소는 구명칭(강원도·전라북도)·약칭(서울)이 흔한데 VWorld는 현행
+# 공식 명칭을 반환하므로, 시도 비교는 정규화를 거쳐야 한다.
+SIDO_ALIASES = {
+    "서울": ("서울", "서울시", "서울특별시"),
+    "부산": ("부산", "부산시", "부산광역시"),
+    "대구": ("대구", "대구시", "대구광역시"),
+    "인천": ("인천", "인천시", "인천광역시"),
+    "광주": ("광주", "광주시", "광주광역시"),
+    "대전": ("대전", "대전시", "대전광역시"),
+    "울산": ("울산", "울산시", "울산광역시"),
+    "세종": ("세종", "세종시", "세종특별자치시"),
+    "경기": ("경기", "경기도"),
+    "강원": ("강원", "강원도", "강원특별자치도"),
+    "충북": ("충북", "충청북도"),
+    "충남": ("충남", "충청남도"),
+    "전북": ("전북", "전라북도", "전북특별자치도"),
+    "전남": ("전남", "전라남도"),
+    "경북": ("경북", "경상북도"),
+    "경남": ("경남", "경상남도"),
+    "제주": ("제주", "제주도", "제주특별자치도"),
+}
+_SIDO_CANONICAL = {alias: canonical for canonical, aliases in SIDO_ALIASES.items() for alias in aliases}
+
+# 자동차·중기 등 동산 경매의 주소는 물건 위치가 아니라 사용본거지라서
+# 지도에 올리면 오해를 부른다. 지오코딩과 지도 노출 대상에서 제외한다.
+MOVABLE_CATEGORY_KEYWORDS = (
+    "자동차", "승용", "승합", "화물", "차량", "중기", "건설기계",
+    "덤프", "지게차", "굴삭기", "선박", "항공기",
+)
+
+
+def normalize_sido(token: str) -> str:
+    return _SIDO_CANONICAL.get(str(token or "").strip(), str(token or "").strip())
+
+
+MOVABLE_ADDRESS_KEYWORDS = ("사용본거지", "선적항", "[선박", "동력선", "어선", "부선", "예인선")
+
+
+def is_mappable_property(address: str, category: str = "") -> bool:
+    address_text = str(address or "")
+    if any(word in address_text for word in MOVABLE_ADDRESS_KEYWORDS):
+        return False
+    category_text = str(category or "")
+    return not any(word in category_text for word in MOVABLE_CATEGORY_KEYWORDS)
 
 
 @dataclass(slots=True)
@@ -70,7 +116,101 @@ def geocode_address(address: str) -> GeocodeResult | None:
                 source="address",
                 quality="verified",
             )
-    return None
+
+    # 검색 API가 놓치는 주소를 좌표 변환(getcoord) API로 한 번 더 시도한다.
+    # 매칭 엔진이 달라 회수율이 올라가고, 법정동코드로 PNU도 조립할 수 있다.
+    for query in queries:
+        for category in ("PARCEL", "ROAD"):
+            result = _try_getcoord(key, query, category, address)
+            if result:
+                return result
+
+    # 지번이 없는 블록·로트형 주소는 건물명 장소 검색으로 근사 좌표라도 확보한다.
+    return _try_place_search(key, address)
+
+
+def _try_getcoord(key: str, query: str, category: str, address: str) -> GeocodeResult | None:
+    try:
+        payload = _request_vworld_getcoord(key, query, category)
+    except (TimeoutError, OSError, URLError, json.JSONDecodeError):
+        return None
+    result = payload.get("result") if isinstance(payload, dict) else None
+    point = (result or {}).get("point") or {}
+    if not point.get("x") or not point.get("y"):
+        return None
+    refined = payload.get("refined") or {}
+    refined_text = str(refined.get("text") or "")
+    if not _matches_region(address, [refined_text]):
+        return None
+    return GeocodeResult(
+        lat=float(point["y"]),
+        lng=float(point["x"]),
+        pnu=_pnu_from_structure(refined.get("structure") or {}),
+        normalized_address=refined_text or query,
+        query=query,
+        source="address",
+        quality="verified",
+    )
+
+
+def _try_place_search(key: str, address: str) -> GeocodeResult | None:
+    building = _extract_building_hint(address)
+    if not building:
+        return None
+    normalized = normalize_auction_address(address)
+    tokens = normalized.split()
+    query = " ".join([*tokens[:2], building]).strip()
+    try:
+        item = _request_vworld_search(key, query, request_type="PLACE")
+    except (TimeoutError, OSError, URLError, json.JSONDecodeError):
+        return None
+    point = item.get("point") if isinstance(item, dict) else None
+    if not point or not point.get("x") or not point.get("y"):
+        return None
+    if not _same_region(address, item):
+        return None
+    return GeocodeResult(
+        lat=float(point["y"]),
+        lng=float(point["x"]),
+        pnu="",
+        normalized_address=str(item.get("address", {}).get("parcel") or item.get("address", {}).get("road") or query),
+        query=query,
+        source="building",
+        quality="approximate",
+    )
+
+
+def _pnu_from_structure(structure: dict[str, Any]) -> str:
+    """getcoord refined 구조에서 PNU(법정동코드10+산1+본번4+부번4)를 결정적으로 조립한다."""
+    code = str(structure.get("level4LC") or "").strip()
+    if not re.fullmatch(r"\d{10}", code):
+        return ""
+    parcel = str(structure.get("level5") or "").strip()
+    match = re.fullmatch(r"(산)?\s*(\d{1,4})(?:-(\d{1,4}))?", parcel)
+    if not match:
+        return ""
+    mountain = "2" if match.group(1) else "1"
+    main = match.group(2).zfill(4)
+    sub = (match.group(3) or "0").zfill(4)
+    return f"{code}{mountain}{main}{sub}"
+
+
+def _extract_building_hint(address: str) -> str:
+    normalized = normalize_auction_address(address)
+    # "(운서동,응답하라1976)" 같은 괄호의 마지막 항목이 건물명인 경우가 많다.
+    paren_groups = PAREN_RE.findall(normalized)
+    for group in reversed(paren_groups):
+        candidate = group.split(",")[-1].strip()
+        if len(candidate) >= 3 and not re.fullmatch(r"[가-힣]{1,3}동", candidate):
+            return candidate
+    # 블록·로트형 주소는 긴 한글 건물명이 지번 대신 붙는다.
+    without_paren = re.sub(r"\s+", " ", PAREN_RE.sub(" ", normalized)).strip()
+    for token in reversed(without_paren.split()):
+        if re.search(r"(?:층|호)$", token) or re.fullmatch(r"(?:제)?\d+[A-Za-z가-힣]?동", token):
+            continue
+        if len(token) >= 5 and re.search(r"[가-힣]{3,}", token) and not re.search(r"(?:시|군|구|읍|면|리|로|길|대로)$", token):
+            return token
+    return ""
 
 
 def _candidate_queries(address: str) -> list[str]:
@@ -113,6 +253,15 @@ def _is_specific_query(query: str) -> bool:
 
 
 def _request_vworld_address(key: str, query: str, category: str) -> dict[str, Any]:
+    return _request_vworld_search(key, query, request_type="ADDRESS", category=category)
+
+
+def _request_vworld_search(
+    key: str,
+    query: str,
+    request_type: str = "ADDRESS",
+    category: str | None = None,
+) -> dict[str, Any]:
     params = {
         "service": "search",
         "request": "search",
@@ -120,39 +269,80 @@ def _request_vworld_address(key: str, query: str, category: str) -> dict[str, An
         "crs": "EPSG:4326",
         "size": "1",
         "page": "1",
-        "type": "ADDRESS",
-        "category": category,
+        "type": request_type,
         "format": "json",
         "query": query,
         "key": key,
     }
-    domain = env_value("VWORLD_API_DOMAIN")
-    if domain:
-        params["domain"] = domain
-    url = f"https://api.vworld.kr/req/search?{urlencode(params)}"
-    request = Request(url, headers={"User-Agent": "court-auction-crawler/0.1"})
-    context = ssl._create_unverified_context() if env_value("GEOCODER_INSECURE_SSL") == "1" else None
-    timeout = float(env_value("GEOCODER_TIMEOUT") or "3")
-    with urlopen(request, timeout=timeout, context=context) as response:
-        payload = json.loads(response.read().decode("utf-8"))
+    if category:
+        params["category"] = category
+    payload = _request_vworld("https://api.vworld.kr/req/search", params)
     return payload.get("response", {}).get("result", {}).get("items", [{}])[0] or {}
 
 
+def _request_vworld_getcoord(key: str, address: str, category: str) -> dict[str, Any]:
+    params = {
+        "service": "address",
+        "request": "getcoord",
+        "version": "2.0",
+        "crs": "EPSG:4326",
+        "type": category,
+        "address": address,
+        "refine": "true",
+        "simple": "false",
+        "format": "json",
+        "key": key,
+    }
+    payload = _request_vworld("https://api.vworld.kr/req/address", params)
+    return payload.get("response", {}) or {}
+
+
+def _request_vworld(base_url: str, params: dict[str, str]) -> dict[str, Any]:
+    domain = env_value("VWORLD_API_DOMAIN")
+    if domain:
+        params = {**params, "domain": domain}
+    url = f"{base_url}?{urlencode(params)}"
+    request = Request(url, headers={"User-Agent": "court-auction-crawler/0.1"})
+    timeout = float(env_value("GEOCODER_TIMEOUT") or "3")
+    with urlopen(request, timeout=timeout, context=_ssl_context()) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def _ssl_context() -> ssl.SSLContext | None:
+    if env_value("GEOCODER_INSECURE_SSL") == "1":
+        return ssl._create_unverified_context()
+    try:
+        # macOS 기본 파이썬은 CA 번들이 비어 있어 검증에 실패하는 경우가 있다.
+        import certifi
+
+        return ssl.create_default_context(cafile=certifi.where())
+    except ImportError:
+        return None
+
+
 def _same_region(address: str, item: dict[str, Any]) -> bool:
-    source = normalize_auction_address(address)
-    source_parts = source.split()
+    address_payload = item.get("address") if isinstance(item.get("address"), dict) else {}
+    return _matches_region(
+        address,
+        [
+            str(item.get("title") or ""),
+            str(address_payload.get("road") or ""),
+            str(address_payload.get("parcel") or ""),
+        ],
+    )
+
+
+def _matches_region(address: str, returned_texts: list[str]) -> bool:
+    source_parts = normalize_auction_address(address).split()
     if len(source_parts) < 2:
         return False
-
-    address_payload = item.get("address") if isinstance(item.get("address"), dict) else {}
-    returned_candidates = [
-        str(item.get("title") or ""),
-        str(address_payload.get("road") or ""),
-        str(address_payload.get("parcel") or ""),
-    ]
-    for returned in returned_candidates:
-        returned_parts = returned.split()
-        if len(returned_parts) >= 2 and source_parts[0] == returned_parts[0] and source_parts[1] == returned_parts[1]:
+    for returned in returned_texts:
+        returned_parts = str(returned or "").split()
+        if (
+            len(returned_parts) >= 2
+            and normalize_sido(source_parts[0]) == normalize_sido(returned_parts[0])
+            and source_parts[1] == returned_parts[1]
+        ):
             return True
     return False
 
