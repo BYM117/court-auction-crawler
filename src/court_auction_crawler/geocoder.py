@@ -154,30 +154,76 @@ def _try_getcoord(key: str, query: str, category: str, address: str) -> GeocodeR
 
 
 def _try_place_search(key: str, address: str) -> GeocodeResult | None:
+    """신규 분할 필지처럼 주소 검색이 모르는 물건을 건물명 장소 검색으로 구제한다.
+
+    시군구+법정동까지 붙인 쿼리를 먼저 시도하고, 같은 지역 결과 중에서
+    주소의 동 표기(비동→B동 등)와 맞는 항목을 우선 고른다.
+    """
     building = _extract_building_hint(address)
     if not building:
         return None
     normalized = normalize_auction_address(address)
-    tokens = normalized.split()
-    query = " ".join([*tokens[:2], building]).strip()
-    try:
-        item = _request_vworld_search(key, query, request_type="PLACE")
-    except (TimeoutError, OSError, URLError, json.JSONDecodeError):
-        return None
-    point = item.get("point") if isinstance(item, dict) else None
-    if not point or not point.get("x") or not point.get("y"):
-        return None
-    if not _same_region(address, item):
-        return None
-    return GeocodeResult(
-        lat=float(point["y"]),
-        lng=float(point["x"]),
-        pnu="",
-        normalized_address=str(item.get("address", {}).get("parcel") or item.get("address", {}).get("road") or query),
-        query=query,
-        source="building",
-        quality="approximate",
-    )
+    tokens = re.sub(r"\s+", " ", PAREN_RE.sub(" ", normalized)).strip().split()
+    queries: list[str] = []
+    for width in (3, 2):
+        query = " ".join([*tokens[:width], building]).strip()
+        if query and query not in queries:
+            queries.append(query)
+
+    dong_variants = _extract_building_dong_variants(address)
+    for query in queries:
+        try:
+            items = _request_vworld_search_items(key, query, request_type="PLACE", size=5)
+        except (TimeoutError, OSError, URLError, json.JSONDecodeError):
+            continue
+        candidates = [
+            item
+            for item in items
+            if isinstance(item, dict)
+            and (item.get("point") or {}).get("x")
+            and (item.get("point") or {}).get("y")
+            and _same_region(address, item)
+        ]
+        if not candidates:
+            continue
+        picked = next(
+            (item for item in candidates if any(v in str(item.get("title") or "") for v in dong_variants)),
+            candidates[0],
+        )
+        point = picked["point"]
+        return GeocodeResult(
+            lat=float(point["y"]),
+            lng=float(point["x"]),
+            pnu="",
+            normalized_address=str(picked.get("address", {}).get("parcel") or picked.get("address", {}).get("road") or query),
+            query=query,
+            source="building",
+            quality="approximate",
+        )
+    return None
+
+
+# 건물 동 표기(비동, 에이동, 107동)를 장소검색 결과 제목과 대조하기 위한 변환표.
+_DONG_LATIN = {
+    "에이": "A", "비": "B", "씨": "C", "디": "D", "이": "E", "에프": "F",
+    "지": "G", "에이치": "H", "아이": "I", "제이": "J", "케이": "K",
+    "엘": "L", "엠": "M", "엔": "N",
+}
+BUILDING_DONG_RE = re.compile(r"(?:^|\s)(?:제)?([0-9]+|[가-힣]{1,2}|[A-Za-z])동(?=\s|$)")
+
+
+def _extract_building_dong_variants(address: str) -> list[str]:
+    normalized = normalize_auction_address(address)
+    without_paren = PAREN_RE.sub(" ", normalized)
+    matches = BUILDING_DONG_RE.findall(without_paren)
+    if not matches:
+        return []
+    token = matches[-1]
+    variants = [f"{token}동"]
+    latin = _DONG_LATIN.get(token)
+    if latin:
+        variants.append(f"{latin}동")
+    return variants
 
 
 def _pnu_from_structure(structure: dict[str, Any]) -> str:
@@ -203,12 +249,17 @@ def _extract_building_hint(address: str) -> str:
         candidate = group.split(",")[-1].strip()
         if len(candidate) >= 3 and not re.fullmatch(r"[가-힣]{1,3}동", candidate):
             return candidate
-    # 블록·로트형 주소는 긴 한글 건물명이 지번 대신 붙는다.
+    # 블록·로트형/신규 필지 주소는 지번 대신 건물명이 위치 단서다.
+    # 동 표기(107동·비동·에이동)와 법정동(당하동)은 건물명이 아니므로 건너뛴다.
     without_paren = re.sub(r"\s+", " ", PAREN_RE.sub(" ", normalized)).strip()
     for token in reversed(without_paren.split()):
-        if re.search(r"(?:층|호)$", token) or re.fullmatch(r"(?:제)?\d+[A-Za-z가-힣]?동", token):
+        if re.search(r"(?:층|호)$", token) or re.fullmatch(r"(?:제)?(?:\d+[A-Za-z가-힣]?|[가-힣]{1,2}|[A-Za-z])동", token):
             continue
-        if len(token) >= 5 and re.search(r"[가-힣]{3,}", token) and not re.search(r"(?:시|군|구|읍|면|리|로|길|대로)$", token):
+        if (
+            len(token) >= 3
+            and re.search(r"[가-힣]{3,}", token)
+            and not re.search(r"(?:시|군|구|읍|면|동|리|로|길|대로|번길)$", token)
+        ):
             return token
     return ""
 
@@ -262,12 +313,23 @@ def _request_vworld_search(
     request_type: str = "ADDRESS",
     category: str | None = None,
 ) -> dict[str, Any]:
+    items = _request_vworld_search_items(key, query, request_type=request_type, category=category, size=1)
+    return items[0] if items else {}
+
+
+def _request_vworld_search_items(
+    key: str,
+    query: str,
+    request_type: str = "ADDRESS",
+    category: str | None = None,
+    size: int = 1,
+) -> list[dict[str, Any]]:
     params = {
         "service": "search",
         "request": "search",
         "version": "2.0",
         "crs": "EPSG:4326",
-        "size": "1",
+        "size": str(size),
         "page": "1",
         "type": request_type,
         "format": "json",
@@ -277,7 +339,8 @@ def _request_vworld_search(
     if category:
         params["category"] = category
     payload = _request_vworld("https://api.vworld.kr/req/search", params)
-    return payload.get("response", {}).get("result", {}).get("items", [{}])[0] or {}
+    items = payload.get("response", {}).get("result", {}).get("items", []) or []
+    return [item for item in items if isinstance(item, dict)]
 
 
 def _request_vworld_getcoord(key: str, address: str, category: str) -> dict[str, Any]:
