@@ -64,6 +64,8 @@ class WebApiTests(unittest.TestCase):
 
         self.assertEqual(schema["openapi"], "3.0.3")
         self.assertIn("/api/v1/auctions", schema["paths"])
+        self.assertIn("/api/v1/assets/{id}", schema["paths"])
+        self.assertIn("/api/v1/documents/{id}", schema["paths"])
 
     def test_list_auctions_filters_and_paginates(self):
         payload = self.handler._public_auction_list_payload(
@@ -93,7 +95,19 @@ class WebApiTests(unittest.TestCase):
         self.assertEqual(payload["items"][0]["property"]["area"]["building_sqm"], 59.87)
 
     def test_detail_endpoint_returns_public_shape(self):
-        item = self.store.get_item("auction:서울중앙지방법원:2026타경100:1")
+        item_key = "auction:서울중앙지방법원:2026타경100:1"
+        self.store.save_item_detail(item_key, {"sections": [{"title": "물건 상세"}]})
+        self.store.save_document_status(item_key, "매각물건명세서", status="metadata_only")
+        self.store.save_asset(
+            item_key,
+            kind="photo",
+            label="전경도_1",
+            file_path=str(Path(self.tmp.name) / "auction-assets" / "photo.jpg"),
+            content_type="image/jpeg",
+            file_size=100,
+            sha256="image-hash",
+        )
+        item = self.store.get_item(item_key)
         payload = public_auction_detail(item)
 
         self.assertEqual(payload["id"], "auction:서울중앙지방법원:2026타경100:1")
@@ -106,6 +120,9 @@ class WebApiTests(unittest.TestCase):
         self.assertIn("권리확인 필요", payload["screening"]["flags"])
         self.assertIn("raw", payload)
         self.assertIn("events", payload)
+        self.assertEqual(payload["detail_collection"]["status"], "collected")
+        self.assertEqual(payload["documents"][0]["document_type"], "매각물건명세서")
+        self.assertEqual(payload["assets"][0]["url"], "/api/v1/assets/1")
 
     def test_collector_uses_separate_current_and_scheduled_windows(self):
         runner = CollectorControlRunner(self.store)
@@ -125,6 +142,10 @@ class WebApiTests(unittest.TestCase):
         self.assertEqual(command[command.index("--scheduled-start-date") + 1], "2026-07-02")
         self.assertEqual(command[command.index("--scheduled-end-date") + 1], "2026-12-29")
         self.assertEqual(command[command.index("--date-chunk-days") + 1], "31")
+        # 상세 수집은 전용 프로세스가 담당한다. 러너 사이클에 섞이면
+        # 목록 신선도가 무너지고 이중 실행 충돌이 난다.
+        self.assertNotIn("--details", command)
+        self.assertNotIn("--detail-limit", command)
 
     def test_collector_windows_start_today_without_past_range(self):
         import time

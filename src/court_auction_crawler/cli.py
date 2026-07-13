@@ -8,6 +8,7 @@ import re
 from typing import Any
 
 from .crawler import collect_all_sync, collect_sync
+from .detail_crawler import collect_details_sync
 from .excel import save_items_to_excel
 from .geocoder import env_value, geocode_address, is_mappable_property, normalize_auction_address
 from .models import SearchOptions
@@ -32,7 +33,7 @@ def build_parser() -> argparse.ArgumentParser:
     collect.add_argument("--max-pages", type=int, default=20, help="수집할 최대 페이지 수")
     collect.add_argument("--max-items", type=int, help="수집할 최대 물건 수")
     collect.add_argument("--delay", type=float, default=1.0, help="페이지 사이 대기 시간, 초 단위")
-    collect.add_argument("--details", action="store_true", help="상세 링크가 있으면 상세 페이지 정보도 수집합니다.")
+    collect.add_argument("--details", action="store_true", help="DB 저장 후 사건번호로 상세정보와 법원 문서를 수집합니다.")
     collect.add_argument("--db", help="수집 결과를 저장할 SQLite DB 경로")
     collect.add_argument("--output", default="outputs/auction_items.xlsx", help="저장할 Excel 파일 경로")
 
@@ -69,7 +70,7 @@ def build_parser() -> argparse.ArgumentParser:
     sync_once.add_argument("--end-date", type=parse_date, help="매각기일 종료일")
     sync_once.add_argument("--auto-search", action="store_true", help="검색 조건 입력과 조회를 자동으로 시도합니다.")
     sync_once.add_argument("--headful", action="store_true", help="브라우저 창을 표시합니다.")
-    sync_once.add_argument("--details", action="store_true", help="상세 링크가 있으면 상세 페이지 정보도 수집합니다.")
+    sync_once.add_argument("--details", action="store_true", help="목록 저장 후 사건번호로 상세정보와 법원 문서를 수집합니다.")
     sync_once.add_argument("--max-pages", type=int, default=20, help="수집할 최대 페이지 수")
     sync_once.add_argument("--max-items", type=int, help="수집할 최대 물건 수")
     sync_once.add_argument("--delay", type=float, default=1.0, help="페이지 사이 대기 시간, 초 단위")
@@ -102,7 +103,11 @@ def build_parser() -> argparse.ArgumentParser:
     collect_all.add_argument("--court-limit", type=int, help="테스트용으로 앞에서 N개 법원만 수집")
     collect_all.add_argument("--date-chunk-days", type=int, default=31, help="날짜 구간 분할 크기")
     collect_all.add_argument("--headful", action="store_true", help="브라우저 창을 표시합니다.")
-    collect_all.add_argument("--details", action="store_true", help="상세 링크가 있으면 상세 페이지 정보도 수집합니다.")
+    collect_all.add_argument("--details", action="store_true", help="목록 저장 후 사건번호로 상세정보와 법원 문서를 수집합니다.")
+    collect_all.add_argument("--detail-limit", type=int, default=0, help="이번 실행의 상세 수집 최대 물건 수, 0이면 전체")
+    collect_all.add_argument("--asset-dir", default="data/auction-assets", help="사진과 법원 문서 저장 디렉터리")
+    collect_all.add_argument("--skip-documents", action="store_true", help="상세정보만 수집하고 법원 문서는 건너뜁니다.")
+    collect_all.add_argument("--download-document-files", action="store_true", help="대용량 법원 문서 원본도 로컬에 저장합니다.")
     collect_all.add_argument("--max-pages", type=int, default=50, help="각 파티션에서 수집할 최대 페이지 수")
     collect_all.add_argument("--max-items", type=int, help="전체 수집할 최대 물건 수")
     collect_all.add_argument("--delay", type=float, default=1.5, help="페이지 사이 대기 시간, 초 단위")
@@ -144,6 +149,21 @@ def build_parser() -> argparse.ArgumentParser:
     enrich_prices.add_argument("--retry-days", type=int, default=14, help="조회 실패한 물건을 며칠 뒤 재시도할지")
     enrich_prices.add_argument("--include-inactive", action="store_true", help="종결/비활성 물건도 채웁니다.")
     enrich_prices.add_argument("--quiet", action="store_true", help="개별 물건 로그를 출력하지 않습니다.")
+
+    collect_details = subparsers.add_parser(
+        "collect-details",
+        help="DB의 모든 물건을 사건번호로 다시 조회해 상세정보와 법원 문서를 수집합니다.",
+    )
+    collect_details.add_argument("--db", default="data/auction.sqlite3", help="SQLite DB 경로")
+    collect_details.add_argument("--limit", type=int, default=0, help="이번 실행의 최대 물건 수, 0이면 전체")
+    collect_details.add_argument("--include-inactive", action="store_true", help="종결/비활성 물건도 수집합니다.")
+    collect_details.add_argument("--force", action="store_true", help="이미 완료한 물건도 다시 수집합니다.")
+    collect_details.add_argument("--item-key", default="", help="특정 DB 물건 키 하나만 수집합니다.")
+    collect_details.add_argument("--headful", action="store_true", help="브라우저 창을 표시합니다.")
+    collect_details.add_argument("--delay", type=float, default=1.5, help="사건 사이 대기 시간, 초 단위")
+    collect_details.add_argument("--asset-dir", default="data/auction-assets", help="사진과 법원 문서 저장 디렉터리")
+    collect_details.add_argument("--skip-documents", action="store_true", help="상세정보만 수집하고 법원 문서는 건너뜁니다.")
+    collect_details.add_argument("--download-document-files", action="store_true", help="대용량 법원 문서 원본도 로컬에 저장합니다.")
     return parser
 
 
@@ -161,12 +181,19 @@ def main(argv: list[str] | None = None) -> int:
             max_items=args.max_items,
             delay=args.delay,
             headful=args.headful,
-            collect_details=args.details,
+            collect_details=False,
         )
         items = collect_sync(options)
         if args.db:
-            result = AuctionStore(args.db).upsert_items(items)
+            store = AuctionStore(args.db)
+            result = store.upsert_items(items)
             print(f"DB 저장: 신규 {result.inserted}개, 변경 {result.updated}개, 동일 {result.unchanged}개")
+            if args.details and items:
+                # limit=0이 '전체 백로그'로 해석되지 않도록 수집분이 있을 때만 실행한다.
+                summary = collect_details_sync(store, limit=len(items), delay=args.delay)
+                print(f"상세 수집: 완료 {summary.collected}개, 실패 {summary.failed}개")
+        elif args.details:
+            raise ValueError("--details를 사용하려면 --db 경로가 필요합니다.")
         output = save_items_to_excel(items, args.output)
         print(f"{len(items)}개 물건을 저장했습니다: {output}")
         return 0
@@ -191,11 +218,15 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "sync-once":
         options = _search_options_from_args(args)
         items = collect_sync(options)
-        result = AuctionStore(args.db).upsert_items(items)
+        store = AuctionStore(args.db)
+        result = store.upsert_items(items)
         print(
             f"{len(items)}개 물건을 DB에 반영했습니다: "
             f"신규 {result.inserted}개, 변경 {result.updated}개, 동일 {result.unchanged}개"
         )
+        if args.details and items:
+            summary = collect_details_sync(store, limit=len(items), delay=args.delay)
+            print(f"상세 수집: 완료 {summary.collected}개, 실패 {summary.failed}개")
         return 0
 
     if args.command == "serve":
@@ -206,6 +237,7 @@ def main(argv: list[str] | None = None) -> int:
                 store,
                 _search_options_from_args(args),
                 interval_seconds=int(args.interval_minutes * 60),
+                collect_details=args.details,
             )
         run_server(store, args.host, args.port, runner)
         return 0
@@ -230,7 +262,7 @@ def main(argv: list[str] | None = None) -> int:
             max_items=args.max_items,
             delay=args.delay,
             headful=args.headful,
-            collect_details=args.details,
+            collect_details=False,
             court_limit=args.court_limit,
             court_start=args.court_start,
             date_chunk_days=args.date_chunk_days,
@@ -278,9 +310,44 @@ def main(argv: list[str] | None = None) -> int:
                     f"지오코딩: 성공 {geocoded['updated']}개, 실패 {geocoded['missing']}개, "
                     f"대상외 {geocoded['excluded']}개, 대상 {geocoded['targets']}개"
                 )
+        if args.details:
+            detail_summary = collect_details_sync(
+                store,
+                limit=args.detail_limit or None,
+                asset_dir=args.asset_dir,
+                delay=args.delay,
+                headful=args.headful,
+                collect_documents=not args.skip_documents,
+                download_document_files=args.download_document_files,
+            )
+            print(
+                f"상세 수집: 대상 {detail_summary.targets}개, 완료 {detail_summary.collected}개, "
+                f"실패 {detail_summary.failed}개, 조회불가 {detail_summary.unavailable}개, "
+                f"문서 {detail_summary.documents_collected}개, 문서 대기 {detail_summary.documents_pending}개"
+            )
         if args.output:
             output = save_items_to_excel(items, args.output)
             print(f"Excel 저장: {output}")
+        return 0
+
+    if args.command == "collect-details":
+        summary = collect_details_sync(
+            AuctionStore(args.db),
+            limit=args.limit or None,
+            include_inactive=args.include_inactive,
+            force=args.force,
+            item_key=args.item_key,
+            asset_dir=args.asset_dir,
+            delay=args.delay,
+            headful=args.headful,
+            collect_documents=not args.skip_documents,
+            download_document_files=args.download_document_files,
+        )
+        print(
+            f"상세 수집 완료: 대상 {summary.targets}개, 사건 {summary.cases}건, "
+            f"완료 {summary.collected}개, 실패 {summary.failed}개, 조회불가 {summary.unavailable}개, "
+            f"문서 {summary.documents_collected}개, 문서 대기 {summary.documents_pending}개"
+        )
         return 0
 
     if args.command == "export-snapshot":
@@ -526,7 +593,7 @@ def _search_options_from_args(args: argparse.Namespace) -> SearchOptions:
         max_items=args.max_items,
         delay=args.delay,
         headful=args.headful,
-        collect_details=args.details,
+        collect_details=False,
     )
 
 

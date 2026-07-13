@@ -17,6 +17,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 from . import __version__
 from .crawler import collect_sync
+from .detail_crawler import collect_details_sync
 from .geocoder import geocode_address
 from .models import SearchOptions, SyncSummary
 from .store import AuctionStore
@@ -39,9 +40,16 @@ DEFAULT_ALLOWED_ORIGINS = {
 
 
 class WatchRunner:
-    def __init__(self, store: AuctionStore, options: SearchOptions, interval_seconds: int) -> None:
+    def __init__(
+        self,
+        store: AuctionStore,
+        options: SearchOptions,
+        interval_seconds: int,
+        collect_details: bool = False,
+    ) -> None:
         self.store = store
         self.options = options
+        self.collect_details = collect_details
         self.interval_seconds = max(interval_seconds, 60)
         self._lock = threading.Lock()
         self._stop = threading.Event()
@@ -74,6 +82,8 @@ class WatchRunner:
         try:
             items = collect_sync(self.options)
             result = self.store.upsert_items(items)
+            if self.collect_details and items:
+                collect_details_sync(self.store, limit=len(items), delay=self.options.delay)
             summary = SyncSummary(
                 collected=len(items),
                 inserted=result.inserted,
@@ -274,6 +284,9 @@ class CollectorControlRunner:
             "2.0",
             "--geocode-limit",
             "2000",
+            # 상세 수집은 전용 프로세스(run_detail_collector.sh)가 담당한다.
+            # 여기서 --details를 붙이면 3시간 주기가 상세 작업에 막혀 목록
+            # 신선도가 무너지고, 전용 수집기와 이중 실행 충돌이 난다.
         ]
 
     def _collection_window(self, run_kind: str) -> dict[str, str]:
@@ -416,6 +429,14 @@ class AuctionWebHandler(BaseHTTPRequestHandler):
         if path == "/api/v1/collector/status":
             self._send_json(self._collector_status_payload())
             return
+        if path.startswith("/api/v1/assets/"):
+            asset_id = parse_int(path.removeprefix("/api/v1/assets/"), 0)
+            self._send_managed_file(self.store.get_asset(asset_id))
+            return
+        if path.startswith("/api/v1/documents/"):
+            document_id = parse_int(path.removeprefix("/api/v1/documents/"), 0)
+            self._send_managed_file(self.store.get_document(document_id))
+            return
         if path.startswith("/api/v1/auctions/"):
             item_key = unquote(path.removeprefix("/api/v1/auctions/"))
             item = self.store.get_item(item_key)
@@ -498,6 +519,32 @@ class AuctionWebHandler(BaseHTTPRequestHandler):
         self._send_cors_headers()
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _send_managed_file(self, record: dict[str, Any] | None) -> None:
+        if record is None:
+            self._send_json({"error": "not_found"}, HTTPStatus.NOT_FOUND)
+            return
+        path = Path(str(record.get("file_path", ""))).resolve()
+        configured_root = os.environ.get("AUCTION_ASSET_DIR", "").strip()
+        allowed_root = Path(configured_root).resolve() if configured_root else (
+            self.store.db_path.parent / "auction-assets"
+        ).resolve()
+        try:
+            path.relative_to(allowed_root)
+        except ValueError:
+            self._send_json({"error": "not_found"}, HTTPStatus.NOT_FOUND)
+            return
+        if not path.is_file():
+            self._send_json({"error": "not_found"}, HTTPStatus.NOT_FOUND)
+            return
+        data = path.read_bytes()
+        self.send_response(HTTPStatus.OK)
+        self._send_cors_headers()
+        self.send_header("Content-Type", record.get("content_type") or "application/octet-stream")
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "public, max-age=86400, immutable")
         self.end_headers()
         self.wfile.write(data)
 
@@ -687,6 +734,9 @@ def public_stats(payload: dict[str, Any]) -> dict[str, Any]:
         "total": payload.get("total", 0),
         "active": payload.get("active", 0),
         "due": payload.get("due", 0),
+        "by_detail_status": payload.get("by_detail_status", []),
+        "by_document_status": payload.get("by_document_status", []),
+        "asset_count": payload.get("asset_count", 0),
         "latest_sync": payload.get("latest_sync"),
         "by_source": payload.get("by_source", []),
         "by_status": payload.get("by_status", []),
@@ -716,6 +766,8 @@ def public_auction_summary(item: dict[str, Any]) -> dict[str, Any]:
         "geocoded_at": item.get("geocoded_at", ""),
         "last_seen_at": item.get("last_seen_at", ""),
         "updated_at": item.get("updated_at", ""),
+        "detail_status": item.get("detail_status", "pending"),
+        "detail_collected_at": item.get("detail_collected_at", ""),
     }
     summary.update(public_auction_enrichment(item))
     return summary
@@ -1035,6 +1087,29 @@ def public_auction_detail(item: dict[str, Any]) -> dict[str, Any]:
             "raw": item.get("raw", {}),
             "detail": item.get("detail", {}),
             "events": item.get("events", []),
+            "detail_collection": {
+                "status": item.get("detail_status", "pending"),
+                "collected_at": item.get("detail_collected_at", ""),
+                "checked_at": item.get("detail_checked_at", ""),
+                "next_retry_at": item.get("detail_next_retry_at", ""),
+                "fail_count": item.get("detail_fail_count", 0),
+                "error": item.get("detail_error", ""),
+            },
+            "documents": [
+                {
+                    **document,
+                    "url": (
+                        f"/api/v1/documents/{document.get('id')}"
+                        if document.get("status") == "collected" and document.get("file_size")
+                        else ""
+                    ),
+                }
+                for document in item.get("documents", [])
+            ],
+            "assets": [
+                {**asset, "url": f"/api/v1/assets/{asset.get('id')}"}
+                for asset in item.get("assets", [])
+            ],
         }
     )
     return summary
@@ -1089,6 +1164,8 @@ def openapi_schema() -> dict[str, Any]:
             "detail_url": {"type": "string"},
             "last_seen_at": {"type": "string"},
             "updated_at": {"type": "string"},
+            "detail_status": {"type": "string"},
+            "detail_collected_at": {"type": "string"},
             "case": {"type": "object", "description": "사건번호, 법원, 물건번호를 묶은 정규화 블록"},
             "auction": {"type": "object", "description": "매각기일, 진행상태, 유찰횟수, 활성 여부"},
             "property": {"type": "object", "description": "주소, 유형, 면적, 지분, 등기 검색 힌트"},
@@ -1170,6 +1247,26 @@ def openapi_schema() -> dict[str, Any]:
                     "parameters": [{"name": "id", "in": "path", "required": True, "schema": {"type": "string"}}],
                     "responses": {
                         "200": {"description": "Auction detail"},
+                        "404": {"description": "Not found"},
+                    },
+                }
+            },
+            "/api/v1/assets/{id}": {
+                "get": {
+                    "summary": "Get an auction image asset",
+                    "parameters": [{"name": "id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+                    "responses": {
+                        "200": {"description": "Image content"},
+                        "404": {"description": "Not found"},
+                    },
+                }
+            },
+            "/api/v1/documents/{id}": {
+                "get": {
+                    "summary": "Get a collected court document",
+                    "parameters": [{"name": "id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+                    "responses": {
+                        "200": {"description": "Court document content"},
                         "404": {"description": "Not found"},
                     },
                 }

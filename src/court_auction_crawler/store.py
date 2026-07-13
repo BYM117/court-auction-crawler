@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from datetime import date, datetime, timedelta, timezone
 import hashlib
@@ -7,13 +8,13 @@ import json
 from pathlib import Path
 import re
 import sqlite3
-from typing import Any
+from typing import Any, Iterator
 
 from .models import AuctionItem, SyncSummary
 from .utils import clean_text, parse_date
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 CASE_KEYS = ("사건번호", "사건", "case_no")
@@ -78,14 +79,19 @@ class AuctionStore:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init_db()
 
-    def connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def connect(self) -> Iterator[sqlite3.Connection]:
         conn = sqlite3.connect(self.db_path, timeout=30.0)
         conn.row_factory = sqlite3.Row
         # 웹서버·수집 서브프로세스·watch 러너가 같은 파일을 동시에 쓰므로
         # WAL이 없으면 database is locked가 난다.
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA busy_timeout=30000")
-        return conn
+        try:
+            with conn:
+                yield conn
+        finally:
+            conn.close()
 
     def _init_db(self) -> None:
         with self.connect() as conn:
@@ -123,6 +129,12 @@ class AuctionStore:
                     is_active INTEGER NOT NULL DEFAULT 1,
                     crawl_priority INTEGER NOT NULL DEFAULT 0,
                     crawl_fail_count INTEGER NOT NULL DEFAULT 0,
+                    detail_status TEXT NOT NULL DEFAULT 'pending',
+                    detail_collected_at TEXT,
+                    detail_checked_at TEXT,
+                    detail_next_retry_at TEXT,
+                    detail_fail_count INTEGER NOT NULL DEFAULT 0,
+                    detail_error TEXT NOT NULL DEFAULT '',
                     updated_at TEXT NOT NULL
                 );
 
@@ -157,6 +169,39 @@ class AuctionStore:
                     mode TEXT NOT NULL,
                     court TEXT NOT NULL,
                     item_count INTEGER NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS auction_documents (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    item_key TEXT NOT NULL,
+                    document_type TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    title TEXT NOT NULL DEFAULT '',
+                    source_url TEXT NOT NULL DEFAULT '',
+                    file_path TEXT NOT NULL DEFAULT '',
+                    content_type TEXT NOT NULL DEFAULT '',
+                    file_size INTEGER NOT NULL DEFAULT 0,
+                    sha256 TEXT NOT NULL DEFAULT '',
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
+                    checked_at TEXT NOT NULL,
+                    collected_at TEXT,
+                    next_retry_at TEXT,
+                    fail_count INTEGER NOT NULL DEFAULT 0,
+                    error TEXT NOT NULL DEFAULT '',
+                    UNIQUE(item_key, document_type)
+                );
+
+                CREATE TABLE IF NOT EXISTS auction_assets (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    item_key TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    label TEXT NOT NULL DEFAULT '',
+                    file_path TEXT NOT NULL,
+                    content_type TEXT NOT NULL DEFAULT '',
+                    file_size INTEGER NOT NULL DEFAULT 0,
+                    sha256 TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    UNIQUE(item_key, kind, label, sha256)
                 );
                 """
             )
@@ -203,6 +248,18 @@ class AuctionStore:
                 conn.execute("ALTER TABLE auction_items ADD COLUMN official_price_status TEXT NOT NULL DEFAULT ''")
             if "official_price_at" not in columns:
                 conn.execute("ALTER TABLE auction_items ADD COLUMN official_price_at TEXT")
+            if "detail_status" not in columns:
+                conn.execute("ALTER TABLE auction_items ADD COLUMN detail_status TEXT NOT NULL DEFAULT 'pending'")
+            if "detail_collected_at" not in columns:
+                conn.execute("ALTER TABLE auction_items ADD COLUMN detail_collected_at TEXT")
+            if "detail_checked_at" not in columns:
+                conn.execute("ALTER TABLE auction_items ADD COLUMN detail_checked_at TEXT")
+            if "detail_next_retry_at" not in columns:
+                conn.execute("ALTER TABLE auction_items ADD COLUMN detail_next_retry_at TEXT")
+            if "detail_fail_count" not in columns:
+                conn.execute("ALTER TABLE auction_items ADD COLUMN detail_fail_count INTEGER NOT NULL DEFAULT 0")
+            if "detail_error" not in columns:
+                conn.execute("ALTER TABLE auction_items ADD COLUMN detail_error TEXT NOT NULL DEFAULT ''")
             conn.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_auction_items_next_check
@@ -215,6 +272,24 @@ class AuctionStore:
                     ON auction_items(lat, lng)
                 """
             )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_auction_items_detail_due
+                    ON auction_items(is_active, detail_status, detail_next_retry_at, sale_date)
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_auction_documents_item
+                    ON auction_documents(item_key, document_type)
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_auction_assets_item
+                    ON auction_assets(item_key, kind)
+                """
+            )
             version = conn.execute("PRAGMA user_version").fetchone()[0]
             if version < SCHEMA_VERSION:
                 if version < 1:
@@ -225,6 +300,10 @@ class AuctionStore:
                     self._backfill_schedule(conn)
                 if version < 2:
                     self._migrate_v2_rekey_and_merge(conn)
+                if version < 3:
+                    conn.execute(
+                        "UPDATE auction_items SET detail_status = 'pending' WHERE detail_collected_at IS NULL"
+                    )
                 conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
     def _migrate_v2_rekey_and_merge(self, conn: sqlite3.Connection) -> None:
@@ -570,7 +649,9 @@ class AuctionStore:
                        official_price_detail, official_price_status, official_price_at,
                        first_seen_at,
                        last_seen_at, last_changed_at, next_check_at, is_active,
-                       crawl_priority, updated_at
+                       crawl_priority, detail_status, detail_collected_at,
+                       detail_checked_at, detail_next_retry_at, detail_fail_count,
+                       updated_at
                   FROM auction_items
                   {where}
                  ORDER BY {order_by}
@@ -617,6 +698,265 @@ class AuctionStore:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def list_detail_targets(
+        self,
+        *,
+        limit: int | None = None,
+        include_inactive: bool = False,
+        force: bool = False,
+        item_key: str = "",
+    ) -> list[dict[str, Any]]:
+        clauses = ["court != ''", "case_no != ''", "item_no != ''"]
+        params: list[Any] = []
+        if not include_inactive:
+            clauses.append("is_active = 1")
+        if item_key:
+            clauses.append("item_key = ?")
+            params.append(item_key)
+        if not force:
+            clauses.append(
+                """
+                (
+                    (detail_status = 'pending' AND detail_checked_at IS NULL)
+                    OR (last_changed_at IS NOT NULL AND last_changed_at > detail_collected_at)
+                    OR (
+                        detail_status IN ('failed', 'metadata_only')
+                        AND (detail_next_retry_at IS NULL OR detail_next_retry_at <= ?)
+                    )
+                    OR (
+                        -- 조회 불가였던 물건도 확인 이후에 목록 변경이 잡히면(재공고 등) 다시 시도한다.
+                        detail_status = 'unavailable'
+                        AND last_changed_at IS NOT NULL
+                        AND last_changed_at > detail_checked_at
+                    )
+                    OR (
+                        detail_status != 'unavailable'
+                        AND EXISTS (
+                            SELECT 1
+                              FROM auction_documents AS document
+                             WHERE document.item_key = auction_items.item_key
+                               AND document.status != 'collected'
+                               AND (document.next_retry_at IS NULL OR document.next_retry_at <= ?)
+                        )
+                    )
+                )
+                """
+            )
+            now = utc_now()
+            params.extend([now, now])
+        row_limit = 1_000_000 if limit is None or limit <= 0 else min(limit, 1_000_000)
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT item_key, court, case_no, item_no, sale_date, status,
+                       detail_status, detail_collected_at, detail_next_retry_at,
+                       detail_fail_count, last_changed_at
+                  FROM auction_items
+                 WHERE {' AND '.join(f'({clause})' for clause in clauses)}
+                 ORDER BY (detail_collected_at IS NULL) DESC,
+                          (REPLACE(SUBSTR(sale_date, 1, 10), '.', '-') > ?) DESC,
+                          (sale_date IS NULL OR sale_date = '') ASC,
+                          sale_date ASC,
+                          detail_fail_count ASC,
+                          crawl_priority DESC,
+                          last_seen_at DESC
+                 LIMIT ?
+                """,
+                [*params, date.today().isoformat(), row_limit],
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def save_item_detail(self, item_key: str, detail: dict[str, Any]) -> None:
+        now = utc_now()
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT detail_json FROM auction_items WHERE item_key = ?",
+                (item_key,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(item_key)
+            try:
+                merged = json.loads(row["detail_json"] or "{}")
+            except (TypeError, ValueError):
+                merged = {}
+            merged.update(detail)
+            conn.execute(
+                """
+                UPDATE auction_items
+                   SET detail_json = ?, detail_status = 'collected',
+                       detail_collected_at = ?, detail_checked_at = ?,
+                       detail_next_retry_at = NULL, detail_fail_count = 0,
+                       detail_error = '', updated_at = ?
+                 WHERE item_key = ?
+                """,
+                (json_dumps(merged), now, now, now, item_key),
+            )
+
+    def mark_detail_failure(self, item_key: str, error: str) -> None:
+        now = datetime.now(timezone.utc)
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT detail_fail_count FROM auction_items WHERE item_key = ?",
+                (item_key,),
+            ).fetchone()
+            if row is None:
+                return
+            fail_count = int(row["detail_fail_count"] or 0) + 1
+            retry_hours = min(24 * 7, 2 ** min(fail_count - 1, 7))
+            next_retry = (now + timedelta(hours=retry_hours)).isoformat(timespec="seconds")
+            conn.execute(
+                """
+                UPDATE auction_items
+                   SET detail_status = 'failed', detail_checked_at = ?,
+                       detail_next_retry_at = ?, detail_fail_count = ?,
+                       detail_error = ?, updated_at = ?
+                 WHERE item_key = ?
+                """,
+                (
+                    now.isoformat(timespec="seconds"),
+                    next_retry,
+                    fail_count,
+                    str(error)[:500],
+                    now.isoformat(timespec="seconds"),
+                    item_key,
+                ),
+            )
+
+    def mark_detail_unavailable(self, item_key: str, reason: str) -> None:
+        """종결·취하 등으로 상세조회 버튼이 비활성인 물건. 재시도해도 소용없으므로
+        failed와 달리 재시도 큐에서 제외한다. 물건이 다시 변경되면(재공고 등)
+        list_detail_targets가 다시 대상으로 올린다."""
+        now = utc_now()
+        with self.connect() as conn:
+            conn.execute(
+                """
+                UPDATE auction_items
+                   SET detail_status = 'unavailable', detail_checked_at = ?,
+                       detail_next_retry_at = NULL, detail_error = ?, updated_at = ?
+                 WHERE item_key = ?
+                """,
+                (now, str(reason)[:500], now, item_key),
+            )
+
+    def document_statuses(self, item_key: str) -> dict[str, str]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT document_type, status FROM auction_documents WHERE item_key = ?",
+                (item_key,),
+            ).fetchall()
+        return {row["document_type"]: row["status"] for row in rows}
+
+    def save_document_status(
+        self,
+        item_key: str,
+        document_type: str,
+        *,
+        status: str,
+        title: str = "",
+        source_url: str = "",
+        file_path: str = "",
+        content_type: str = "",
+        file_size: int = 0,
+        sha256: str = "",
+        metadata: dict[str, Any] | None = None,
+        next_retry_at: str = "",
+        error: str = "",
+    ) -> None:
+        now = utc_now()
+        collected_at = now if status == "collected" else None
+        with self.connect() as conn:
+            existing = conn.execute(
+                "SELECT status, fail_count FROM auction_documents WHERE item_key = ? AND document_type = ?",
+                (item_key, document_type),
+            ).fetchone()
+            if existing is not None and existing["status"] == "collected" and status != "collected":
+                return
+            fail_count = 0
+            if status != "collected" and existing is not None:
+                fail_count = int(existing["fail_count"] or 0) + 1
+            conn.execute(
+                """
+                INSERT INTO auction_documents(
+                    item_key, document_type, status, title, source_url, file_path,
+                    content_type, file_size, sha256, metadata_json, checked_at,
+                    collected_at, next_retry_at, fail_count, error
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(item_key, document_type) DO UPDATE SET
+                    status = excluded.status,
+                    title = CASE WHEN excluded.title != '' THEN excluded.title ELSE auction_documents.title END,
+                    source_url = CASE WHEN excluded.source_url != '' THEN excluded.source_url ELSE auction_documents.source_url END,
+                    file_path = CASE WHEN excluded.file_path != '' THEN excluded.file_path ELSE auction_documents.file_path END,
+                    content_type = CASE WHEN excluded.content_type != '' THEN excluded.content_type ELSE auction_documents.content_type END,
+                    file_size = CASE WHEN excluded.file_size > 0 THEN excluded.file_size ELSE auction_documents.file_size END,
+                    sha256 = CASE WHEN excluded.sha256 != '' THEN excluded.sha256 ELSE auction_documents.sha256 END,
+                    metadata_json = CASE WHEN excluded.metadata_json != '{}' THEN excluded.metadata_json ELSE auction_documents.metadata_json END,
+                    checked_at = excluded.checked_at,
+                    collected_at = COALESCE(excluded.collected_at, auction_documents.collected_at),
+                    next_retry_at = excluded.next_retry_at,
+                    fail_count = excluded.fail_count,
+                    error = excluded.error
+                """,
+                (
+                    item_key,
+                    document_type,
+                    status,
+                    title,
+                    source_url,
+                    file_path,
+                    content_type,
+                    int(file_size or 0),
+                    sha256,
+                    json_dumps(metadata or {}),
+                    now,
+                    collected_at,
+                    next_retry_at or None,
+                    fail_count,
+                    str(error)[:500],
+                ),
+            )
+
+    def save_asset(
+        self,
+        item_key: str,
+        *,
+        kind: str,
+        label: str,
+        file_path: str,
+        content_type: str,
+        sha256: str,
+        file_size: int,
+    ) -> int:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO auction_assets(
+                    item_key, kind, label, file_path, content_type, file_size, sha256, created_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (item_key, kind, label, file_path, content_type, file_size, sha256, utc_now()),
+            )
+            row = conn.execute(
+                """
+                SELECT id FROM auction_assets
+                 WHERE item_key = ? AND kind = ? AND label = ? AND sha256 = ?
+                """,
+                (item_key, kind, label, sha256),
+            ).fetchone()
+        return int(row["id"])
+
+    def get_asset(self, asset_id: int) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute("SELECT * FROM auction_assets WHERE id = ?", (asset_id,)).fetchone()
+        return dict(row) if row is not None else None
+
+    def get_document(self, document_id: int) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM auction_documents WHERE id = ? AND status = 'collected'",
+                (document_id,),
+            ).fetchone()
+        return dict(row) if row is not None else None
+
     def get_item(self, item_key: str) -> dict[str, Any] | None:
         with self.connect() as conn:
             row = conn.execute("SELECT * FROM auction_items WHERE item_key = ?", (item_key,)).fetchone()
@@ -632,11 +972,37 @@ class AuctionStore:
                 """,
                 (item_key,),
             ).fetchall()
+            documents = conn.execute(
+                """
+                SELECT id, document_type, status, title, source_url, content_type,
+                       file_size, sha256, checked_at, collected_at, next_retry_at,
+                       fail_count, error, metadata_json
+                  FROM auction_documents
+                 WHERE item_key = ?
+                 ORDER BY document_type
+                """,
+                (item_key,),
+            ).fetchall()
+            assets = conn.execute(
+                """
+                SELECT id, kind, label, content_type, file_size, sha256, created_at
+                  FROM auction_assets
+                 WHERE item_key = ?
+                 ORDER BY kind, id
+                """,
+                (item_key,),
+            ).fetchall()
 
         item = dict(row)
         item["raw"] = json.loads(item.pop("raw_json") or "{}")
         item["detail"] = json.loads(item.pop("detail_json") or "{}")
         item["events"] = [dict(event) for event in events]
+        item["documents"] = []
+        for document in documents:
+            document_payload = dict(document)
+            document_payload["metadata"] = json.loads(document_payload.pop("metadata_json") or "{}")
+            item["documents"].append(document_payload)
+        item["assets"] = [dict(asset) for asset in assets]
         return item
 
     def update_coordinates(
@@ -822,6 +1188,23 @@ class AuctionStore:
                 """,
                 (utc_now(),),
             ).fetchone()["count"]
+            by_detail_status = conn.execute(
+                """
+                SELECT COALESCE(NULLIF(detail_status, ''), 'pending') AS name, COUNT(*) AS count
+                  FROM auction_items
+                 GROUP BY COALESCE(NULLIF(detail_status, ''), 'pending')
+                 ORDER BY count DESC
+                """
+            ).fetchall()
+            by_document_status = conn.execute(
+                """
+                SELECT status AS name, COUNT(*) AS count
+                  FROM auction_documents
+                 GROUP BY status
+                 ORDER BY count DESC
+                """
+            ).fetchall()
+            asset_count = conn.execute("SELECT COUNT(*) AS count FROM auction_assets").fetchone()["count"]
 
         latest_dict = dict(latest) if latest else None
         if latest_dict:
@@ -833,6 +1216,9 @@ class AuctionStore:
             "by_source": [dict(row) for row in by_source],
             "active": active,
             "due": due,
+            "by_detail_status": [dict(row) for row in by_detail_status],
+            "by_document_status": [dict(row) for row in by_document_status],
+            "asset_count": asset_count,
         }
 
     def apply_lifecycle(

@@ -181,6 +181,125 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(result.unchanged, 1)
         self.assertEqual(result.updated, 0)
 
+    def test_detail_targets_complete_and_retry_on_due_document(self):
+        item = AuctionItem(
+            {
+                "사건번호": "서울중앙지방법원 2026타경333",
+                "물건번호": "1",
+                "매각기일": "2026.08.01",
+            }
+        )
+        self.store.upsert_items([item])
+        item_key = "auction:서울중앙지방법원:2026타경333:1"
+
+        self.assertEqual([row["item_key"] for row in self.store.list_detail_targets()], [item_key])
+
+        self.store.save_item_detail(item_key, {"tables": [{"caption": "물건 기본정보"}]})
+        self.assertEqual(self.store.list_detail_targets(), [])
+
+        self.store.save_document_status(
+            item_key,
+            "감정평가서",
+            status="pending",
+            next_retry_at="2000-01-01T00:00:00+00:00",
+        )
+        self.assertEqual([row["item_key"] for row in self.store.list_detail_targets()], [item_key])
+
+    def test_detail_unavailable_stops_retry_until_item_changes(self):
+        self.store.upsert_items(
+            [
+                AuctionItem(
+                    {
+                        "사건번호": "수원지방법원 2026타경666",
+                        "물건번호": "1",
+                        "매각기일": "2026.08.01",
+                        "진행상태": "유찰 1회",
+                    }
+                )
+            ]
+        )
+        item_key = "auction:수원지방법원:2026타경666:1"
+
+        self.store.mark_detail_unavailable(item_key, "물건상세조회 버튼 비활성")
+
+        # 재시도 큐에서 빠진다 (문서 due가 있어도 unavailable이면 제외)
+        self.store.save_document_status(
+            item_key, "감정평가서", status="pending", next_retry_at="2000-01-01T00:00:00+00:00"
+        )
+        self.assertEqual(self.store.list_detail_targets(), [])
+        item = self.store.get_item(item_key)
+        self.assertEqual(item["detail_status"], "unavailable")
+
+        # 타임스탬프가 초 단위라 테스트에서는 시간 경과를 시뮬레이션한다
+        with self.store.connect() as conn:
+            conn.execute(
+                "UPDATE auction_items SET detail_checked_at = '2026-01-01T00:00:00+00:00', "
+                "last_changed_at = '2026-01-01T00:00:00+00:00' WHERE item_key = ?",
+                (item_key,),
+            )
+        self.assertEqual(self.store.list_detail_targets(), [])
+
+        # 확인 이후 목록에서 변경이 잡히면(재공고) 다시 대상이 된다
+        renewed = AuctionItem(
+            {
+                "사건번호": "수원지방법원 2026타경666",
+                "물건번호": "1",
+                "매각기일": "2026.09.15",
+                "진행상태": "유찰 2회",
+            }
+        )
+        self.store.upsert_items([renewed])
+        self.assertEqual([row["item_key"] for row in self.store.list_detail_targets()], [item_key])
+
+    def test_detail_failure_obeys_retry_time(self):
+        self.store.upsert_items(
+            [AuctionItem({"사건번호": "부산지방법원 2026타경444", "물건번호": "2"})]
+        )
+        item_key = "auction:부산지방법원:2026타경444:2"
+
+        self.store.mark_detail_failure(item_key, "법원 응답 지연")
+
+        self.assertEqual(self.store.list_detail_targets(), [])
+        self.assertEqual(len(self.store.list_detail_targets(force=True)), 1)
+        item = self.store.get_item(item_key)
+        self.assertEqual(item["detail_status"], "failed")
+        self.assertEqual(item["detail_fail_count"], 1)
+        self.assertIn("법원 응답 지연", item["detail_error"])
+
+    def test_detail_documents_and_assets_are_returned(self):
+        self.store.upsert_items(
+            [AuctionItem({"사건번호": "대전지방법원 2026타경555", "물건번호": "1"})]
+        )
+        item_key = "auction:대전지방법원:2026타경555:1"
+        self.store.save_item_detail(item_key, {"sections": [{"title": "감정평가요항표"}]})
+        self.store.save_document_status(
+            item_key,
+            "감정평가서",
+            status="collected",
+            title="감정평가서",
+            file_path="/tmp/report.pdf",
+            content_type="application/pdf",
+            file_size=120,
+            sha256="doc-hash",
+            metadata={"text": "감정평가서 본문"},
+        )
+        asset_id = self.store.save_asset(
+            item_key,
+            kind="photo",
+            label="전경도_1",
+            file_path="/tmp/photo.jpg",
+            content_type="image/jpeg",
+            file_size=80,
+            sha256="image-hash",
+        )
+
+        item = self.store.get_item(item_key)
+
+        self.assertEqual(item["detail"]["sections"][0]["title"], "감정평가요항표")
+        self.assertEqual(item["documents"][0]["status"], "collected")
+        self.assertEqual(item["documents"][0]["metadata"]["text"], "감정평가서 본문")
+        self.assertEqual(item["assets"][0]["id"], asset_id)
+
     def test_lifecycle_deactivates_expired_and_upsert_revives(self):
         item = AuctionItem(
             {

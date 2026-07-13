@@ -72,12 +72,15 @@ PYTHONPATH=src python -m court_auction_crawler.cli serve --db data/auction.sqlit
 curl http://127.0.0.1:8000/api/v1/health
 curl "http://127.0.0.1:8000/api/v1/auctions?q=아파트&region=서울&active=true&limit=20"
 curl "http://127.0.0.1:8000/api/v1/auctions?source=예정&sale_date_from=2026-07-01&sale_date_to=2026-07-31&sort=sale_date_asc"
+curl "http://127.0.0.1:8000/api/v1/auctions/auction%3A서울중앙지방법원%3A2026타경100%3A1"
 curl http://127.0.0.1:8000/api/v1/regions
 curl http://127.0.0.1:8000/api/v1/stats
 curl http://127.0.0.1:8000/api/v1/openapi.json
 ```
 
 목록 API는 `q`/`query`, `status`, `source`, `region`, `sale_date_from`, `sale_date_to`, `active`, `sort`, `limit`, `offset` 파라미터를 지원합니다. `limit`은 최대 500개까지 반환합니다.
+
+물건 상세 API는 사건·기일·문건/송달 내역, 물건 목록, 감정평가 요약, 사진, 매각물건명세서·현황조사서·감정평가서의 수집 상태를 반환합니다. `assets[].url`은 사진 API, 수집이 끝난 `documents[].url`은 문서 파일 API입니다. 서버 내부 파일 경로는 외부에 공개하지 않습니다.
 
 CORS 허용 origin은 환경변수로 바꿀 수 있습니다.
 
@@ -151,6 +154,24 @@ tail -f logs/collect-all.log
 cat data/collect-all.pid
 cat data/server.pid
 ```
+
+## 전체 상세정보와 법원 문서 수집
+
+목록 수집이 끝난 DB를 사건번호로 다시 조회해 가능한 정보를 모두 채웁니다. 중간에 종료해도 완료 건은 건너뛰고 실패·미공개 문서는 예약된 시각 이후 다시 시도합니다.
+
+```bash
+PYTHONUNBUFFERED=1 PLAYWRIGHT_BROWSERS_PATH=.playwright-browsers PYTHONPATH=src \
+  .venv/bin/python -m court_auction_crawler.cli collect-details \
+  --db data/auction.sqlite3 \
+  --asset-dir data/auction-assets \
+  --delay 2.0
+```
+
+자산 경로를 기본값이 아닌 곳으로 바꾸면 웹 서버에도 같은 절대 경로를 `AUCTION_ASSET_DIR` 환경변수로 지정합니다.
+
+기본 실행은 상세 본문·표·사진과 감정평가서 원본 URL을 저장합니다. 대용량 PDF 원본까지 로컬에 복제하려면 여유 공간을 확인한 뒤 `--download-document-files`를 추가합니다. Cloud Storage 같은 외부 객체 저장소를 붙이기 전에는 전체 3만 건 실행에서 이 옵션을 사용하지 않는 편이 안전합니다.
+
+빠른 검증은 `--limit 10`, 이미 완료한 물건 재수집은 `--force`를 붙입니다. 특정 물건 복구는 `--item-key 'auction:법원:사건번호:물건번호' --force`로 실행합니다. 자동 전체 수집기는 목록 갱신을 마칠 때마다 상세 대상 1,000개를 이어서 처리합니다.
 
 ## 공시기준가 채우기 (공시지가·공동주택가격·개별주택가격)
 
