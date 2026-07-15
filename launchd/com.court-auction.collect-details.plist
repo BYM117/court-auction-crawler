@@ -4,20 +4,24 @@
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>com.court-auction.collect</string>
+  <string>com.court-auction.collect-details</string>
   <key>ProgramArguments</key>
   <array>
     <string>/bin/zsh</string>
     <string>-lc</string>
-    <string>cd "/Users/bym/Documents/경매물건 크롤링" &amp;&amp; exec /bin/zsh scripts/run_collect_all.sh</string>
+    <string>cd "/Users/bym/Documents/경매물건 크롤링" &amp;&amp; exec /bin/zsh scripts/run_detail_collector.sh</string>
   </array>
   <key>WorkingDirectory</key>
   <string>/Users/bym/Documents/경매물건 크롤링</string>
   <key>StandardOutPath</key>
-  <string>/Users/bym/Documents/경매물건 크롤링/logs/collect-all.log</string>
+  <string>/Users/bym/Documents/경매물건 크롤링/logs/collect-details.log</string>
   <key>StandardErrorPath</key>
-  <string>/Users/bym/Documents/경매물건 크롤링/logs/collect-all.err.log</string>
+  <string>/Users/bym/Documents/경매물건 크롤링/logs/collect-details.err.log</string>
   <key>RunAtLoad</key>
   <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
 </dict>
 </plist>

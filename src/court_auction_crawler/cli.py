@@ -4,6 +4,7 @@ import argparse
 from datetime import date, datetime, timedelta, timezone
 import json
 from pathlib import Path
+import time
 import re
 from typing import Any
 
@@ -161,6 +162,18 @@ def build_parser() -> argparse.ArgumentParser:
     collect_details.add_argument("--item-key", default="", help="특정 DB 물건 키 하나만 수집합니다.")
     collect_details.add_argument("--headful", action="store_true", help="브라우저 창을 표시합니다.")
     collect_details.add_argument("--delay", type=float, default=1.5, help="사건 사이 대기 시간, 초 단위")
+    collect_details.add_argument("--workers", type=int, default=3, help="동시에 사건을 처리할 브라우저 컨텍스트 수")
+    collect_details.add_argument(
+        "--loop",
+        action="store_true",
+        help="한 패스가 끝나도 종료하지 않고 신건·재시도 도래분을 계속 수집합니다.",
+    )
+    collect_details.add_argument(
+        "--idle-minutes",
+        type=float,
+        default=15.0,
+        help="--loop에서 처리할 대상이 없을 때 다음 확인까지 대기 시간(분)",
+    )
     collect_details.add_argument("--asset-dir", default="data/auction-assets", help="사진과 법원 문서 저장 디렉터리")
     collect_details.add_argument("--skip-documents", action="store_true", help="상세정보만 수집하고 법원 문서는 건너뜁니다.")
     collect_details.add_argument("--download-document-files", action="store_true", help="대용량 법원 문서 원본도 로컬에 저장합니다.")
@@ -331,24 +344,33 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "collect-details":
-        summary = collect_details_sync(
-            AuctionStore(args.db),
-            limit=args.limit or None,
-            include_inactive=args.include_inactive,
-            force=args.force,
-            item_key=args.item_key,
-            asset_dir=args.asset_dir,
-            delay=args.delay,
-            headful=args.headful,
-            collect_documents=not args.skip_documents,
-            download_document_files=args.download_document_files,
-        )
-        print(
-            f"상세 수집 완료: 대상 {summary.targets}개, 사건 {summary.cases}건, "
-            f"완료 {summary.collected}개, 실패 {summary.failed}개, 조회불가 {summary.unavailable}개, "
-            f"문서 {summary.documents_collected}개, 문서 대기 {summary.documents_pending}개"
-        )
-        return 0
+        store = AuctionStore(args.db)
+        while True:
+            summary = collect_details_sync(
+                store,
+                limit=args.limit or None,
+                include_inactive=args.include_inactive,
+                force=args.force,
+                item_key=args.item_key,
+                asset_dir=args.asset_dir,
+                delay=args.delay,
+                headful=args.headful,
+                collect_documents=not args.skip_documents,
+                download_document_files=args.download_document_files,
+                workers=args.workers,
+            )
+            print(
+                f"상세 수집 완료: 대상 {summary.targets}개, 사건 {summary.cases}건, "
+                f"완료 {summary.collected}개, 실패 {summary.failed}개, 조회불가 {summary.unavailable}개, "
+                f"문서 {summary.documents_collected}개, 문서 대기 {summary.documents_pending}개"
+            )
+            if not args.loop:
+                return 0
+            # 대상을 처리했으면 그 사이 쌓인 신건을 바로 다시 확인하고,
+            # 비어 있었으면 idle 간격만큼 쉬었다가 재시도 도래분을 확인한다.
+            wait_minutes = 1.0 if summary.targets else args.idle_minutes
+            print(f"다음 패스까지 {wait_minutes:g}분 대기 (--loop)")
+            time.sleep(wait_minutes * 60)
 
     if args.command == "export-snapshot":
         store = AuctionStore(args.db)

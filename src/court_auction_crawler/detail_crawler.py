@@ -12,6 +12,7 @@ import mimetypes
 import os
 from pathlib import Path
 import re
+import time
 from typing import Any, Iterator
 
 from playwright.async_api import Page, TimeoutError as PlaywrightTimeoutError, async_playwright
@@ -40,6 +41,79 @@ DOCUMENT_TYPES = {
     "현황조사서": 14,
     "감정평가서": 14,
 }
+
+
+class HealthGovernor:
+    """연속 인프라 오류(타임아웃·네트워크)를 차단 징후로 보고 자동으로 감속한다.
+
+    - 연속 distress가 임계치에 닿으면: 냉각(반복될수록 배증) 후 단일 워커 +
+      delay 3배의 보수 모드로 내려간다.
+    - 보수 모드에서 연속 성공이 쌓이면 정상 속도로 자동 복귀한다.
+    '검색 결과 없음' 같은 정상 응답은 사이트가 멀쩡하다는 뜻이므로 세지 않는다."""
+
+    def __init__(
+        self,
+        *,
+        trip_threshold: int = 5,
+        base_cooldown_seconds: float = 60.0,
+        max_cooldown_seconds: float = 900.0,
+        recovery_streak: int = 10,
+    ) -> None:
+        self.trip_threshold = trip_threshold
+        self.base_cooldown_seconds = base_cooldown_seconds
+        self.max_cooldown_seconds = max_cooldown_seconds
+        self.recovery_streak = recovery_streak
+        self.distress_count = 0
+        self.success_streak = 0
+        self.trips = 0
+        self.degraded = False
+        self.cooldown_until = 0.0
+
+    def record_healthy(self) -> None:
+        self.distress_count = 0
+        self.success_streak += 1
+        if self.degraded and self.success_streak >= self.recovery_streak:
+            self.degraded = False
+            self.success_streak = 0
+            print("== 상태 양호: 정상 속도로 복귀합니다 ==")
+
+    def record_distress(self) -> None:
+        self.success_streak = 0
+        self.distress_count += 1
+        if self.distress_count < self.trip_threshold:
+            return
+        self.distress_count = 0
+        self.trips += 1
+        cooldown = min(
+            self.base_cooldown_seconds * (2 ** (self.trips - 1)),
+            self.max_cooldown_seconds,
+        )
+        self.cooldown_until = time.monotonic() + cooldown
+        self.degraded = True
+        print(
+            f"!! 차단 의심: 연속 오류 {self.trip_threshold}회 -> "
+            f"{int(cooldown)}초 냉각 후 단일 워커 보수 모드로 전환합니다"
+        )
+
+    def delay_multiplier(self) -> float:
+        return 3.0 if self.degraded else 1.0
+
+    async def wait_turn(self, worker_index: int) -> None:
+        while True:
+            remaining = self.cooldown_until - time.monotonic()
+            if remaining > 0:
+                await asyncio.sleep(min(remaining, 5.0))
+                continue
+            if self.degraded and worker_index != 0:
+                # 보수 모드에서는 0번 워커만 진행하고 나머지는 복귀를 기다린다.
+                await asyncio.sleep(5.0)
+                continue
+            return
+
+
+def is_benign_case_error(exc: Exception) -> bool:
+    """사이트가 정상 응답한 실패(사건 없음·형식 오류 등)는 차단 징후가 아니다."""
+    return isinstance(exc, (LookupError, ValueError, KeyError))
 
 
 @dataclass(slots=True)
@@ -78,6 +152,7 @@ class CourtAuctionDetailCrawler:
         include_inactive: bool = False,
         force: bool = False,
         item_key: str = "",
+        workers: int = 3,
     ) -> DetailCollectionSummary:
         targets = self.store.list_detail_targets(
             limit=limit,
@@ -96,30 +171,66 @@ class CourtAuctionDetailCrawler:
 
         self.asset_dir.mkdir(parents=True, exist_ok=True)
         _prefer_local_browser_cache()
+        total_cases = len(grouped)
+        queue: asyncio.Queue[tuple[tuple[str, str], list[dict[str, Any]]]] = asyncio.Queue()
+        for entry in grouped.items():
+            queue.put_nowait(entry)
+        progress = {"index": 0}
+        worker_count = max(1, min(workers, total_cases))
+        governor = HealthGovernor()
+
         async with async_playwright() as playwright:
             browser = await playwright.chromium.launch(headless=not self.headful)
-            page = await browser.new_page(viewport={"width": 1440, "height": 1100})
+
+            # 워커마다 독립 컨텍스트(쿠키·세션 분리)를 써서 서로 다른 사건을
+            # 동시에 처리한다. 워커별 예의 delay는 그대로 유지되므로 사이트
+            # 입장에서는 동시 사용자 worker_count명 수준이다.
+            async def run_worker(worker_index: int) -> None:
+                context = await browser.new_context(viewport={"width": 1440, "height": 1100})
+                page = await context.new_page()
+                try:
+                    while True:
+                        await governor.wait_turn(worker_index)
+                        try:
+                            (court, case_no), case_targets = queue.get_nowait()
+                        except asyncio.QueueEmpty:
+                            break
+                        progress["index"] += 1
+                        summary.cases += 1
+                        print(
+                            f"[상세 {progress['index']}/{total_cases}] {court} {case_no} "
+                            f"({len(case_targets)}개 물건)"
+                        )
+                        try:
+                            result = await self._collect_case(page, court, case_no, case_targets)
+                        except Exception as exc:
+                            error = str(exc)[:500]
+                            for target in case_targets:
+                                self.store.mark_detail_failure(target["item_key"], error)
+                                summary.failed += 1
+                            print(f"  !! 상세 수집 실패: {error}")
+                            if is_benign_case_error(exc):
+                                governor.record_healthy()
+                            else:
+                                governor.record_distress()
+                            await page.wait_for_timeout(
+                                int(self.delay * 1000 * governor.delay_multiplier())
+                            )
+                            continue
+                        governor.record_healthy()
+                        summary.collected += result["collected"]
+                        summary.failed += result["failed"]
+                        summary.unavailable += result["unavailable"]
+                        summary.documents_collected += result["documents_collected"]
+                        summary.documents_pending += result["documents_pending"]
+                        await page.wait_for_timeout(
+                            int(self.delay * 1000 * governor.delay_multiplier())
+                        )
+                finally:
+                    await context.close()
+
             try:
-                total_cases = len(grouped)
-                for index, ((court, case_no), case_targets) in enumerate(grouped.items(), start=1):
-                    summary.cases += 1
-                    print(f"[상세 {index}/{total_cases}] {court} {case_no} ({len(case_targets)}개 물건)")
-                    try:
-                        result = await self._collect_case(page, court, case_no, case_targets)
-                    except Exception as exc:
-                        error = str(exc)[:500]
-                        for target in case_targets:
-                            self.store.mark_detail_failure(target["item_key"], error)
-                            summary.failed += 1
-                        print(f"  !! 상세 수집 실패: {error}")
-                        await page.wait_for_timeout(int(self.delay * 1000))
-                        continue
-                    summary.collected += result["collected"]
-                    summary.failed += result["failed"]
-                    summary.unavailable += result["unavailable"]
-                    summary.documents_collected += result["documents_collected"]
-                    summary.documents_pending += result["documents_pending"]
-                    await page.wait_for_timeout(int(self.delay * 1000))
+                await asyncio.gather(*(run_worker(index) for index in range(worker_count)))
             finally:
                 await browser.close()
         return summary
@@ -406,7 +517,14 @@ class CourtAuctionDetailCrawler:
                         await visible_button.click()
                     popup = await popup_info.value
                     await popup.wait_for_load_state("domcontentloaded", timeout=20_000)
-                    await popup.wait_for_timeout(1_500)
+                    try:
+                        await popup.wait_for_function(
+                            "() => document.body && document.body.innerText.trim().length > 40",
+                            timeout=6_000,
+                        )
+                    except PlaywrightTimeoutError:
+                        pass
+                    await popup.wait_for_timeout(200)
                     metadata = await extract_tables(popup)
                     title = find_document_title(metadata) or document_type
                     download = (
@@ -447,7 +565,7 @@ class CourtAuctionDetailCrawler:
             finally:
                 if popup is not None and not popup.is_closed():
                     await popup.close()
-            await page.wait_for_timeout(1_000)
+            await page.wait_for_timeout(500)
         return result
 
     async def _download_resource(
@@ -481,7 +599,12 @@ class CourtAuctionDetailCrawler:
         await button.click()
         dialog = page.locator("[role='dialog']:visible").last
         await dialog.wait_for(state="visible", timeout=15_000)
-        await page.wait_for_timeout(800)
+        # 고정 대기 대신 다이얼로그에 내용이 붙는 것을 확인한다.
+        try:
+            await dialog.locator("table, iframe, p, pre").first.wait_for(state="attached", timeout=5_000)
+        except PlaywrightTimeoutError:
+            pass
+        await page.wait_for_timeout(200)
         try:
             metadata: dict[str, Any] = {
                 "tables": await extract_tables_from_locator(dialog),
@@ -493,7 +616,15 @@ class CourtAuctionDetailCrawler:
                 frame = await handle.content_frame() if handle is not None else None
                 if frame is not None:
                     await frame.wait_for_load_state("domcontentloaded", timeout=20_000)
-                    await frame.wait_for_timeout(1_500)
+                    try:
+                        await frame.wait_for_function(
+                            "() => (document.body && document.body.innerText.trim().length > 40)"
+                            " || document.querySelector('table, embed, object, img')",
+                            timeout=6_000,
+                        )
+                    except PlaywrightTimeoutError:
+                        pass
+                    await frame.wait_for_timeout(200)
                     metadata["iframe"] = {
                         "url": frame.url,
                         "tables": await extract_tables(frame),
@@ -616,7 +747,7 @@ class CourtAuctionDetailCrawler:
         if not await locator.count():
             return False
         await locator.first.click()
-        await page.wait_for_timeout(500)
+        await page.wait_for_timeout(300)
         return True
 
     async def _save_photos(
@@ -897,6 +1028,7 @@ def collect_details_sync(
     headful: bool = False,
     collect_documents: bool = True,
     download_document_files: bool = False,
+    workers: int = 3,
 ) -> DetailCollectionSummary:
     with _detail_singleton_lock(store) as acquired:
         if not acquired:
@@ -916,5 +1048,6 @@ def collect_details_sync(
                 include_inactive=include_inactive,
                 force=force,
                 item_key=item_key,
+                workers=workers,
             )
         )
