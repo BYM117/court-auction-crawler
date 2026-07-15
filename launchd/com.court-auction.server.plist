@@ -5,21 +5,23 @@
 <dict>
   <key>Label</key>
   <string>com.court-auction.server</string>
+  <!-- 문서 폴더는 TCC 보호 대상이라 launchd가 직접 chdir·로그 열기를 못 한다.
+       전체 디스크 접근이 부여된 zsh 안에서 cd와 리다이렉션을 수행한다. -->
   <key>ProgramArguments</key>
   <array>
     <string>/bin/zsh</string>
     <string>-lc</string>
-    <string>cd "/Users/bym/Documents/경매물건 크롤링" &amp;&amp; exec /bin/zsh scripts/run_server.sh</string>
+    <string>cd "/Users/bym/Documents/경매물건 크롤링" &amp;&amp; exec /bin/zsh scripts/run_server.sh >> logs/server.log 2>> logs/server.err.log</string>
   </array>
-  <key>WorkingDirectory</key>
-  <string>/Users/bym/Documents/경매물건 크롤링</string>
   <key>StandardOutPath</key>
-  <string>/Users/bym/Documents/경매물건 크롤링/logs/server.log</string>
+  <string>/Users/bym/Library/Logs/court-auction/server.launchd.log</string>
   <key>StandardErrorPath</key>
-  <string>/Users/bym/Documents/경매물건 크롤링/logs/server.err.log</string>
+  <string>/Users/bym/Library/Logs/court-auction/server.launchd.err.log</string>
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>
   <true/>
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
 </dict>
 </plist>
