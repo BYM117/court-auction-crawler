@@ -366,9 +366,15 @@ def main(argv: list[str] | None = None) -> int:
             )
             if not args.loop:
                 return 0
+            # 자가 복구로 중단된 패스는 새 브라우저로 곧바로 재개하고,
             # 대상을 처리했으면 그 사이 쌓인 신건을 바로 다시 확인하고,
             # 비어 있었으면 idle 간격만큼 쉬었다가 재시도 도래분을 확인한다.
-            wait_minutes = 1.0 if summary.targets else args.idle_minutes
+            if summary.aborted:
+                wait_minutes = 0.5
+            elif summary.targets:
+                wait_minutes = 1.0
+            else:
+                wait_minutes = args.idle_minutes
             print(f"다음 패스까지 {wait_minutes:g}분 대기 (--loop)")
             time.sleep(wait_minutes * 60)
 

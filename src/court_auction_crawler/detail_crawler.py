@@ -58,20 +58,29 @@ class HealthGovernor:
         base_cooldown_seconds: float = 60.0,
         max_cooldown_seconds: float = 900.0,
         recovery_streak: int = 10,
+        stall_limit_seconds: float = 1800.0,
+        min_attempts_for_stall: int = 5,
     ) -> None:
         self.trip_threshold = trip_threshold
         self.base_cooldown_seconds = base_cooldown_seconds
         self.max_cooldown_seconds = max_cooldown_seconds
         self.recovery_streak = recovery_streak
+        self.stall_limit_seconds = stall_limit_seconds
+        self.min_attempts_for_stall = min_attempts_for_stall
         self.distress_count = 0
         self.success_streak = 0
         self.trips = 0
         self.degraded = False
         self.cooldown_until = 0.0
+        self.last_healthy_at = time.monotonic()
+        self.attempts_since_healthy = 0
+        self.abort_requested = False
 
     def record_healthy(self) -> None:
         self.distress_count = 0
         self.success_streak += 1
+        self.last_healthy_at = time.monotonic()
+        self.attempts_since_healthy = 0
         if self.degraded and self.success_streak >= self.recovery_streak:
             self.degraded = False
             self.success_streak = 0
@@ -80,6 +89,7 @@ class HealthGovernor:
     def record_distress(self) -> None:
         self.success_streak = 0
         self.distress_count += 1
+        self.attempts_since_healthy += 1
         if self.distress_count < self.trip_threshold:
             return
         self.distress_count = 0
@@ -98,8 +108,17 @@ class HealthGovernor:
     def delay_multiplier(self) -> float:
         return 3.0 if self.degraded else 1.0
 
+    def is_stalled(self, now: float | None = None) -> bool:
+        """정상 수집이 stall_limit 동안 한 건도 없으면(시도는 있었는데) 갇힌 상태다.
+        브라우저 세션 오염 등으로 보수 모드에서 영원히 못 빠져나오는 경우를 잡는다."""
+        current = time.monotonic() if now is None else now
+        return (
+            self.attempts_since_healthy >= self.min_attempts_for_stall
+            and current - self.last_healthy_at > self.stall_limit_seconds
+        )
+
     async def wait_turn(self, worker_index: int) -> None:
-        while True:
+        while not self.abort_requested:
             remaining = self.cooldown_until - time.monotonic()
             if remaining > 0:
                 await asyncio.sleep(min(remaining, 5.0))
@@ -125,6 +144,7 @@ class DetailCollectionSummary:
     unavailable: int = 0
     documents_collected: int = 0
     documents_pending: int = 0
+    aborted: bool = False  # 자가 복구로 패스를 중단함 — 곧바로 새 패스를 시작해야 한다
 
 
 class CourtAuctionDetailCrawler:
@@ -189,8 +209,10 @@ class CourtAuctionDetailCrawler:
                 context = await browser.new_context(viewport={"width": 1440, "height": 1100})
                 page = await context.new_page()
                 try:
-                    while True:
+                    while not governor.abort_requested:
                         await governor.wait_turn(worker_index)
+                        if governor.abort_requested:
+                            break
                         try:
                             (court, case_no), case_targets = queue.get_nowait()
                         except asyncio.QueueEmpty:
@@ -229,10 +251,38 @@ class CourtAuctionDetailCrawler:
                 finally:
                     await context.close()
 
+            async def watchdog() -> None:
+                # 브라우저 세션 오염 등으로 정상 수집이 장시간 끊기면 거버너의
+                # 보수 모드만으로는 못 빠져나온다(실측: 이틀 정체). 이번 패스를
+                # 중단시켜 새 브라우저로 재시작하고, 워커가 그마저 못 멈추면
+                # 프로세스를 종료해 launchd가 깨끗하게 되살리게 한다.
+                hard_deadline: float | None = None
+                while True:
+                    await asyncio.sleep(15)
+                    now = time.monotonic()
+                    if not governor.abort_requested and governor.is_stalled(now):
+                        governor.abort_requested = True
+                        summary.aborted = True
+                        hard_deadline = now + 180
+                        print(
+                            "!! 자가 복구: "
+                            f"{int(governor.stall_limit_seconds // 60)}분 이상 정상 수집 없음 -> "
+                            "이번 패스를 중단하고 브라우저를 새로 엽니다"
+                        )
+                    if hard_deadline is not None and now > hard_deadline:
+                        print("!! 자가 복구 실패(워커 미응답) -> 프로세스를 종료합니다. launchd가 재시작합니다")
+                        os._exit(75)
+
+            watchdog_task = asyncio.create_task(watchdog())
             try:
                 await asyncio.gather(*(run_worker(index) for index in range(worker_count)))
             finally:
-                await browser.close()
+                # 워치독은 browser.close()가 행에 걸리는 경우까지 지켜야 하므로
+                # 브라우저를 닫은 뒤에 취소한다.
+                try:
+                    await browser.close()
+                finally:
+                    watchdog_task.cancel()
         return summary
 
     async def _collect_case(
@@ -362,29 +412,38 @@ class CourtAuctionDetailCrawler:
     async def _select_court_option(self, page: Page, court: str) -> None:
         """목록 화면은 '동부지원'처럼 축약된 법원명을 쓰는데 사건검색 셀렉트는
         '부산동부지원' 같은 전체 명칭이라 라벨 완전일치가 실패한다. 포함 관계로 매칭한다."""
-        selected = await page.evaluate(
+        result = await page.evaluate(
             """
             ({ selector, court }) => {
               const select = document.querySelector(selector);
-              if (!select) return '';
+              if (!select) return { state: 'no_select', optionCount: 0 };
               const options = [...select.options];
               const labelOf = (option) => (option.textContent || '').trim();
               const option =
                 options.find((item) => labelOf(item) === court)
                 || options.find((item) => labelOf(item).includes(court))
                 || options.find((item) => labelOf(item).length >= 3 && court.includes(labelOf(item)));
-              if (!option) return '';
+              if (!option) return { state: 'no_match', optionCount: options.length };
               select.value = option.value;
               select.dispatchEvent(new Event('change', { bubbles: true }));
               select.dispatchEvent(new Event('input', { bubbles: true }));
-              return labelOf(option);
+              return { state: 'ok', label: labelOf(option) };
             }
             """,
             {"selector": COURT_SELECTOR, "court": court},
         )
-        if not selected:
-            raise LookupError(f"사건검색 법원 옵션을 찾지 못함: {court}")
-        await page.wait_for_timeout(300)
+        state = result.get("state") if isinstance(result, dict) else ""
+        if state == "ok":
+            await page.wait_for_timeout(300)
+            return
+        if state == "no_match" and int(result.get("optionCount", 0)) > 1:
+            # 옵션은 정상 로드됐는데 이름이 안 맞는 것 — 데이터 문제(양성 오류)
+            raise LookupError(f"사건검색 법원 옵션에 없음: {court}")
+        # 셀렉트가 없거나 옵션이 비어 있으면 화면 미로딩 — 인프라 장애로 취급해
+        # 거버너가 차단 징후로 세도록 한다 (양성으로 분류하면 정체를 못 잡는다)
+        raise RuntimeError(
+            f"사건검색 화면 미로딩 (법원 옵션 {int(result.get('optionCount', 0))}개): {court}"
+        )
 
     async def _open_case_search(self, page: Page) -> None:
         # SPA라 URL로는 화면 상태를 알 수 없다. 이전 사건의 상세 화면에 남아 있으면

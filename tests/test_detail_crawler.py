@@ -77,6 +77,38 @@ class DetailCrawlerHelperTests(unittest.TestCase):
         self.assertAlmostEqual(first, 60, delta=2)
         self.assertAlmostEqual(second, 120, delta=2)
 
+    def test_governor_detects_stall_only_after_attempts_and_time(self):
+        import time as time_module
+
+        governor = HealthGovernor(stall_limit_seconds=1800, min_attempts_for_stall=5)
+        now = time_module.monotonic()
+
+        # 시도가 없으면(유휴 대기) 아무리 오래돼도 정체가 아니다
+        governor.last_healthy_at = now - 10_000
+        self.assertFalse(governor.is_stalled(now))
+
+        # 시도가 쌓였고 시간이 지나면 정체
+        for _ in range(5):
+            governor.record_distress()
+        governor.last_healthy_at = now - 1801
+        self.assertTrue(governor.is_stalled(now))
+
+        # 정상 수집이 한 건이라도 나오면 리셋
+        governor.record_healthy()
+        self.assertFalse(governor.is_stalled(time_module.monotonic()))
+
+    def test_governor_wait_turn_returns_immediately_on_abort(self):
+        import asyncio
+
+        governor = HealthGovernor()
+        governor.degraded = True  # 평소라면 1번 워커는 여기서 무한 대기
+        governor.abort_requested = True
+
+        async def run():
+            await asyncio.wait_for(governor.wait_turn(1), timeout=2)
+
+        asyncio.run(run())  # 타임아웃 없이 즉시 반환되어야 한다
+
     def test_benign_errors_are_not_blocking_signals(self):
         self.assertTrue(is_benign_case_error(LookupError("사건 검색 결과 없음")))
         self.assertTrue(is_benign_case_error(ValueError("사건번호 형식 오류")))
