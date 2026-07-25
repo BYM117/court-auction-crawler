@@ -144,6 +144,8 @@ class AuctionStore:
                     ON auction_items(sale_date);
                 CREATE INDEX IF NOT EXISTS idx_auction_items_status
                     ON auction_items(status);
+                CREATE INDEX IF NOT EXISTS idx_auction_items_source
+                    ON auction_items(source);
                 CREATE INDEX IF NOT EXISTS idx_auction_items_coordinates
                     ON auction_items(lat, lng);
                 CREATE TABLE IF NOT EXISTS auction_events (
@@ -1148,7 +1150,10 @@ class AuctionStore:
                 ),
             )
 
-    def stats(self) -> dict[str, Any]:
+    def stats(self, include_detail_breakdown: bool = False) -> dict[str, Any]:
+        # 대시보드가 5초마다 폴링하는 경로다. auction_documents GROUP BY(수만 건,
+        # 상세수집기 동시 쓰기 경합)는 42초까지 걸려 서버 전체를 마비시키므로
+        # 기본 통계에서 제외하고, 필요할 때만 include_detail_breakdown으로 계산한다.
         with self.connect() as conn:
             total = conn.execute("SELECT COUNT(*) AS count FROM auction_items").fetchone()["count"]
             latest = conn.execute(
@@ -1188,23 +1193,30 @@ class AuctionStore:
                 """,
                 (utc_now(),),
             ).fetchone()["count"]
-            by_detail_status = conn.execute(
-                """
-                SELECT COALESCE(NULLIF(detail_status, ''), 'pending') AS name, COUNT(*) AS count
-                  FROM auction_items
-                 GROUP BY COALESCE(NULLIF(detail_status, ''), 'pending')
-                 ORDER BY count DESC
-                """
-            ).fetchall()
-            by_document_status = conn.execute(
-                """
-                SELECT status AS name, COUNT(*) AS count
-                  FROM auction_documents
-                 GROUP BY status
-                 ORDER BY count DESC
-                """
-            ).fetchall()
-            asset_count = conn.execute("SELECT COUNT(*) AS count FROM auction_assets").fetchone()["count"]
+            detail_breakdown: dict[str, Any] = {}
+            if include_detail_breakdown:
+                by_detail_status = conn.execute(
+                    """
+                    SELECT COALESCE(NULLIF(detail_status, ''), 'pending') AS name, COUNT(*) AS count
+                      FROM auction_items
+                     GROUP BY COALESCE(NULLIF(detail_status, ''), 'pending')
+                     ORDER BY count DESC
+                    """
+                ).fetchall()
+                by_document_status = conn.execute(
+                    """
+                    SELECT status AS name, COUNT(*) AS count
+                      FROM auction_documents
+                     GROUP BY status
+                     ORDER BY count DESC
+                    """
+                ).fetchall()
+                asset_count = conn.execute("SELECT COUNT(*) AS count FROM auction_assets").fetchone()["count"]
+                detail_breakdown = {
+                    "by_detail_status": [dict(row) for row in by_detail_status],
+                    "by_document_status": [dict(row) for row in by_document_status],
+                    "asset_count": asset_count,
+                }
 
         latest_dict = dict(latest) if latest else None
         if latest_dict:
@@ -1216,9 +1228,7 @@ class AuctionStore:
             "by_source": [dict(row) for row in by_source],
             "active": active,
             "due": due,
-            "by_detail_status": [dict(row) for row in by_detail_status],
-            "by_document_status": [dict(row) for row in by_document_status],
-            "asset_count": asset_count,
+            **detail_breakdown,
         }
 
     def apply_lifecycle(
