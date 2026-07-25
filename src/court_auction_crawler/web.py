@@ -644,6 +644,70 @@ class AuctionWebHandler(BaseHTTPRequestHandler):
         }
 
 
+class DbHealthWatchdog:
+    """서버 프로세스의 DB 접근이 살아있는지 주기적으로 확인한다.
+
+    맥 잠자기에서 깨어나면 오래된 서버 프로세스의 SQLite 파일 핸들이 깨져
+    'unable to open database file'이 나고, 이 상태로는 재시작 전까지 회복되지
+    않는다(실측: 매일 재발). 연속 실패가 임계치를 넘으면 프로세스를 종료해
+    launchd KeepAlive가 깨끗한 새 프로세스로 되살리게 한다."""
+
+    def __init__(
+        self,
+        store: AuctionStore,
+        *,
+        interval_seconds: float = 60.0,
+        fail_limit: int = 3,
+        on_unhealthy: Any = None,
+    ) -> None:
+        self.store = store
+        self.interval_seconds = interval_seconds
+        self.fail_limit = fail_limit
+        self.on_unhealthy = on_unhealthy or (lambda: os._exit(75))
+        self.consecutive_failures = 0
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def check_once(self) -> bool:
+        try:
+            self.store.healthcheck()
+        except Exception as exc:
+            self.consecutive_failures += 1
+            print(
+                f"!! DB 헬스체크 실패 {self.consecutive_failures}/{self.fail_limit}: "
+                f"{str(exc)[:150]}",
+                flush=True,
+            )
+            return False
+        if self.consecutive_failures:
+            print("== DB 헬스체크 회복 ==", flush=True)
+        self.consecutive_failures = 0
+        return True
+
+    def should_abort(self) -> bool:
+        return self.consecutive_failures >= self.fail_limit
+
+    def start(self) -> None:
+        if self._thread and self._thread.is_alive():
+            return
+        self._thread = threading.Thread(target=self._loop, name="db-health-watchdog", daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+
+    def _loop(self) -> None:
+        while not self._stop.wait(self.interval_seconds):
+            self.check_once()
+            if self.should_abort():
+                print(
+                    "!! DB 접근 불가 지속 -> 서버를 종료합니다. launchd가 재시작합니다",
+                    flush=True,
+                )
+                self.on_unhealthy()
+                return
+
+
 def run_server(
     store: AuctionStore,
     host: str,
@@ -660,10 +724,13 @@ def run_server(
     server = ThreadingHTTPServer((host, port), handler)
     if runner:
         runner.start()
+    watchdog = DbHealthWatchdog(store)
+    watchdog.start()
     previous_sigint = signal.getsignal(signal.SIGINT)
     previous_sigterm = signal.getsignal(signal.SIGTERM)
 
     def handle_shutdown_signal(signum: int, _frame: Any) -> None:
+        watchdog.stop()
         if runner:
             runner.stop()
         collector_runner.shutdown()
@@ -677,6 +744,7 @@ def run_server(
     finally:
         signal.signal(signal.SIGINT, previous_sigint)
         signal.signal(signal.SIGTERM, previous_sigterm)
+        watchdog.stop()
         if runner:
             runner.stop()
         collector_runner.shutdown()

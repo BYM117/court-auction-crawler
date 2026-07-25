@@ -1150,6 +1150,12 @@ class AuctionStore:
                 ),
             )
 
+    def healthcheck(self) -> None:
+        """DB를 실제로 열어 가벼운 쿼리를 던진다. 좀비(핸들 깨짐) 상태면 여기서
+        sqlite3.OperationalError가 난다. 워치독이 이걸로 서버 상태를 판정한다."""
+        with self.connect() as conn:
+            conn.execute("SELECT 1").fetchone()
+
     def stats(self, include_detail_breakdown: bool = False) -> dict[str, Any]:
         # 대시보드가 5초마다 폴링하는 경로다. auction_documents GROUP BY(수만 건,
         # 상세수집기 동시 쓰기 경합)는 42초까지 걸려 서버 전체를 마비시키므로

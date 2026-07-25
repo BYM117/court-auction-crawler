@@ -10,6 +10,7 @@ from court_auction_crawler.store import AuctionStore
 from court_auction_crawler.web import (
     AuctionWebHandler,
     CollectorControlRunner,
+    DbHealthWatchdog,
     collect_log_status,
     control_api_key_valid,
     openapi_schema,
@@ -183,6 +184,49 @@ class WebApiTests(unittest.TestCase):
         self.assertEqual(payload["current"], "3시간 주기 대기 중")
         self.assertEqual(payload["last_result"], "===== 다음 자동 수집까지 10800초 대기 =====")
         self.assertEqual(payload["progress_percent"], 100)
+
+    def test_healthcheck_watchdog_aborts_after_consecutive_failures(self):
+        class BrokenStore:
+            def healthcheck(self):
+                raise OperationalError("unable to open database file")
+
+        from sqlite3 import OperationalError
+
+        aborted = []
+        watchdog = DbHealthWatchdog(
+            BrokenStore(), fail_limit=3, on_unhealthy=lambda: aborted.append(True)
+        )
+
+        self.assertFalse(watchdog.check_once())
+        self.assertFalse(watchdog.should_abort())
+        self.assertFalse(watchdog.check_once())
+        self.assertFalse(watchdog.check_once())
+        self.assertTrue(watchdog.should_abort())
+
+    def test_healthcheck_watchdog_resets_on_recovery(self):
+        class FlakyStore:
+            def __init__(self):
+                self.healthy = False
+
+            def healthcheck(self):
+                if not self.healthy:
+                    raise RuntimeError("temporary")
+
+        store = FlakyStore()
+        watchdog = DbHealthWatchdog(store, fail_limit=3)
+
+        watchdog.check_once()
+        watchdog.check_once()
+        self.assertEqual(watchdog.consecutive_failures, 2)
+
+        store.healthy = True
+        self.assertTrue(watchdog.check_once())
+        self.assertEqual(watchdog.consecutive_failures, 0)
+        self.assertFalse(watchdog.should_abort())
+
+    def test_healthcheck_passes_on_real_store(self):
+        watchdog = DbHealthWatchdog(self.store)
+        self.assertTrue(watchdog.check_once())
 
     def test_collect_log_status_prefers_live_process_over_stale_log_age(self):
         log_path = Path(self.tmp.name) / "collect-all.log"
