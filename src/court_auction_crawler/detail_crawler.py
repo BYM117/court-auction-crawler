@@ -60,6 +60,9 @@ class HealthGovernor:
         recovery_streak: int = 10,
         stall_limit_seconds: float = 1800.0,
         min_attempts_for_stall: int = 5,
+        throughput_window_seconds: float = 900.0,
+        min_throughput_attempts: int = 8,
+        min_throughput_success_ratio: float = 0.25,
     ) -> None:
         self.trip_threshold = trip_threshold
         self.base_cooldown_seconds = base_cooldown_seconds
@@ -67,6 +70,9 @@ class HealthGovernor:
         self.recovery_streak = recovery_streak
         self.stall_limit_seconds = stall_limit_seconds
         self.min_attempts_for_stall = min_attempts_for_stall
+        self.throughput_window_seconds = throughput_window_seconds
+        self.min_throughput_attempts = min_throughput_attempts
+        self.min_throughput_success_ratio = min_throughput_success_ratio
         self.distress_count = 0
         self.success_streak = 0
         self.trips = 0
@@ -75,12 +81,18 @@ class HealthGovernor:
         self.last_healthy_at = time.monotonic()
         self.attempts_since_healthy = 0
         self.abort_requested = False
+        # 처리량(성공률) 측정 창: 반오염(느리게라도 간간이 성공)을 잡는다.
+        self.window_start = time.monotonic()
+        self.window_success = 0
+        self.window_attempts = 0
 
     def record_healthy(self) -> None:
         self.distress_count = 0
         self.success_streak += 1
         self.last_healthy_at = time.monotonic()
         self.attempts_since_healthy = 0
+        self.window_success += 1
+        self.window_attempts += 1
         if self.degraded and self.success_streak >= self.recovery_streak:
             self.degraded = False
             self.success_streak = 0
@@ -90,6 +102,7 @@ class HealthGovernor:
         self.success_streak = 0
         self.distress_count += 1
         self.attempts_since_healthy += 1
+        self.window_attempts += 1
         if self.distress_count < self.trip_threshold:
             return
         self.distress_count = 0
@@ -116,6 +129,22 @@ class HealthGovernor:
             self.attempts_since_healthy >= self.min_attempts_for_stall
             and current - self.last_healthy_at > self.stall_limit_seconds
         )
+
+    def is_throughput_degraded(self, now: float | None = None) -> bool:
+        """측정 창이 찰 때마다 성공률을 평가한다. 완전 정체(is_stalled)는 아니지만
+        느리게라도 간간이 성공하는 '반오염' 상태(맥 잠자기 복귀 후 흔함)를 잡는다.
+        평가 시 창을 리셋하므로 워치독에서만 호출한다."""
+        current = time.monotonic() if now is None else now
+        if current - self.window_start < self.throughput_window_seconds:
+            return False
+        attempts = self.window_attempts
+        success = self.window_success
+        self.window_start = current
+        self.window_attempts = 0
+        self.window_success = 0
+        if attempts < self.min_throughput_attempts:
+            return False
+        return success < attempts * self.min_throughput_success_ratio
 
     async def wait_turn(self, worker_index: int) -> None:
         while not self.abort_requested:
@@ -260,15 +289,21 @@ class CourtAuctionDetailCrawler:
                 while True:
                     await asyncio.sleep(15)
                     now = time.monotonic()
-                    if not governor.abort_requested and governor.is_stalled(now):
-                        governor.abort_requested = True
-                        summary.aborted = True
-                        hard_deadline = now + 180
-                        print(
-                            "!! 자가 복구: "
-                            f"{int(governor.stall_limit_seconds // 60)}분 이상 정상 수집 없음 -> "
-                            "이번 패스를 중단하고 브라우저를 새로 엽니다"
-                        )
+                    if not governor.abort_requested:
+                        stalled = governor.is_stalled(now)
+                        throttled = governor.is_throughput_degraded(now)
+                        if stalled or throttled:
+                            governor.abort_requested = True
+                            summary.aborted = True
+                            hard_deadline = now + 180
+                            reason = (
+                                f"{int(governor.stall_limit_seconds // 60)}분 이상 정상 수집 없음"
+                                if stalled
+                                else "성공률 급락(반오염 의심)"
+                            )
+                            print(
+                                f"!! 자가 복구: {reason} -> 이번 패스를 중단하고 브라우저를 새로 엽니다"
+                            )
                     if hard_deadline is not None and now > hard_deadline:
                         print("!! 자가 복구 실패(워커 미응답) -> 프로세스를 종료합니다. launchd가 재시작합니다")
                         os._exit(75)

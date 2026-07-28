@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
 import json
+import os
 from pathlib import Path
 import time
+from typing import Iterator
 import re
 from typing import Any
 
@@ -17,7 +20,7 @@ from .official_price import classify_official_kind, fetch_official_price
 from .parser import parse_items_from_html
 from .store import AuctionStore
 from .utils import parse_date
-from .web import WatchRunner, public_auction_summary, run_server
+from .web import CollectorControlRunner, WatchRunner, public_auction_summary, run_server
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -130,6 +133,14 @@ def build_parser() -> argparse.ArgumentParser:
         default="outputs/court-auctions.snapshot.json",
         help="스냅샷 JSON 저장 경로",
     )
+
+    collect_loop = subparsers.add_parser(
+        "collect-loop",
+        help="목록 수집을 주기적으로 반복하는 데몬(collector.enabled 존중, 단일 실행, 자가복구).",
+    )
+    collect_loop.add_argument("--db", default="data/auction.sqlite3", help="SQLite DB 경로")
+    collect_loop.add_argument("--geocode-limit", type=int, default=2000, help="사이클마다 좌표 변환할 최대 물건 수")
+    collect_loop.add_argument("--idle-minutes", type=float, default=15.0, help="수집이 꺼져 있을 때 재확인 간격(분)")
 
     lifecycle = subparsers.add_parser("lifecycle", help="매각기일이 지나고 새 기일이 없는 물건을 종결 처리합니다.")
     lifecycle.add_argument("--db", default="data/auction.sqlite3", help="SQLite DB 경로")
@@ -286,43 +297,8 @@ def main(argv: list[str] | None = None) -> int:
             scheduled_end_date=scheduled_end,
         )
         store = AuctionStore(args.db)
-        totals = {"inserted": 0, "updated": 0, "unchanged": 0}
-        court_counts: dict[tuple[str, str], int] = {}
-
-        def save_partition(partition, partition_items):
-            result = store.upsert_items(partition_items)
-            totals["inserted"] += result.inserted
-            totals["updated"] += result.updated
-            totals["unchanged"] += result.unchanged
-            key = (partition.source_mode or "current", partition.court)
-            court_counts[key] = court_counts.get(key, 0) + len(partition_items)
-            print(
-                f"  -> {len(partition_items)}개 반영 "
-                f"(신규 {result.inserted}, 변경 {result.updated}, 동일 {result.unchanged})"
-            )
-
-        items = collect_all_sync(options, on_partition=save_partition)
-        print(
-            f"{len(items)}개 물건 수집 완료: "
-            f"신규 {totals['inserted']}개, 변경 {totals['updated']}개, 동일 {totals['unchanged']}개"
-        )
-        # 커버리지 감시는 완주한 전체 수집(full: 예정 윈도우가 넓은 실행)끼리만 비교해야 의미가 있다.
-        if (scheduled_end - scheduled_start).days >= 120:
-            coverage_warnings = store.record_court_stats(court_counts)
-            print(f"법원별 수집 기록 저장: {len(court_counts)}개 (법원×구분)")
-            for warning in coverage_warnings:
-                print(f"!! 커버리지 경고: {warning}")
-        lifecycle = store.apply_lifecycle()
-        print(f"생명주기 정리: 활성 {lifecycle['checked']}개 중 {lifecycle['deactivated']}개 종결 처리")
-        if args.geocode_limit > 0:
-            geocoded = run_geocode_missing(store, limit=args.geocode_limit, quiet=True)
-            if geocoded.get("no_key"):
-                print("지오코딩 건너뜀: VWORLD_API_KEY가 없습니다 (.env 또는 환경변수).")
-            else:
-                print(
-                    f"지오코딩: 성공 {geocoded['updated']}개, 실패 {geocoded['missing']}개, "
-                    f"대상외 {geocoded['excluded']}개, 대상 {geocoded['targets']}개"
-                )
+        cycle = run_collect_cycle(store, options, geocode_limit=args.geocode_limit)
+        items = cycle["items"]
         if args.details:
             detail_summary = collect_details_sync(
                 store,
@@ -342,6 +318,13 @@ def main(argv: list[str] | None = None) -> int:
             output = save_items_to_excel(items, args.output)
             print(f"Excel 저장: {output}")
         return 0
+
+    if args.command == "collect-loop":
+        return run_collect_loop(
+            AuctionStore(args.db),
+            geocode_limit=args.geocode_limit,
+            idle_minutes=args.idle_minutes,
+        )
 
     if args.command == "collect-details":
         store = AuctionStore(args.db)
@@ -434,6 +417,155 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     raise ValueError(f"지원하지 않는 명령입니다: {args.command}")
+
+
+def run_collect_cycle(
+    store: AuctionStore,
+    options: SearchOptions,
+    *,
+    geocode_limit: int = 2000,
+    coverage_min_days: int = 120,
+) -> dict[str, Any]:
+    """목록 수집 한 사이클: 수집→커버리지 기록→생명주기→지오코딩.
+    collect-all(일회성)과 collect-loop(데몬)이 공유한다."""
+    totals = {"inserted": 0, "updated": 0, "unchanged": 0}
+    court_counts: dict[tuple[str, str], int] = {}
+
+    def save_partition(partition, partition_items):
+        result = store.upsert_items(partition_items)
+        totals["inserted"] += result.inserted
+        totals["updated"] += result.updated
+        totals["unchanged"] += result.unchanged
+        key = (partition.source_mode or "current", partition.court)
+        court_counts[key] = court_counts.get(key, 0) + len(partition_items)
+        print(
+            f"  -> {len(partition_items)}개 반영 "
+            f"(신규 {result.inserted}, 변경 {result.updated}, 동일 {result.unchanged})"
+        )
+
+    items = collect_all_sync(options, on_partition=save_partition)
+    print(
+        f"{len(items)}개 물건 수집 완료: "
+        f"신규 {totals['inserted']}개, 변경 {totals['updated']}개, 동일 {totals['unchanged']}개"
+    )
+    # 커버리지 감시는 완주한 전체 수집(예정 윈도우가 넓은 실행)끼리만 비교해야 의미가 있다.
+    scheduled_span = 0
+    if options.scheduled_start_date and options.scheduled_end_date:
+        scheduled_span = (options.scheduled_end_date - options.scheduled_start_date).days
+    if scheduled_span >= coverage_min_days:
+        coverage_warnings = store.record_court_stats(court_counts)
+        print(f"법원별 수집 기록 저장: {len(court_counts)}개 (법원×구분)")
+        for warning in coverage_warnings:
+            print(f"!! 커버리지 경고: {warning}")
+    lifecycle = store.apply_lifecycle()
+    print(f"생명주기 정리: 활성 {lifecycle['checked']}개 중 {lifecycle['deactivated']}개 종결 처리")
+    if geocode_limit > 0:
+        geocoded = run_geocode_missing(store, limit=geocode_limit, quiet=True)
+        if geocoded.get("no_key"):
+            print("지오코딩 건너뜀: VWORLD_API_KEY가 없습니다 (.env 또는 환경변수).")
+        else:
+            print(
+                f"지오코딩: 성공 {geocoded['updated']}개, 실패 {geocoded['missing']}개, "
+                f"대상외 {geocoded['excluded']}개, 대상 {geocoded['targets']}개"
+            )
+    return {"items": items, "totals": totals}
+
+
+@contextmanager
+def _collect_loop_lock(store: AuctionStore) -> Iterator[bool]:
+    """목록 수집 데몬 단일 실행 보장. pid 파일은 collect_log_status·서버 status가
+    수집 프로세스 생존 확인에도 함께 쓴다."""
+    lock_path = store.db_path.parent / "collect-all.pid"
+    try:
+        existing = int(lock_path.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        existing = None
+    if existing and existing != os.getpid():
+        try:
+            os.kill(existing, 0)
+            yield False
+            return
+        except ProcessLookupError:
+            pass
+        except PermissionError:
+            yield False
+            return
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path.write_text(f"{os.getpid()}\n", encoding="utf-8")
+    try:
+        yield True
+    finally:
+        try:
+            if int(lock_path.read_text(encoding="utf-8").strip()) == os.getpid():
+                lock_path.unlink()
+        except (OSError, ValueError):
+            pass
+
+
+def run_collect_loop(
+    store: AuctionStore,
+    *,
+    geocode_limit: int = 2000,
+    idle_minutes: float = 15.0,
+    max_consecutive_failures: int = 3,
+) -> int:
+    """목록 수집 상시 데몬. collector.enabled가 켜져 있을 때만 수집하고,
+    3시간(quick)/24시간(full) 주기를 자동 판단한다. 연속 실패가 쌓이면 프로세스를
+    종료해 launchd가 깨끗하게 되살린다(맥 잠자기 후 좀비 방어)."""
+    controller = CollectorControlRunner(store)
+    with _collect_loop_lock(store) as acquired:
+        if not acquired:
+            print("목록 수집 데몬이 이미 실행 중이라 종료합니다 (data/collect-all.pid).", flush=True)
+            return 0
+        consecutive_failures = 0
+        while True:
+            if not controller.enabled:
+                print(f"===== 자동 수집 꺼짐 - {idle_minutes:g}분 후 재확인 =====", flush=True)
+                time.sleep(idle_minutes * 60)
+                continue
+
+            run_kind = controller.next_run_kind()
+            window = controller.collection_window(run_kind)
+            print(
+                f"===== 자동 수집 시작 {time.strftime('%Y-%m-%d %H:%M:%S')} "
+                f"mode={run_kind} current={window['current_start']}~{window['current_end']} "
+                f"scheduled={window['scheduled_start']}~{window['scheduled_end']} =====",
+                flush=True,
+            )
+            options = SearchOptions(
+                auto_search=True,
+                max_pages=50,
+                delay=2.0,
+                date_chunk_days=31,
+                collection_mode="both",
+                current_start_date=parse_date(window["current_start"]),
+                current_end_date=parse_date(window["current_end"]),
+                scheduled_start_date=parse_date(window["scheduled_start"]),
+                scheduled_end_date=parse_date(window["scheduled_end"]),
+            )
+            try:
+                run_collect_cycle(store, options, geocode_limit=geocode_limit)
+                consecutive_failures = 0
+                if run_kind == "full":
+                    controller.record_full_run()
+            except Exception as exc:  # noqa: BLE001 - 데몬은 어떤 실패에도 죽지 않고 자가복구
+                consecutive_failures += 1
+                print(f"===== 자동 수집 실패({consecutive_failures}/{max_consecutive_failures}): {exc} =====", flush=True)
+                if consecutive_failures >= max_consecutive_failures:
+                    print("===== 연속 실패 지속 -> 프로세스 종료(launchd 재시작) =====", flush=True)
+                    os._exit(75)
+
+            interval = controller.interval_seconds
+            print(
+                f"===== 자동 수집 종료 {time.strftime('%Y-%m-%d %H:%M:%S')} exit=0; "
+                f"{interval}초 후 재시작 =====",
+                flush=True,
+            )
+            print(f"===== 다음 자동 수집까지 {interval}초 대기 =====", flush=True)
+            waited = 0
+            while waited < interval and controller.enabled:
+                time.sleep(min(30, interval - waited))
+                waited += 30
 
 
 def build_snapshot_payload(store: AuctionStore) -> dict[str, Any]:

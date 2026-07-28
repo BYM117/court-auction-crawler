@@ -109,6 +109,45 @@ class DetailCrawlerHelperTests(unittest.TestCase):
 
         asyncio.run(run())  # 타임아웃 없이 즉시 반환되어야 한다
 
+    def test_governor_detects_throughput_degradation(self):
+        # 반오염: 완전 정체는 아니지만 성공률이 급락한 상태
+        governor = HealthGovernor(
+            throughput_window_seconds=100,
+            min_throughput_attempts=8,
+            min_throughput_success_ratio=0.25,
+        )
+        base = governor.window_start
+
+        # 창이 차기 전에는 평가하지 않는다
+        for _ in range(3):
+            governor.record_distress()
+        self.assertFalse(governor.is_throughput_degraded(base + 50))
+
+        # 창이 찬 시점: 시도 10회 중 성공 1회(10%) < 25% -> 반오염
+        governor.window_start = base
+        governor.window_attempts = 10
+        governor.window_success = 1
+        self.assertTrue(governor.is_throughput_degraded(base + 101))
+
+    def test_governor_throughput_ok_when_success_ratio_healthy(self):
+        governor = HealthGovernor(
+            throughput_window_seconds=100,
+            min_throughput_attempts=8,
+            min_throughput_success_ratio=0.25,
+        )
+        base = governor.window_start
+        governor.window_attempts = 10
+        governor.window_success = 9  # 90% 성공
+        self.assertFalse(governor.is_throughput_degraded(base + 101))
+
+    def test_governor_throughput_ignores_small_samples(self):
+        # 시도 자체가 적으면(유휴 등) 반오염으로 판정하지 않는다
+        governor = HealthGovernor(throughput_window_seconds=100, min_throughput_attempts=8)
+        base = governor.window_start
+        governor.window_attempts = 3
+        governor.window_success = 0
+        self.assertFalse(governor.is_throughput_degraded(base + 101))
+
     def test_benign_errors_are_not_blocking_signals(self):
         self.assertTrue(is_benign_case_error(LookupError("사건 검색 결과 없음")))
         self.assertTrue(is_benign_case_error(ValueError("사건번호 형식 오류")))

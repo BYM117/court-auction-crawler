@@ -5,14 +5,14 @@ SCRIPT_DIR="${0:A:h}"
 PROJECT_ROOT="${COURT_AUCTION_WORKSPACE:-${SCRIPT_DIR:h}}"
 cd "$PROJECT_ROOT"
 
-INTERVAL_SECONDS="${COURT_AUCTION_INTERVAL_SECONDS:-10800}"
-mkdir -p logs
+export PYTHONUNBUFFERED=1
+export PYTHONPATH=src
+export PLAYWRIGHT_BROWSERS_PATH=.playwright-browsers
 
-while true; do
-  : > logs/collect-all.err.log
-  echo "===== 자동 수집 시작 $(date '+%Y-%m-%d %H:%M:%S') =====" >> logs/collect-all.log
-  scripts/run_collect_all.sh >> logs/collect-all.log 2>> logs/collect-all.err.log
-  exit_code=$?
-  echo "===== 자동 수집 종료 $(date '+%Y-%m-%d %H:%M:%S') exit=${exit_code}; ${INTERVAL_SECONDS}초 후 재시작 =====" >> logs/collect-all.log
-  sleep "$INTERVAL_SECONDS"
-done
+# 목록 수집 상시 데몬. collector.enabled가 켜져 있을 때만 수집하고,
+# 3시간(quick)/24시간(full) 주기를 자동 판단한다. 단일 실행 보장은 CLI가
+# data/collect-all.pid 락으로 처리하고, 연속 실패 시 스스로 종료해 launchd가
+# 깨끗하게 되살린다.
+exec .venv/bin/python -m court_auction_crawler.cli collect-loop \
+  --db data/auction.sqlite3 \
+  --geocode-limit 2000

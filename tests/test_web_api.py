@@ -125,28 +125,26 @@ class WebApiTests(unittest.TestCase):
         self.assertEqual(payload["documents"][0]["document_type"], "매각물건명세서")
         self.assertEqual(payload["assets"][0]["url"], "/api/v1/assets/1")
 
-    def test_collector_uses_separate_current_and_scheduled_windows(self):
+    def test_collector_control_only_toggles_enabled_file(self):
+        # 서버 컨트롤러는 수집을 직접 실행하지 않고 enabled 파일만 토글한다.
+        # 실제 수집은 독립 collect-loop 프로세스가 담당한다.
         runner = CollectorControlRunner(self.store)
-        command = runner._collect_command(
-            {
-                "current_start": "2025-07-02",
-                "current_end": "2027-07-02",
-                "scheduled_start": "2026-07-02",
-                "scheduled_end": "2026-12-29",
-            }
-        )
+        self.assertFalse(runner.enabled)
 
-        self.assertNotIn("--start-date", command)
-        self.assertNotIn("--end-date", command)
-        self.assertEqual(command[command.index("--current-start-date") + 1], "2025-07-02")
-        self.assertEqual(command[command.index("--current-end-date") + 1], "2027-07-02")
-        self.assertEqual(command[command.index("--scheduled-start-date") + 1], "2026-07-02")
-        self.assertEqual(command[command.index("--scheduled-end-date") + 1], "2026-12-29")
-        self.assertEqual(command[command.index("--date-chunk-days") + 1], "31")
-        # 상세 수집은 전용 프로세스가 담당한다. 러너 사이클에 섞이면
-        # 목록 신선도가 무너지고 이중 실행 충돌이 난다.
-        self.assertNotIn("--details", command)
-        self.assertNotIn("--detail-limit", command)
+        started = runner.start()
+        self.assertTrue(started)
+        self.assertTrue(runner.enabled)
+        self.assertTrue(runner.enabled_path.exists())
+        # 서버 스레드로 수집을 띄우지 않으므로 실행 스레드 속성이 없다
+        self.assertFalse(hasattr(runner, "_thread"))
+
+        # 이미 켜져 있으면 재요청은 False(중복 생성 아님)
+        self.assertFalse(runner.start())
+
+        stopped = runner.stop()
+        self.assertTrue(stopped)
+        self.assertFalse(runner.enabled)
+        self.assertFalse(runner.enabled_path.exists())
 
     def test_collector_windows_start_today_without_past_range(self):
         import time
@@ -154,8 +152,8 @@ class WebApiTests(unittest.TestCase):
         runner = CollectorControlRunner(self.store)
         today = time.strftime("%Y-%m-%d")
 
-        quick = runner._collection_window("quick")
-        full = runner._collection_window("full")
+        quick = runner.collection_window("quick")
+        full = runner.collection_window("full")
 
         self.assertEqual(quick["current_start"], today)
         self.assertEqual(full["current_start"], today)

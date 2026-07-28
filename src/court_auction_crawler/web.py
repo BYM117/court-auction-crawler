@@ -8,8 +8,6 @@ import os
 import re
 import signal
 from pathlib import Path
-import subprocess
-import sys
 import threading
 import time
 from typing import Any
@@ -141,10 +139,6 @@ class CollectorControlRunner:
         self.pid_path = self.data_dir / "collect-all.pid"
         self.log_path = self.project_root / "logs" / "collect-all.log"
         self.err_path = self.project_root / "logs" / "collect-all.err.log"
-        self._lock = threading.Lock()
-        self._stop = threading.Event()
-        self._thread: threading.Thread | None = None
-        self._process: subprocess.Popen | None = None
         self.last_error = ""
 
     @property
@@ -153,34 +147,28 @@ class CollectorControlRunner:
 
     @property
     def running(self) -> bool:
-        process = self._process
-        return process is not None and process.poll() is None
+        # 실제 수집은 독립 프로세스(collect-loop)가 담당한다. 서버는 pid 파일로
+        # 그 프로세스 생존만 확인한다.
+        return process_is_running(read_pid(self.pid_path))
 
     def start(self) -> bool:
+        # 서버는 '수집 원함' 의도만 기록한다(enabled 파일). 실제 수집 루프는
+        # launchd가 항상 띄워두는 collect-loop 프로세스가 이 파일을 보고 돈다.
         self.data_dir.mkdir(parents=True, exist_ok=True)
+        was_enabled = self.enabled
         self.enabled_path.write_text("enabled\n", encoding="utf-8")
-        self._stop.clear()
-        if self._thread and self._thread.is_alive():
-            return False
-        self._thread = threading.Thread(target=self._loop, name="auction-collector-control", daemon=True)
-        self._thread.start()
-        return True
-
-    def start_if_enabled(self) -> None:
-        if self.enabled:
-            self.start()
+        if not was_enabled:
+            self._write_log("===== 자동 수집 시작 요청 =====")
+        return not was_enabled
 
     def stop(self) -> bool:
         was_enabled = self.enabled
-        self._stop.set()
         try:
             self.enabled_path.unlink()
         except FileNotFoundError:
             pass
-        self._terminate_process()
-        self.last_error = ""
         self._write_log("===== 자동 수집 중지 요청 =====")
-        return was_enabled or self.running
+        return was_enabled
 
     def status(self) -> dict[str, Any]:
         return {
@@ -196,100 +184,7 @@ class CollectorControlRunner:
             "last_error": self.last_error,
         }
 
-    def shutdown(self) -> None:
-        self._stop.set()
-        self._terminate_process()
-
-    def _loop(self) -> None:
-        while self.enabled and not self._stop.is_set():
-            with self._lock:
-                if not self.enabled or self._stop.is_set():
-                    break
-                self._run_once()
-            if not self.enabled or self._stop.is_set():
-                break
-            self._write_log(f"===== 다음 자동 수집까지 {self.interval_seconds}초 대기 =====")
-            self._stop.wait(self.interval_seconds)
-
-    def _run_once(self) -> None:
-        run_kind = self._next_run_kind()
-        window = self._collection_window(run_kind)
-        self.log_path.parent.mkdir(parents=True, exist_ok=True)
-        self.err_path.parent.mkdir(parents=True, exist_ok=True)
-        self.err_path.write_text("", encoding="utf-8")
-        self._write_log(
-            f"===== 자동 수집 시작 {time.strftime('%Y-%m-%d %H:%M:%S')} "
-            f"mode={run_kind} current={window['current_start']}~{window['current_end']} "
-            f"scheduled={window['scheduled_start']}~{window['scheduled_end']} ====="
-        )
-
-        command = self._collect_command(window)
-        env = os.environ.copy()
-        env["PYTHONUNBUFFERED"] = "1"
-        env["PYTHONPATH"] = "src"
-        env.setdefault("PLAYWRIGHT_BROWSERS_PATH", ".playwright-browsers")
-
-        with self.log_path.open("a", encoding="utf-8") as log, self.err_path.open("a", encoding="utf-8") as err:
-            self._process = subprocess.Popen(command, cwd=self.project_root, env=env, stdout=log, stderr=err)
-            self.pid_path.write_text(f"{self._process.pid}\n", encoding="utf-8")
-            exit_code = self._process.wait()
-        self._process = None
-        try:
-            self.pid_path.unlink()
-        except FileNotFoundError:
-            pass
-
-        if exit_code == 0:
-            self.last_error = ""
-            if run_kind == "full":
-                self.last_full_path.write_text(str(time.time()), encoding="utf-8")
-            try:
-                lifecycle = self.store.apply_lifecycle()
-                self._write_log(
-                    f"===== 생명주기 정리: 활성 {lifecycle['checked']}개 중 "
-                    f"{lifecycle['deactivated']}개 종결 처리 ====="
-                )
-            except Exception as exc:
-                self._write_log(f"===== 생명주기 정리 실패: {exc} =====")
-        else:
-            self.last_error = f"수집 프로세스 종료 코드 {exit_code}"
-        self._write_log(
-            f"===== 자동 수집 종료 {time.strftime('%Y-%m-%d %H:%M:%S')} exit={exit_code}; "
-            f"{self.interval_seconds}초 후 재시작 ====="
-        )
-
-    def _collect_command(self, window: dict[str, str]) -> list[str]:
-        return [
-            sys.executable,
-            "-m",
-            "court_auction_crawler.cli",
-            "collect-all",
-            "--db",
-            str(self.store.db_path),
-            "--mode",
-            "both",
-            "--current-start-date",
-            window["current_start"],
-            "--current-end-date",
-            window["current_end"],
-            "--scheduled-start-date",
-            window["scheduled_start"],
-            "--scheduled-end-date",
-            window["scheduled_end"],
-            "--date-chunk-days",
-            "31",
-            "--max-pages",
-            "50",
-            "--delay",
-            "2.0",
-            "--geocode-limit",
-            "2000",
-            # 상세 수집은 전용 프로세스(run_detail_collector.sh)가 담당한다.
-            # 여기서 --details를 붙이면 3시간 주기가 상세 작업에 막혀 목록
-            # 신선도가 무너지고, 전용 수집기와 이중 실행 충돌이 난다.
-        ]
-
-    def _collection_window(self, run_kind: str) -> dict[str, str]:
+    def collection_window(self, run_kind: str) -> dict[str, str]:
         if run_kind == "full":
             current_before = self.full_current_days_before
             current_ahead = self.full_current_days_ahead
@@ -305,7 +200,7 @@ class CollectorControlRunner:
             "scheduled_end": _date_after(scheduled_ahead),
         }
 
-    def _next_run_kind(self) -> str:
+    def next_run_kind(self) -> str:
         try:
             last_full = float(self.last_full_path.read_text(encoding="utf-8").strip())
         except (FileNotFoundError, ValueError):
@@ -314,20 +209,8 @@ class CollectorControlRunner:
             return "full"
         return "quick"
 
-    def _terminate_process(self) -> None:
-        process = self._process
-        if process is None or process.poll() is not None:
-            return
-        process.terminate()
-        try:
-            process.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            process.wait(timeout=10)
-        try:
-            self.pid_path.unlink()
-        except FileNotFoundError:
-            pass
+    def record_full_run(self) -> None:
+        self.last_full_path.write_text(str(time.time()), encoding="utf-8")
 
     def _write_log(self, line: str) -> None:
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -714,8 +597,9 @@ def run_server(
     port: int,
     runner: WatchRunner | None = None,
 ) -> None:
+    # 실제 목록 수집은 독립 프로세스(collect-loop)가 담당한다. 서버는 이 컨트롤러로
+    # enabled 토글과 상태 조회만 한다(수집을 서버 스레드에 묶지 않는다).
     collector_runner = CollectorControlRunner(store)
-    collector_runner.start_if_enabled()
     handler = type(
         "ConfiguredAuctionWebHandler",
         (AuctionWebHandler,),
@@ -733,7 +617,6 @@ def run_server(
         watchdog.stop()
         if runner:
             runner.stop()
-        collector_runner.shutdown()
         raise KeyboardInterrupt
 
     signal.signal(signal.SIGINT, handle_shutdown_signal)
@@ -747,7 +630,6 @@ def run_server(
         watchdog.stop()
         if runner:
             runner.stop()
-        collector_runner.shutdown()
         server.server_close()
 
 
