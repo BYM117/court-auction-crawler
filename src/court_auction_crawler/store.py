@@ -14,7 +14,7 @@ from .models import AuctionItem, SyncSummary
 from .utils import clean_text, parse_date
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 CASE_KEYS = ("사건번호", "사건", "case_no")
@@ -306,6 +306,17 @@ class AuctionStore:
                     conn.execute(
                         "UPDATE auction_items SET detail_status = 'pending' WHERE detail_collected_at IS NULL"
                     )
+                if version < 4:
+                    # collected였다가 갱신 재수집 실패로 failed가 된 오염 복구.
+                    # 상세 데이터(detail_collected_at)가 있으면 collected가 맞다.
+                    conn.execute(
+                        """
+                        UPDATE auction_items
+                           SET detail_status = 'collected'
+                         WHERE detail_status = 'failed'
+                           AND detail_collected_at IS NOT NULL
+                        """
+                    )
                 conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
     def _migrate_v2_rekey_and_merge(self, conn: sqlite3.Connection) -> None:
@@ -596,11 +607,13 @@ class AuctionStore:
         params: list[Any] = []
 
         if query:
+            # raw_json(물건당 수 KB, 총 1.9GB) LIKE는 전건 풀스캔이라 제외한다.
+            # 표시·검색에 쓰는 정규화 컬럼만으로 검색한다.
             clauses.append(
-                "(case_no LIKE ? OR item_no LIKE ? OR court LIKE ? OR address LIKE ? OR category LIKE ? OR raw_json LIKE ?)"
+                "(case_no LIKE ? OR item_no LIKE ? OR court LIKE ? OR address LIKE ? OR category LIKE ?)"
             )
             like = f"%{query}%"
-            params.extend([like, like, like, like, like, like])
+            params.extend([like, like, like, like, like])
         if status:
             clauses.append("status = ?")
             params.append(status)
@@ -720,7 +733,13 @@ class AuctionStore:
                 """
                 (
                     (detail_status = 'pending' AND detail_checked_at IS NULL)
-                    OR (last_changed_at IS NOT NULL AND last_changed_at > detail_collected_at)
+                    OR (
+                        -- 목록이 갱신된 물건은 상세를 다시 받되, 재수집이 실패해
+                        -- 백오프가 걸려 있으면 예약 시각 전까지는 다시 올리지 않는다.
+                        last_changed_at IS NOT NULL
+                        AND last_changed_at > detail_collected_at
+                        AND (detail_next_retry_at IS NULL OR detail_next_retry_at <= ?)
+                    )
                     OR (
                         detail_status IN ('failed', 'metadata_only')
                         AND (detail_next_retry_at IS NULL OR detail_next_retry_at <= ?)
@@ -745,7 +764,7 @@ class AuctionStore:
                 """
             )
             now = utc_now()
-            params.extend([now, now])
+            params.extend([now, now, now])
         row_limit = 1_000_000 if limit is None or limit <= 0 else min(limit, 1_000_000)
         with self.connect() as conn:
             rows = conn.execute(
@@ -798,7 +817,7 @@ class AuctionStore:
         now = datetime.now(timezone.utc)
         with self.connect() as conn:
             row = conn.execute(
-                "SELECT detail_fail_count FROM auction_items WHERE item_key = ?",
+                "SELECT detail_fail_count, detail_collected_at FROM auction_items WHERE item_key = ?",
                 (item_key,),
             ).fetchone()
             if row is None:
@@ -806,15 +825,21 @@ class AuctionStore:
             fail_count = int(row["detail_fail_count"] or 0) + 1
             retry_hours = min(24 * 7, 2 ** min(fail_count - 1, 7))
             next_retry = (now + timedelta(hours=retry_hours)).isoformat(timespec="seconds")
+            # 이미 상세를 받아둔 물건(재수집=갱신 시도)이 실패하면 status를 failed로
+            # 덮지 않는다. 기존 상세 데이터는 여전히 유효하므로 collected를 유지하고
+            # 재시도만 백오프 예약한다. 상세를 한 번도 못 받은 것만 failed로 표시한다.
+            keep_collected = row["detail_collected_at"] is not None
+            status = "collected" if keep_collected else "failed"
             conn.execute(
                 """
                 UPDATE auction_items
-                   SET detail_status = 'failed', detail_checked_at = ?,
+                   SET detail_status = ?, detail_checked_at = ?,
                        detail_next_retry_at = ?, detail_fail_count = ?,
                        detail_error = ?, updated_at = ?
                  WHERE item_key = ?
                 """,
                 (
+                    status,
                     now.isoformat(timespec="seconds"),
                     next_retry,
                     fail_count,
@@ -1249,38 +1274,43 @@ class AuctionStore:
         물건을 비활성 처리한다. 유찰 후 새 기일이 잡히면 upsert가 다시 활성화한다."""
         now_text = now or utc_now()
         now_dt = parse_iso_datetime(now_text)
-        today = now_dt.date()
+        # sale_date는 'YYYY.MM.DD' 텍스트라 '.'→'-'로 바꾸면 ISO 문자열 비교=날짜 비교가 된다.
+        grace_cutoff = (now_dt.date() - timedelta(days=past_grace_days)).isoformat()
         unseen_cutoff = (now_dt - timedelta(days=unseen_no_date_days)).isoformat(timespec="seconds")
-        deactivated = 0
+        next_check = (now_dt + timedelta(days=7)).isoformat(timespec="seconds")
+        # 기일이 유예기간 넘게 지났고 새 기일이 없거나, 기일 없는 물건이 오래 미목격이면 종결.
+        expired_clause = (
+            "is_active = 1 AND ("
+            "  (COALESCE(sale_date, '') != '' "
+            "   AND REPLACE(SUBSTR(sale_date, 1, 10), '.', '-') < ?)"
+            "  OR (COALESCE(sale_date, '') = '' AND COALESCE(last_seen_at, '') < ?)"
+            ")"
+        )
         with self.connect() as conn:
-            rows = conn.execute(
-                "SELECT item_key, sale_date, last_seen_at, raw_json FROM auction_items WHERE is_active = 1"
-            ).fetchall()
-            for row in rows:
-                sale_date = sale_date_of(row["sale_date"] or "")
-                if sale_date is not None:
-                    expired = (today - sale_date).days > past_grace_days
-                else:
-                    expired = (row["last_seen_at"] or "") < unseen_cutoff
-                if not expired:
-                    continue
-                conn.execute(
-                    """
-                    UPDATE auction_items
-                       SET is_active = 0, crawl_priority = -100, next_check_at = ?
-                     WHERE item_key = ?
-                    """,
-                    ((now_dt + timedelta(days=7)).isoformat(timespec="seconds"), row["item_key"]),
-                )
-                conn.execute(
-                    """
-                    INSERT INTO auction_events(item_key, event_type, new_json, created_at)
-                    VALUES(?, 'deactivated', ?, ?)
-                    """,
-                    (row["item_key"], row["raw_json"], now_text),
-                )
-                deactivated += 1
-        return {"checked": len(rows), "deactivated": deactivated}
+            checked = conn.execute(
+                "SELECT COUNT(*) AS c FROM auction_items WHERE is_active = 1"
+            ).fetchone()["c"]
+            # 이벤트를 먼저 일괄 기록한 뒤(같은 조건) 일괄 UPDATE. 3.6만 건 파이썬
+            # 루프+개별 UPDATE 대신 2개 SQL로 락 점유 시간을 크게 줄인다.
+            conn.execute(
+                f"""
+                INSERT INTO auction_events(item_key, event_type, new_json, created_at)
+                SELECT item_key, 'deactivated', raw_json, ?
+                  FROM auction_items
+                 WHERE {expired_clause}
+                """,
+                (now_text, grace_cutoff, unseen_cutoff),
+            )
+            cursor = conn.execute(
+                f"""
+                UPDATE auction_items
+                   SET is_active = 0, crawl_priority = -100, next_check_at = ?
+                 WHERE {expired_clause}
+                """,
+                (next_check, grace_cutoff, unseen_cutoff),
+            )
+            deactivated = cursor.rowcount
+        return {"checked": checked, "deactivated": deactivated}
 
     def record_court_stats(
         self,

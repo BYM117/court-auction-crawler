@@ -266,6 +266,23 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(item["detail_fail_count"], 1)
         self.assertIn("법원 응답 지연", item["detail_error"])
 
+    def test_detail_failure_keeps_collected_when_data_already_exists(self):
+        self.store.upsert_items(
+            [AuctionItem({"사건번호": "서울중앙지방법원 2026타경700", "물건번호": "1", "매각기일": "2026.08.01"})]
+        )
+        item_key = "auction:서울중앙지방법원:2026타경700:1"
+        self.store.save_item_detail(item_key, {"sections": [{"title": "감정평가"}]})
+
+        # 목록 갱신으로 재수집 대상이 됐다가 재수집이 실패한 상황
+        self.store.mark_detail_failure(item_key, "재수집 중 타임아웃")
+
+        item = self.store.get_item(item_key)
+        # 상세 데이터가 이미 있으므로 collected 유지 (failed로 덮지 않음)
+        self.assertEqual(item["detail_status"], "collected")
+        self.assertEqual(item["detail_fail_count"], 1)
+        # 백오프가 걸려 즉시 재수집 대상이 되지 않는다
+        self.assertEqual(self.store.list_detail_targets(), [])
+
     def test_detail_documents_and_assets_are_returned(self):
         self.store.upsert_items(
             [AuctionItem({"사건번호": "대전지방법원 2026타경555", "물건번호": "1"})]
