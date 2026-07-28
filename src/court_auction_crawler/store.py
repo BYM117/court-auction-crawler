@@ -10,6 +10,7 @@ import re
 import sqlite3
 from typing import Any, Iterator
 
+from .common import TERMINAL_STATUS_KEYWORDS, utc_now
 from .models import AuctionItem, SyncSummary
 from .utils import clean_text, parse_date
 
@@ -44,7 +45,6 @@ LIST_HASH_KEYS = (
 )
 CASE_NO_RE = re.compile(r"\d{4}타경\d+")
 PARCEL_LIST_KEY = "소재지목록"
-TERMINAL_STATUS_KEYWORDS = ("낙찰", "매각", "취하", "기각", "정지", "취소", "종결", "배당")
 REGION_ALIASES = {
     "서울": ("서울", "서울특별시"),
     "경기": ("경기", "경기도", "수원", "성남", "안산", "안양", "평택", "고양", "의정부"),
@@ -1602,7 +1602,3 @@ def parse_iso_datetime(value: str) -> datetime:
 
 def json_dumps(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-
-
-def utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")

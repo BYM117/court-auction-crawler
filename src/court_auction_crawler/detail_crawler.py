@@ -4,19 +4,18 @@ import asyncio
 import base64
 import binascii
 from collections import defaultdict
-from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 import hashlib
 import mimetypes
-import os
 from pathlib import Path
 import re
 import time
-from typing import Any, Iterator
+from typing import Any
 
 from playwright.async_api import Page, TimeoutError as PlaywrightTimeoutError, async_playwright
 
+from .common import self_restart, singleton_lock, utc_now
 from .crawler import _prefer_local_browser_cache
 from .store import AuctionStore, representative_case_no
 
@@ -305,8 +304,7 @@ class CourtAuctionDetailCrawler:
                                 f"!! 자가 복구: {reason} -> 이번 패스를 중단하고 브라우저를 새로 엽니다"
                             )
                     if hard_deadline is not None and now > hard_deadline:
-                        print("!! 자가 복구 실패(워커 미응답) -> 프로세스를 종료합니다. launchd가 재시작합니다")
-                        os._exit(75)
+                        self_restart("!! 자가 복구 실패(워커 미응답) -> 프로세스를 종료합니다. launchd가 재시작합니다")
 
             watchdog_task = asyncio.create_task(watchdog())
             try:
@@ -1067,47 +1065,9 @@ def retry_after(*, days: int = 0, hours: int = 0) -> str:
     return (datetime.now(timezone.utc) + timedelta(days=days, hours=hours)).isoformat(timespec="seconds")
 
 
-def utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
-
-
 def safe_path_part(value: str) -> str:
     cleaned = re.sub(r"[^0-9A-Za-z가-힣._-]+", "_", str(value)).strip("._")
     return cleaned[:160] or "unknown"
-
-
-@contextmanager
-def _detail_singleton_lock(store: AuctionStore) -> Iterator[bool]:
-    """상세 수집은 브라우저로 법원 사이트를 순회하므로 동시에 두 개가 돌면
-    같은 사건을 중복 크롤링하고 사이트 부하만 배가 된다. pid 파일로 단일 실행을 보장한다."""
-    lock_path = store.db_path.parent / "collect-details.pid"
-    try:
-        existing = int(lock_path.read_text(encoding="utf-8").strip())
-    except (OSError, ValueError):
-        existing = None
-    if existing and existing != os.getpid() and _process_is_running(existing):
-        yield False
-        return
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    lock_path.write_text(f"{os.getpid()}\n", encoding="utf-8")
-    try:
-        yield True
-    finally:
-        try:
-            if int(lock_path.read_text(encoding="utf-8").strip()) == os.getpid():
-                lock_path.unlink()
-        except (OSError, ValueError):
-            pass
-
-
-def _process_is_running(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
 
 
 def collect_details_sync(
@@ -1124,7 +1084,7 @@ def collect_details_sync(
     download_document_files: bool = False,
     workers: int = 3,
 ) -> DetailCollectionSummary:
-    with _detail_singleton_lock(store) as acquired:
+    with singleton_lock(store.db_path.parent / "collect-details.pid") as acquired:
         if not acquired:
             print("상세 수집이 이미 실행 중이라 이번 실행은 건너뜁니다 (data/collect-details.pid).")
             return DetailCollectionSummary()

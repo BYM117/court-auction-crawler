@@ -14,6 +14,7 @@ from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
 from . import __version__
+from .common import TERMINAL_STATUS_KEYWORDS, process_is_running, read_pid
 from .crawler import collect_sync
 from .detail_crawler import collect_details_sync
 from .geocoder import geocode_address
@@ -30,7 +31,6 @@ PERCENT_RE = re.compile(r"\((\d+(?:\.\d+)?)%\)")
 AREA_RE = re.compile(r"([\d,.]+)\s*㎡")
 FAIL_COUNT_RE = re.compile(r"유찰\s*(\d+)")
 LOT_NUMBER_RE = re.compile(r"(?:산\s*)?\d+(?:-\d+)?")
-TERMINAL_STATUS_KEYWORDS = ("낙찰", "매각", "취하", "기각", "정지", "취소", "종결", "배당")
 DEFAULT_ALLOWED_ORIGINS = {
     "http://127.0.0.1:4173",
     "http://localhost:4173",
@@ -1368,21 +1368,3 @@ def _tail_lines(path: Path, max_lines: int) -> list[str]:
         return []
 
 
-def read_pid(path: str | Path) -> int | None:
-    try:
-        text = Path(path).read_text(encoding="utf-8").strip()
-    except OSError:
-        return None
-    return int(text) if text.isdigit() else None
-
-
-def process_is_running(pid: int | None) -> bool:
-    if pid is None:
-        return False
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
