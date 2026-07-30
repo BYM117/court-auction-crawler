@@ -580,6 +580,49 @@ td.address {
   font-weight: 600;
 }
 
+.docItem {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  margin-bottom: 8px;
+}
+
+.docItem summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 12px;
+  cursor: pointer;
+  list-style: none;
+  font-size: 13px;
+}
+
+.docItem summary::-webkit-details-marker { display: none; }
+.docItem summary::before {
+  content: "▸";
+  color: var(--muted);
+  margin-right: 6px;
+}
+.docItem[open] summary::before { content: "▾"; }
+.docName { font-weight: 600; flex: 1; }
+.docState { font-size: 12px; color: var(--muted); }
+
+.docBody {
+  padding: 0 12px 12px;
+  border-top: 1px solid var(--line);
+}
+
+.docBody .tableScroll { margin-top: 10px; }
+
+.docText {
+  margin-top: 10px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .mapBox {
   display: flex;
   justify-content: space-between;

@@ -348,7 +348,10 @@ function tableHtml(table) {
   const body = rows.map((row) => (
     `<tr>${row.map((cell) => `<td>${fmt(cell)}</td>`).join("")}</tr>`
   )).join("");
-  const capText = (table.caption || "").split(/[(（]/)[0].trim();
+  const capText = (table.caption || "")
+    .replace(/\s*displayed in the table.*/i, "")
+    .split(/[(（]/)[0]
+    .trim();
   const cap = capText ? `<caption>${escapeHtml(capText.slice(0, 40))}</caption>` : "";
   return `<div class="tableScroll"><table class="dataTable">${cap}<tbody>${body}</tbody></table></div>`;
 }
@@ -386,13 +389,27 @@ function renderSections(sections) {
 function renderDocuments(documents) {
   const docs = documents || [];
   if (!docs.length) return "";
-  const rows = docs.map((d) => {
+  const blocks = docs.map((d) => {
     const label = escapeHtml(d.document_type || d.title || "문서");
-    if (d.url) return `<a class="docChip docChip-ok" href="${escapeHtml(d.url)}" target="_blank" rel="noreferrer">${label} ↓</a>`;
-    const state = d.status === "metadata_only" ? "내용만" : d.status === "pending" ? "대기" : "미수집";
-    return `<span class="docChip">${label} · ${state}</span>`;
+    const meta = d.metadata || {};
+    const iframe = meta.iframe || {};
+    const tables = [...(meta.tables || []), ...(iframe.tables || [])];
+    const text = (meta.text || iframe.text || "").trim();
+    const tableBlocks = tables.map(tableHtml).filter(Boolean).join("");
+    const textBlock = text.length > 20 ? `<p class="docText">${escapeHtml(text.slice(0, 3000))}</p>` : "";
+    const hasContent = tableBlocks || textBlock;
+    const fileLink = d.url
+      ? `<a class="docChip docChip-ok" href="${escapeHtml(d.url)}" target="_blank" rel="noreferrer">원본 파일 ↓</a>`
+      : "";
+    const srcLink = safeExternalUrl(d.source_url)
+      ? `<a class="docChip" href="${escapeHtml(d.source_url)}" target="_blank" rel="noreferrer">법원에서 보기 ↗</a>`
+      : "";
+    const state = hasContent ? "" : `<span class="docState">${d.status === "pending" ? "수집 대기" : "내용 없음"}</span>`;
+    const inner = `<div class="docBody">${tableBlocks}${textBlock}<div class="docChips">${fileLink}${srcLink}</div></div>`;
+    return `<details class="docItem"${hasContent ? "" : ""}>`
+      + `<summary><span class="docName">${label}</span>${state}</summary>${inner}</details>`;
   }).join("");
-  return `<section class="reportSection"><h3>법원 문서</h3><div class="docChips">${rows}</div></section>`;
+  return `<section class="reportSection"><h3>법원 문서 <span class="count">${docs.length}</span></h3>${blocks}</section>`;
 }
 
 function renderMap(item) {
