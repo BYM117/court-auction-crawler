@@ -36,11 +36,6 @@ const els = {
   collectorStop: document.querySelector("#collectorStopButton"),
   detailEmpty: document.querySelector("#detailEmpty"),
   detailContent: document.querySelector("#detailContent"),
-  detailTitle: document.querySelector("#detailTitle"),
-  detailSub: document.querySelector("#detailSub"),
-  detailLink: document.querySelector("#detailLink"),
-  detailFields: document.querySelector("#detailFields"),
-  eventList: document.querySelector("#eventList"),
 };
 
 function escapeHtml(value) {
@@ -62,6 +57,18 @@ function fmtTime(value) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
   return date.toLocaleString("ko-KR", { hour12: false });
+}
+
+function fmtMoney(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n === 0) return "-";
+  if (n >= 100000000) {
+    const eok = Math.floor(n / 100000000);
+    const man = Math.round((n % 100000000) / 10000);
+    return man > 0 ? `${eok}억 ${man.toLocaleString("ko-KR")}만` : `${eok}억`;
+  }
+  if (n >= 10000) return `${Math.round(n / 10000).toLocaleString("ko-KR")}만`;
+  return n.toLocaleString("ko-KR");
 }
 
 function safeExternalUrl(value) {
@@ -243,45 +250,169 @@ function resetAndLoadItems() {
 async function selectItem(itemKey) {
   state.selectedKey = itemKey;
   renderRows();
-  const item = await fetchJson(`/api/items/${encodeURIComponent(itemKey)}`);
   els.detailEmpty.hidden = true;
   els.detailContent.hidden = false;
-  els.detailTitle.textContent = item.case_no || item.item_key;
-  els.detailSub.textContent = [item.court, item.address].filter(Boolean).join(" · ");
-
-  const detailUrl = safeExternalUrl(item.detail_url);
-  if (detailUrl) {
-    els.detailLink.href = detailUrl;
-    els.detailLink.hidden = false;
-  } else {
-    els.detailLink.removeAttribute("href");
-    els.detailLink.hidden = true;
+  els.detailContent.innerHTML = '<div class="reportLoading">불러오는 중…</div>';
+  try {
+    const item = await fetchJson(`/api/v1/auctions/${encodeURIComponent(itemKey)}`);
+    els.detailContent.innerHTML = renderReport(item);
+    els.detailContent.scrollTop = 0;
+  } catch (error) {
+    els.detailContent.innerHTML = `<div class="reportLoading">상세를 불러오지 못했습니다: ${escapeHtml(error.message)}</div>`;
   }
+}
 
-  const fields = {
-    수집구분: item.source || "진행",
-    사건번호: item.case_no,
-    물건번호: item.item_no,
-    법원: item.court,
-    소재지: item.address,
-    용도: item.category,
-    감정평가액: item.appraisal,
-    최저매각가격: item.minimum_bid,
-    매각기일: item.sale_date,
-    진행상태: item.status,
-    최초수집: fmtTime(item.first_seen_at),
-    최근확인: fmtTime(item.last_seen_at),
-    ...item.detail,
-    ...item.raw,
-  };
-  els.detailFields.innerHTML = Object.entries(fields)
-    .filter(([, value]) => value)
-    .map(([key, value]) => `<dt>${escapeHtml(key)}</dt><dd>${fmt(value)}</dd>`)
-    .join("");
+function renderReport(item) {
+  const auction = item.auction || {};
+  const property = item.property || {};
+  const priceBlock = item.price || {};
+  const caseBlock = item.case || {};
+  const detailUrl = safeExternalUrl(item.detail_url);
+  const badge = auction.is_active === false
+    ? '<span class="badge badge-off">종결</span>'
+    : `<span class="badge badge-on">${escapeHtml(item.source || "진행")}</span>`;
+  const statusText = item.status ? `<span class="badge badge-status">${escapeHtml(item.status)}</span>` : "";
 
-  els.eventList.innerHTML = (item.events || []).map((event) => (
-    `<li>${fmtTime(event.created_at)} · ${escapeHtml(event.event_type)}</li>`
-  )).join("") || "<li>변경 이력이 없습니다.</li>";
+  return [
+    `<header class="reportHead">
+      <div class="reportHeadTop">
+        <div class="reportBadges">${badge}${statusText}</div>
+        ${detailUrl ? `<a class="reportLink" href="${detailUrl}" target="_blank" rel="noreferrer">법원 원문 ↗</a>` : ""}
+      </div>
+      <h2>${fmt(caseBlock.display_case_no || item.case_no)}${item.item_no ? ` · 물건 ${escapeHtml(item.item_no)}` : ""}</h2>
+      <p class="reportSub">${fmt([item.court, property.type_guess || item.category].filter(Boolean).join(" · "))}</p>
+      <p class="reportAddr">${fmt(item.address)}</p>
+    </header>`,
+    renderMetrics(item, auction, priceBlock),
+    renderGallery(item.assets),
+    renderScreening(item.screening),
+    renderOfficialPrice(priceBlock.official),
+    renderScheduleTables(item.detail),
+    renderDetailTables(item.detail),
+    renderSections(item.detail && item.detail.sections),
+    renderDocuments(item.documents),
+    renderMap(item),
+    renderEvents(item.events),
+  ].join("");
+}
+
+function metricCell(label, value, sub) {
+  return `<div class="metricCell"><span class="metricLabel">${escapeHtml(label)}</span>`
+    + `<b>${value}</b>${sub ? `<em>${sub}</em>` : ""}</div>`;
+}
+
+function renderMetrics(item, auction, priceBlock) {
+  const rate = priceBlock.minimum_bid_percent != null ? `${priceBlock.minimum_bid_percent}%` : "";
+  const cells = [
+    metricCell("감정가", fmtMoney(priceBlock.appraisal), priceBlock.appraisal ? "원" : ""),
+    metricCell("최저가", fmtMoney(priceBlock.minimum_bid), rate ? `감정가 대비 ${rate}` : ""),
+    metricCell("유찰", auction.fail_count ? `${auction.fail_count}회` : "0회", ""),
+    metricCell("매각기일", fmt(auction.sale_date || item.sale_date), ""),
+  ];
+  return `<section class="reportMetrics">${cells.join("")}</section>`;
+}
+
+function renderGallery(assets) {
+  const photos = (assets || []).filter((a) => a.kind === "photo" && a.url);
+  if (!photos.length) return "";
+  const thumbs = photos.map((p) => (
+    `<a href="${escapeHtml(p.url)}" target="_blank" rel="noreferrer" class="galleryItem" title="${escapeHtml(p.label || "")}">`
+    + `<img src="${escapeHtml(p.url)}" alt="${escapeHtml(p.label || "전경도")}" loading="lazy"></a>`
+  )).join("");
+  return `<section class="reportSection"><h3>사진 <span class="count">${photos.length}</span></h3>`
+    + `<div class="gallery">${thumbs}</div></section>`;
+}
+
+function renderScreening(screening) {
+  if (!screening) return "";
+  const flags = (screening.flags || []).map((f) => `<span class="flag">${escapeHtml(f)}</span>`).join("");
+  const risk = screening.risk_level || "-";
+  const riskClass = risk === "높음" ? "risk-high" : risk === "보통" ? "risk-mid" : "risk-low";
+  return `<section class="reportSection"><h3>선별 <span class="riskBadge ${riskClass}">위험도 ${escapeHtml(risk)}</span>`
+    + `<span class="count">점수 ${escapeHtml(String(screening.score ?? "-"))}</span></h3>`
+    + `<div class="flags">${flags}</div></section>`;
+}
+
+function renderOfficialPrice(official) {
+  if (!official || !official.value) return "";
+  return `<section class="reportSection"><h3>공시기준가</h3>`
+    + `<div class="officialPrice"><b>${fmtMoney(official.value)}원</b>`
+    + `<span>${escapeHtml(official.type || "")}${official.year ? ` · ${escapeHtml(official.year)}` : ""}</span></div></section>`;
+}
+
+function tableHtml(table) {
+  const rows = (table.rows || [])
+    .filter((r) => r && r.length)
+    .filter((r) => !(r.length === 1 && /^(이전으로|다음으로|이전으로 다음으로)$/.test(String(r[0]).trim())));
+  if (!rows.length) return "";
+  const body = rows.map((row) => (
+    `<tr>${row.map((cell) => `<td>${fmt(cell)}</td>`).join("")}</tr>`
+  )).join("");
+  const capText = (table.caption || "").split(/[(（]/)[0].trim();
+  const cap = capText ? `<caption>${escapeHtml(capText.slice(0, 40))}</caption>` : "";
+  return `<div class="tableScroll"><table class="dataTable">${cap}<tbody>${body}</tbody></table></div>`;
+}
+
+function renderScheduleTables(detail) {
+  const scheduleTables = (detail && detail.case && detail.case.schedule_tables) || [];
+  const target = scheduleTables.find((t) => (t.caption || "").includes("기일")) || scheduleTables[0];
+  const fromDetail = (detail && detail.tables || []).find((t) => (t.caption || "").includes("기일내역"));
+  const table = fromDetail || target;
+  if (!table) return "";
+  return `<section class="reportSection"><h3>기일 내역</h3>${tableHtml(table)}</section>`;
+}
+
+function renderDetailTables(detail) {
+  const tables = (detail && detail.tables) || [];
+  const shown = tables.filter((t) => {
+    const cap = t.caption || "";
+    if (cap.includes("검색조건") || cap.includes("기일내역")) return false;
+    return (t.rows || []).some((r) => r && r.length);
+  });
+  if (!shown.length) return "";
+  const blocks = shown.map((t) => tableHtml(t)).join("");
+  return `<section class="reportSection"><h3>물건·감정 상세</h3>${blocks}</section>`;
+}
+
+function renderSections(sections) {
+  const items = (sections || []).filter((s) => s.text && s.text.length > 10 && !/HOME 경매물건/.test(s.text));
+  if (!items.length) return "";
+  const body = items.map((s) => (
+    `<div class="sectionItem"><b>${escapeHtml(s.title || "")}</b><p>${escapeHtml(s.text.slice(0, 1200))}</p></div>`
+  )).join("");
+  return `<section class="reportSection"><h3>현황·감정 요항</h3>${body}</section>`;
+}
+
+function renderDocuments(documents) {
+  const docs = documents || [];
+  if (!docs.length) return "";
+  const rows = docs.map((d) => {
+    const label = escapeHtml(d.document_type || d.title || "문서");
+    if (d.url) return `<a class="docChip docChip-ok" href="${escapeHtml(d.url)}" target="_blank" rel="noreferrer">${label} ↓</a>`;
+    const state = d.status === "metadata_only" ? "내용만" : d.status === "pending" ? "대기" : "미수집";
+    return `<span class="docChip">${label} · ${state}</span>`;
+  }).join("");
+  return `<section class="reportSection"><h3>법원 문서</h3><div class="docChips">${rows}</div></section>`;
+}
+
+function renderMap(item) {
+  const map = item.map || {};
+  if (!map.lat || !map.lng) return "";
+  const q = encodeURIComponent(item.address || "");
+  const kakao = `https://map.kakao.com/?q=${q}`;
+  return `<section class="reportSection"><h3>위치</h3>`
+    + `<div class="mapBox"><span>좌표 ${Number(map.lat).toFixed(5)}, ${Number(map.lng).toFixed(5)}`
+    + `${map.pnu ? ` · PNU ${escapeHtml(map.pnu)}` : ""}</span>`
+    + `<a class="reportLink" href="${kakao}" target="_blank" rel="noreferrer">지도에서 보기 ↗</a></div></section>`;
+}
+
+function renderEvents(events) {
+  const list = (events || []).slice(0, 10);
+  if (!list.length) return "";
+  const body = list.map((e) => (
+    `<li><span>${fmtTime(e.created_at)}</span> ${escapeHtml(e.event_type)}</li>`
+  )).join("");
+  return `<section class="reportSection"><h3>변경 이력</h3><ol class="eventList">${body}</ol></section>`;
 }
 
 async function fetchJson(url, options) {
