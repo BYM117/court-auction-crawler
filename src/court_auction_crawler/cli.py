@@ -128,8 +128,8 @@ def build_parser() -> argparse.ArgumentParser:
     export_snapshot.add_argument("--db", default="data/auction.sqlite3", help="SQLite DB 경로")
     export_snapshot.add_argument(
         "--output",
-        default="outputs/court-auctions.snapshot.json",
-        help="스냅샷 JSON 저장 경로",
+        default="outputs/court-auctions.snapshot.json.gz",
+        help="스냅샷 저장 경로(.gz면 gzip 압축, .json이면 평문)",
     )
 
     collect_loop = subparsers.add_parser(
@@ -364,7 +364,14 @@ def main(argv: list[str] | None = None) -> int:
         payload = build_snapshot_payload(store)
         output = Path(args.output)
         output.parent.mkdir(parents=True, exist_ok=True)
-        output.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        data = json.dumps(payload, ensure_ascii=False)
+        # 스냅샷이 100MB에 육박해 GitHub 한도에 걸리므로 .gz 확장자면 gzip으로 저장한다.
+        if output.suffix == ".gz":
+            import gzip
+
+            output.write_bytes(gzip.compress(data.encode("utf-8"), compresslevel=9))
+        else:
+            output.write_text(data, encoding="utf-8")
         print(f"스냅샷 저장: {output} (물건 {payload['total']}개, 생성 {payload['generated_at']})")
         return 0
 
