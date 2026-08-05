@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import asdict
 from datetime import date, datetime, timedelta, timezone
 import json
 from pathlib import Path
@@ -8,9 +9,11 @@ import time
 import re
 from typing import Any
 
-from .common import self_restart, singleton_lock
+from .building_registry import fetch_building_registry
+from .common import RateLimitError, self_restart, singleton_lock
 from .crawler import collect_all_sync, collect_sync
 from .detail_crawler import collect_details_sync
+from .transactions import classify_transaction_kind, fetch_transactions
 from .excel import save_items_to_excel
 from .geocoder import env_value, geocode_address, is_mappable_property, normalize_auction_address
 from .models import SearchOptions
@@ -159,6 +162,20 @@ def build_parser() -> argparse.ArgumentParser:
     enrich_prices.add_argument("--retry-days", type=int, default=14, help="조회 실패한 물건을 며칠 뒤 재시도할지")
     enrich_prices.add_argument("--include-inactive", action="store_true", help="종결/비활성 물건도 채웁니다.")
     enrich_prices.add_argument("--quiet", action="store_true", help="개별 물건 로그를 출력하지 않습니다.")
+
+    enrich_buildings = subparsers.add_parser("enrich-buildings", help="PNU가 있는 물건의 건축물대장(대지/건폐율/용적률/구조/사용승인)을 채웁니다.")
+    enrich_buildings.add_argument("--db", default="data/auction.sqlite3", help="SQLite DB 경로")
+    enrich_buildings.add_argument("--limit", type=int, default=500, help="이번 실행에서 처리할 최대 물건 수")
+    enrich_buildings.add_argument("--retry-days", type=int, default=30, help="조회 실패한 물건을 며칠 뒤 재시도할지")
+    enrich_buildings.add_argument("--include-inactive", action="store_true", help="종결/비활성 물건도 채웁니다.")
+    enrich_buildings.add_argument("--quiet", action="store_true", help="개별 물건 로그를 출력하지 않습니다.")
+
+    enrich_transactions = subparsers.add_parser("enrich-transactions", help="PNU가 있는 물건의 국토부 실거래가(매매·전월세)를 채웁니다.")
+    enrich_transactions.add_argument("--db", default="data/auction.sqlite3", help="SQLite DB 경로")
+    enrich_transactions.add_argument("--limit", type=int, default=150, help="이번 실행에서 처리할 최대 물건 수(물건당 최대 12회 호출)")
+    enrich_transactions.add_argument("--retry-days", type=int, default=30, help="조회 실패한 물건을 며칠 뒤 재시도할지")
+    enrich_transactions.add_argument("--include-inactive", action="store_true", help="종결/비활성 물건도 채웁니다.")
+    enrich_transactions.add_argument("--quiet", action="store_true", help="개별 물건 로그를 출력하지 않습니다.")
 
     collect_details = subparsers.add_parser(
         "collect-details",
@@ -421,6 +438,38 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
 
+    if args.command == "enrich-buildings":
+        store = AuctionStore(args.db)
+        result = run_enrich_buildings(
+            store, limit=args.limit, include_inactive=args.include_inactive,
+            retry_days=args.retry_days, quiet=args.quiet,
+        )
+        if result.get("no_key"):
+            print("PUBLIC_DATA_SERVICE_KEY가 없어 건축물대장 조회를 실행할 수 없습니다 (.env).")
+            return 1
+        counts = result.get("counts", {})
+        print(
+            f"건축물대장 채움: 확보 {result['ok']}개 / 대상 {result['targets']}개 "
+            f"(없음 {counts.get('miss', 0)}, 오류 {counts.get('error', 0)})"
+        )
+        return 0
+
+    if args.command == "enrich-transactions":
+        store = AuctionStore(args.db)
+        result = run_enrich_transactions(
+            store, limit=args.limit, include_inactive=args.include_inactive,
+            retry_days=args.retry_days, quiet=args.quiet,
+        )
+        if result.get("no_key"):
+            print("PUBLIC_DATA_SERVICE_KEY가 없어 실거래가 조회를 실행할 수 없습니다 (.env).")
+            return 1
+        counts = result.get("counts", {})
+        print(
+            f"실거래가 채움: 확보 {result['ok']}개 / 대상 {result['targets']}개 "
+            f"(없음 {counts.get('miss', 0)}, 미등록 {counts.get('unregistered', 0)}, 오류 {counts.get('error', 0)})"
+        )
+        return 0
+
     raise ValueError(f"지원하지 않는 명령입니다: {args.command}")
 
 
@@ -481,6 +530,13 @@ def run_collect_cycle(
             print("공시기준가 건너뜀: VWORLD_API_KEY가 없습니다.")
         else:
             print(f"공시기준가: 매칭 {priced['priced']}개, 대상 {priced['targets']}개")
+        # 건축물대장·실거래가(공공데이터포털)도 같은 PNU로 이어서 채운다.
+        buildings = run_enrich_buildings(store, limit=price_limit, quiet=True)
+        if not buildings.get("no_key"):
+            print(f"건축물대장: 확보 {buildings['ok']}개, 대상 {buildings['targets']}개")
+        deals = run_enrich_transactions(store, limit=max(price_limit // 3, 50), quiet=True)
+        if not deals.get("no_key"):
+            print(f"실거래가: 확보 {deals['ok']}개, 대상 {deals['targets']}개")
     return {"items": items, "totals": totals}
 
 
@@ -711,6 +767,106 @@ def run_enrich_prices(
         if not quiet and index % 50 == 0:
             print(f"  진행 {index}/{len(rows)} · 매칭 {counts.get('priced', 0)}")
     return {"no_key": False, "targets": len(rows), "priced": counts.get("priced", 0), "counts": counts}
+
+
+def run_enrich_buildings(
+    store: AuctionStore,
+    *,
+    limit: int = 200,
+    include_inactive: bool = False,
+    retry_days: int = 30,
+    quiet: bool = False,
+) -> dict[str, Any]:
+    """PNU는 있으나 건축물대장을 아직 못 채운 물건을 채운다(공공데이터포털)."""
+    if not env_value("PUBLIC_DATA_SERVICE_KEY"):
+        return {"no_key": True, "targets": 0, "ok": 0}
+    active = None if include_inactive else True
+    rows = store.list_missing_enrichment(
+        "building", limit=limit, active=active, retry_failed_after_days=retry_days
+    )
+    counts: dict[str, int] = {}
+    for index, row in enumerate(rows, start=1):
+        try:
+            reg = fetch_building_registry(str(row.get("pnu") or ""), row.get("category", ""))
+        except RateLimitError:  # 한도 초과 → 이 물건은 건드리지 말고 즉시 중단(다음 실행 재개)
+            print("건축물대장 일일 한도 초과 — 백필 중단(내일 이어서).")
+            counts["rate_limited"] = 1
+            break
+        except Exception as error:  # noqa: BLE001 - 조회 실패는 status로만
+            if not quiet:
+                print(f"  건축물대장 오류: {row['item_key']} {error}")
+            store.update_building(row["item_key"], detail=None, status="error")
+            counts["error"] = counts.get("error", 0) + 1
+            continue
+        if reg is None:
+            store.update_building(row["item_key"], detail=None, status="miss")
+            counts["miss"] = counts.get("miss", 0) + 1
+        else:
+            store.update_building(row["item_key"], detail=asdict(reg), status="ok")
+            counts["ok"] = counts.get("ok", 0) + 1
+        if not quiet and index % 50 == 0:
+            print(f"  진행 {index}/{len(rows)} · 확보 {counts.get('ok', 0)}")
+    return {"no_key": False, "targets": len(rows), "ok": counts.get("ok", 0), "counts": counts}
+
+
+def run_enrich_transactions(
+    store: AuctionStore,
+    *,
+    limit: int = 150,
+    include_inactive: bool = False,
+    retry_days: int = 30,
+    quiet: bool = False,
+) -> dict[str, Any]:
+    """PNU는 있으나 실거래가를 아직 못 채운 물건을 채운다(국토부 실거래가)."""
+    if not env_value("PUBLIC_DATA_SERVICE_KEY"):
+        return {"no_key": True, "targets": 0, "ok": 0}
+    active = None if include_inactive else True
+    rows = store.list_missing_enrichment(
+        "transactions", limit=limit, active=active, retry_failed_after_days=retry_days
+    )
+    # 같은 법정동을 연달아 처리하면 (법정동+월) 캐시가 최대로 재사용된다.
+    rows.sort(key=lambda r: str(r.get("pnu") or "")[:5])
+    counts: dict[str, int] = {}
+    cache: dict[tuple[str, str, str], Any] = {}
+    current_lawd = None
+    for index, row in enumerate(rows, start=1):
+        lawd = str(row.get("pnu") or "")[:5]
+        if lawd != current_lawd:  # 법정동이 바뀌면 이전 캐시는 필요 없다
+            cache.clear()
+            current_lawd = lawd
+        try:
+            result = fetch_transactions(
+                str(row.get("pnu") or ""), row.get("category", ""), row.get("address", ""),
+                cache=cache,
+            )
+        except RateLimitError:  # 한도 초과 → 즉시 중단(다음 실행 재개)
+            print("실거래가 일일 한도 초과 — 백필 중단(내일 이어서).")
+            counts["rate_limited"] = 1
+            break
+        except Exception as error:  # noqa: BLE001
+            if not quiet:
+                print(f"  실거래가 오류: {row['item_key']} {error}")
+            store.update_transactions(row["item_key"], detail=None, status="error")
+            counts["error"] = counts.get("error", 0) + 1
+            continue
+        if result is None:
+            # 유형이 대상외(토지 외 매칭 불가 등)이거나 API 미등록.
+            status = "unregistered" if classify_transaction_kind(
+                row.get("category", ""), row.get("address", "")
+            ) else "skip"
+            store.update_transactions(row["item_key"], detail=None, status=status)
+            counts[status] = counts.get(status, 0) + 1
+        else:
+            has_data = any(
+                (result.get(k) or {}).get("count") for k in ("sales", "rent")
+            )
+            store.update_transactions(
+                row["item_key"], detail=result, status="ok" if has_data else "miss"
+            )
+            counts["ok" if has_data else "miss"] = counts.get("ok" if has_data else "miss", 0) + 1
+        if not quiet and index % 50 == 0:
+            print(f"  진행 {index}/{len(rows)} · 확보 {counts.get('ok', 0)}")
+    return {"no_key": False, "targets": len(rows), "ok": counts.get("ok", 0), "counts": counts}
 
 
 def _parse_land_area(address: str) -> float:

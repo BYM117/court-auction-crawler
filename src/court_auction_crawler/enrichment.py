@@ -426,6 +426,8 @@ def public_auction_detail(item: dict[str, Any]) -> dict[str, Any]:
             "crawl_priority": item.get("crawl_priority", 0),
             "raw": item.get("raw", {}),
             "detail": item.get("detail", {}),
+            "building": item.get("building") or {},
+            "transactions": item.get("transactions") or {},
             "events": item.get("events", []),
             "detail_collection": {
                 "status": item.get("detail_status", "pending"),

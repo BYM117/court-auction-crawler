@@ -519,6 +519,97 @@ td.address {
 .officialPrice b { font-size: 18px; color: var(--teal-dark); }
 .officialPrice span { font-size: 12px; color: var(--muted); }
 
+/* 건축물정보 key-value 격자 */
+.kvGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 8px;
+}
+
+.kv {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px;
+  background: var(--row);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+.kvKey { font-size: 11px; color: var(--muted); }
+.kv b { font-size: 13px; color: var(--text); }
+
+.sourceNote {
+  margin: 8px 0 0;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+/* 실거래가 */
+.txBlock { margin-bottom: 14px; }
+.txBlock:last-child { margin-bottom: 0; }
+
+.txBlock h4 {
+  margin: 0 0 8px;
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.txScope {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 1px 8px;
+  border-radius: 999px;
+}
+
+.txMatched { background: var(--row-active); color: var(--teal-dark); }
+.txNear { background: #f0efe9; color: var(--muted); }
+
+.txStats {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.txStats div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 8px;
+  background: var(--row);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  text-align: center;
+}
+
+.txStats span { font-size: 11px; color: var(--muted); }
+.txStats b { font-size: 13px; color: var(--teal-dark); }
+
+.txTable th {
+  border: 1px solid var(--line);
+  padding: 6px 8px;
+  background: var(--row);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  text-align: left;
+}
+
+.txTable .txAmount {
+  font-weight: 700;
+  color: var(--teal-dark);
+  white-space: nowrap;
+}
+
+.txTable tr td:first-child {
+  background: transparent;
+  color: var(--text);
+  font-weight: 400;
+}
+
 .tableScroll {
   overflow-x: auto;
   margin-bottom: 10px;

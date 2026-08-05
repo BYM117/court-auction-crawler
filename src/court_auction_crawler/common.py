@@ -17,6 +17,22 @@ TERMINAL_STATUS_KEYWORDS = ("낙찰", "매각", "취하", "기각", "정지", "�
 RESTART_EXIT_CODE = 75
 
 
+class RateLimitError(Exception):
+    """공공데이터포털 일일 트래픽 한도 초과(resultCode 22). 한도 초과를 '데이터 없음'으로
+    오분류하면 수천 건이 재시도에서 제외되므로, 백필 루프가 이 예외를 잡아 즉시 멈춘다."""
+
+
+def is_rate_limited(body: str) -> bool:
+    """공공데이터포털 응답 본문이 한도 초과/게이트웨이 에러인지 판별한다.
+    한도 초과는 _type=json이어도 게이트웨이가 XML로 돌려주는 경우가 있다."""
+    return (
+        "LIMITED_NUMBER_OF_SERVICE_REQUESTS_EXCEEDS" in body
+        or "<returnReasonCode>22</returnReasonCode>" in body
+        or '"resultCode":"22"' in body
+        or '"resultCode": "22"' in body
+    )
+
+
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 

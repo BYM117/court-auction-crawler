@@ -250,6 +250,18 @@ class AuctionStore:
                 conn.execute("ALTER TABLE auction_items ADD COLUMN official_price_status TEXT NOT NULL DEFAULT ''")
             if "official_price_at" not in columns:
                 conn.execute("ALTER TABLE auction_items ADD COLUMN official_price_at TEXT")
+            if "building_detail" not in columns:
+                conn.execute("ALTER TABLE auction_items ADD COLUMN building_detail TEXT NOT NULL DEFAULT ''")
+            if "building_status" not in columns:
+                conn.execute("ALTER TABLE auction_items ADD COLUMN building_status TEXT NOT NULL DEFAULT ''")
+            if "building_at" not in columns:
+                conn.execute("ALTER TABLE auction_items ADD COLUMN building_at TEXT")
+            if "transactions_detail" not in columns:
+                conn.execute("ALTER TABLE auction_items ADD COLUMN transactions_detail TEXT NOT NULL DEFAULT ''")
+            if "transactions_status" not in columns:
+                conn.execute("ALTER TABLE auction_items ADD COLUMN transactions_status TEXT NOT NULL DEFAULT ''")
+            if "transactions_at" not in columns:
+                conn.execute("ALTER TABLE auction_items ADD COLUMN transactions_at TEXT")
             if "detail_status" not in columns:
                 conn.execute("ALTER TABLE auction_items ADD COLUMN detail_status TEXT NOT NULL DEFAULT 'pending'")
             if "detail_collected_at" not in columns:
@@ -1023,6 +1035,8 @@ class AuctionStore:
         item = dict(row)
         item["raw"] = json.loads(item.pop("raw_json") or "{}")
         item["detail"] = json.loads(item.pop("detail_json") or "{}")
+        item["building"] = json.loads(item.get("building_detail") or "{}")
+        item["transactions"] = json.loads(item.get("transactions_detail") or "{}")
         item["events"] = [dict(event) for event in events]
         item["documents"] = []
         for document in documents:
@@ -1137,6 +1151,75 @@ class AuctionStore:
             rows = conn.execute(
                 f"""
                 SELECT item_key, address, category, pnu, official_price_status
+                  FROM auction_items
+                 WHERE {where}
+                 ORDER BY crawl_priority DESC, sale_date ASC
+                 LIMIT ?
+                """,
+                params,
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    def update_building(
+        self, item_key: str, *, detail: dict[str, Any] | None, status: str
+    ) -> None:
+        """건축물대장 조회 결과를 저장한다(없으면 detail=None, status로만)."""
+        with self.connect() as conn:
+            conn.execute(
+                """
+                UPDATE auction_items
+                   SET building_detail = ?, building_status = ?, building_at = ?, updated_at = ?
+                 WHERE item_key = ?
+                """,
+                (json.dumps(detail or {}, ensure_ascii=False), status, utc_now(), utc_now(), item_key),
+            )
+
+    def update_transactions(
+        self, item_key: str, *, detail: dict[str, Any] | None, status: str
+    ) -> None:
+        """국토부 실거래가 조회 결과를 저장한다."""
+        with self.connect() as conn:
+            conn.execute(
+                """
+                UPDATE auction_items
+                   SET transactions_detail = ?, transactions_status = ?, transactions_at = ?, updated_at = ?
+                 WHERE item_key = ?
+                """,
+                (json.dumps(detail or {}, ensure_ascii=False), status, utc_now(), utc_now(), item_key),
+            )
+
+    def list_missing_enrichment(
+        self,
+        field: str,
+        *,
+        limit: int = 200,
+        active: bool | None = True,
+        retry_failed_after_days: int = 14,
+    ) -> list[dict[str, Any]]:
+        """PNU는 있으나 부가정보(building/transactions)를 아직 못 채운(또는 재시도 대상) 물건.
+        field는 'building' 또는 'transactions'."""
+        if field not in ("building", "transactions"):
+            raise ValueError(f"unknown enrichment field: {field}")
+        status_col, at_col = f"{field}_status", f"{field}_at"
+        clauses = ["pnu != ''"]
+        params: list[Any] = []
+        if active is not None:
+            clauses.append("is_active = ?")
+            params.append(1 if active else 0)
+        clauses.append(
+            f"({status_col} = ''"
+            f" OR ({status_col} IN ('miss','error','unregistered')"
+            f"     AND ({at_col} IS NULL OR {at_col} <= ?)))"
+        )
+        params.append(
+            (datetime.now(timezone.utc) - timedelta(days=retry_failed_after_days)).isoformat()
+        )
+        where = " AND ".join(clauses)
+        params.append(limit)
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT item_key, address, category, pnu
                   FROM auction_items
                  WHERE {where}
                  ORDER BY crawl_priority DESC, sale_date ASC

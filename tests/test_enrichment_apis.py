@@ -1,0 +1,180 @@
+import unittest
+from urllib.error import HTTPError
+
+from court_auction_crawler import building_registry as bld_mod
+from court_auction_crawler.building_registry import (
+    _num,
+    _pick_recap,
+    _pick_title,
+    _request_bld,
+    pnu_parts,
+)
+from court_auction_crawler.common import RateLimitError, is_rate_limited
+from court_auction_crawler import transactions as tx_mod
+from court_auction_crawler.transactions import (
+    _building_name,
+    _deal_date,
+    _name_matches,
+    _recent_months,
+    _request_cached,
+    _summarize,
+    classify_transaction_kind,
+)
+
+
+class BuildingRegistryTests(unittest.TestCase):
+    def test_pnu_parts_splits_19_digits(self):
+        # 시군구5 / 법정동5 / (산구분1) / 번4 / 지4
+        self.assertEqual(
+            pnu_parts("2635010800109470000"),
+            ("26350", "10800", "0947", "0000"),
+        )
+
+    def test_pnu_parts_rejects_bad_input(self):
+        self.assertIsNone(pnu_parts(""))
+        self.assertIsNone(pnu_parts("123"))
+        self.assertIsNone(pnu_parts("263501080010947000X"))
+
+    def test_pick_recap_prefers_row_with_plat_area(self):
+        rows = [{"platArea": "0"}, {"platArea": "858.7", "bldNm": "본동"}]
+        self.assertEqual(_pick_recap(rows)["bldNm"], "본동")
+
+    def test_pick_title_picks_largest_floor_area_main_building(self):
+        rows = [
+            {"totArea": "120", "etcPurps": "지하주차장"},
+            {"totArea": "5000", "bldNm": "101동"},
+            {"totArea": "80", "regstrKindCdNm": "부속"},
+        ]
+        self.assertEqual(_pick_title(rows)["bldNm"], "101동")
+
+    def test_num_handles_commas_and_junk(self):
+        self.assertEqual(_num("21,851.4"), 21851.4)
+        self.assertEqual(_num(None), 0.0)
+        self.assertEqual(_num("없음"), 0.0)
+
+
+class RateLimitTests(unittest.TestCase):
+    def test_is_rate_limited_detects_known_signatures(self):
+        self.assertTrue(is_rate_limited("...LIMITED_NUMBER_OF_SERVICE_REQUESTS_EXCEEDS_ERROR..."))
+        self.assertTrue(is_rate_limited("<returnReasonCode>22</returnReasonCode>"))
+        self.assertTrue(is_rate_limited('{"resultCode":"22"}'))
+        self.assertFalse(is_rate_limited("NORMAL SERVICE"))
+
+    def test_request_bld_raises_on_http_429(self):
+        # 일일 한도 초과(HTTP 429)를 miss로 삼키지 않고 RateLimitError로 올린다.
+        def boom(*a, **k):
+            raise HTTPError("u", 429, "Too Many Requests", {}, None)
+
+        original = bld_mod.urlopen
+        bld_mod.urlopen = boom
+        try:
+            with self.assertRaises(RateLimitError):
+                _request_bld("key", "getBrTitleInfo", "11680", "10800", "0947", "0000")
+        finally:
+            bld_mod.urlopen = original
+
+    def test_request_bld_other_http_error_returns_empty(self):
+        def boom(*a, **k):
+            raise HTTPError("u", 500, "Server Error", {}, None)
+
+        original = bld_mod.urlopen
+        bld_mod.urlopen = boom
+        try:
+            self.assertEqual(
+                _request_bld("key", "getBrTitleInfo", "11680", "10800", "0947", "0000"), []
+            )
+        finally:
+            bld_mod.urlopen = original
+
+
+class TransactionClassifyTests(unittest.TestCase):
+    def test_classify_by_category_and_address(self):
+        self.assertEqual(classify_transaction_kind("아파트", ""), "apart")
+        self.assertEqual(classify_transaction_kind("", "... 오피스텔 ..."), "officetel")
+        self.assertEqual(classify_transaction_kind("다세대주택", ""), "villa")
+        self.assertEqual(classify_transaction_kind("대지", "토지 임야"), "land")
+        self.assertEqual(classify_transaction_kind("기타", ""), "")
+
+    def test_building_name_extracts_complex_from_parentheses(self):
+        addr = "서울특별시 관악구 남부순환로234길 57-10 (봉천동,샤롯캐슬) [집합건물 29.28㎡]"
+        self.assertEqual(_building_name(addr), "샤롯캐슬")
+
+    def test_building_name_skips_bare_dong(self):
+        # 괄호 안이 '봉천동' 하나뿐이면 단지명이 아니므로 비운다.
+        self.assertEqual(_building_name("서울 관악구 (봉천동)"), "")
+
+    def test_name_matches_normalizes_and_substring(self):
+        row = {"aptNm": "해운대 송정 우림필유"}
+        self.assertTrue(_name_matches(row, ("aptNm",), "해운대송정우림필유아파트"))
+        self.assertFalse(_name_matches(row, ("aptNm",), "다른단지"))
+
+
+class TransactionSummaryTests(unittest.TestCase):
+    def test_summarize_computes_stats_and_recent_sorted(self):
+        rows = [
+            {"aptNm": "가", "excluUseAr": "84.9", "dealAmount": "40,500",
+             "floor": "17", "dealYear": "2026", "dealMonth": "6", "dealDay": "22"},
+            {"aptNm": "가", "excluUseAr": "59.9", "dealAmount": "28,000",
+             "floor": "3", "dealYear": "2026", "dealMonth": "7", "dealDay": "25"},
+            {"aptNm": "가", "excluUseAr": "59.9", "dealAmount": "",  # 금액 없는 행은 제외
+             "dealYear": "2026", "dealMonth": "5", "dealDay": "1"},
+        ]
+        summary = _summarize((rows, True), "sales", max_recent=12)
+        self.assertTrue(summary["matched"])
+        self.assertEqual(summary["count"], 2)
+        self.assertEqual(summary["min"], 28000)
+        self.assertEqual(summary["max"], 40500)
+        self.assertEqual(summary["avg"], 34250)
+        # 최근 계약일 먼저
+        self.assertEqual(summary["recent"][0]["date"], "2026-07-25")
+
+    def test_summarize_rent_uses_deposit(self):
+        rows = [{"deposit": "2,000", "monthlyRent": "50", "dealYear": "2026", "dealMonth": "6", "dealDay": "1"}]
+        summary = _summarize((rows, False), "rent", max_recent=12)
+        self.assertFalse(summary["matched"])
+        self.assertEqual(summary["min"], 2000)
+        self.assertEqual(summary["recent"][0]["monthly"], 50)
+
+    def test_deal_date_formats_parts(self):
+        self.assertEqual(_deal_date({"dealYear": "2026", "dealMonth": "6", "dealDay": "3"}), "2026-06-03")
+        self.assertEqual(_deal_date({"dealYear": "2026", "dealMonth": "6"}), "2026-06")
+        self.assertEqual(_deal_date({}), "")
+
+    def test_recent_months_wraps_year_boundary(self):
+        months = _recent_months(3)
+        self.assertEqual(len(months), 3)
+        # 모두 YYYYMM 6자리
+        self.assertTrue(all(len(m) == 6 and m.isdigit() for m in months))
+
+
+class TransactionCacheTests(unittest.TestCase):
+    def test_request_cached_reuses_same_key(self):
+        # 같은 (op, 법정동, 월)은 한 번만 실제 호출하고 이후 캐시를 쓴다.
+        calls = []
+        original = tx_mod._request_rtms
+        tx_mod._request_rtms = lambda key, op, lawd, ymd: calls.append((op, lawd, ymd)) or [{"x": ymd}]
+        try:
+            cache: dict = {}
+            a = _request_cached("k", "OP", "11680", "202607", cache)
+            b = _request_cached("k", "OP", "11680", "202607", cache)
+            c = _request_cached("k", "OP", "11680", "202606", cache)
+        finally:
+            tx_mod._request_rtms = original
+        self.assertEqual(a, b)              # 동일 결과 재사용
+        self.assertEqual(len(calls), 2)     # 202607 한 번 + 202606 한 번
+        self.assertEqual(c, [{"x": "202606"}])
+
+    def test_request_cached_without_cache_calls_every_time(self):
+        calls = []
+        original = tx_mod._request_rtms
+        tx_mod._request_rtms = lambda key, op, lawd, ymd: calls.append(1) or []
+        try:
+            _request_cached("k", "OP", "11680", "202607", None)
+            _request_cached("k", "OP", "11680", "202607", None)
+        finally:
+            tx_mod._request_rtms = original
+        self.assertEqual(len(calls), 2)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -287,6 +287,8 @@ function renderReport(item) {
     renderGallery(item.assets),
     renderScreening(item.screening),
     renderOfficialPrice(priceBlock.official),
+    renderBuilding(item.building),
+    renderTransactions(item.transactions),
     renderScheduleTables(item.detail),
     renderDetailTables(item.detail),
     renderSections(item.detail && item.detail.sections),
@@ -338,6 +340,74 @@ function renderOfficialPrice(official) {
   return `<section class="reportSection"><h3>공시기준가</h3>`
     + `<div class="officialPrice"><b>${fmtMoney(official.value)}원</b>`
     + `<span>${escapeHtml(official.type || "")}${official.year ? ` · ${escapeHtml(official.year)}` : ""}</span></div></section>`;
+}
+
+function renderBuilding(building) {
+  if (!building || typeof building !== "object") return "";
+  const area = (v) => (v ? `${Number(v).toLocaleString("ko-KR")}㎡` : "");
+  const pct = (v) => (v ? `${v}%` : "");
+  const cells = [
+    ["대지면적", area(building.plat_area)],
+    ["연면적", area(building.tot_area)],
+    ["건축면적", area(building.arch_area)],
+    ["건폐율", pct(building.bc_rat)],
+    ["용적률", pct(building.vl_rat)],
+    ["지상층수", building.grnd_flr_cnt ? `${building.grnd_flr_cnt}층` : ""],
+    ["세대수", building.hhld_cnt ? `${building.hhld_cnt}세대` : ""],
+    ["동수", building.main_bld_cnt ? `${building.main_bld_cnt}동` : ""],
+    ["구조", building.structure || ""],
+    ["주용도", building.main_purpose || ""],
+    ["사용승인", fmtYmd(building.use_apr_day)],
+  ].filter(([, v]) => v);
+  if (!cells.length) return "";
+  const body = cells.map(([k, v]) => (
+    `<div class="kv"><span class="kvKey">${escapeHtml(k)}</span><b>${escapeHtml(String(v))}</b></div>`
+  )).join("");
+  const name = building.bld_nm ? `<span class="count">${escapeHtml(building.bld_nm)}</span>` : "";
+  return `<section class="reportSection"><h3>건축물정보 ${name}</h3>`
+    + `<div class="kvGrid">${body}</div>`
+    + `<p class="sourceNote">출처: 국토교통부 건축물대장</p></section>`;
+}
+
+function renderTransactions(tx) {
+  if (!tx || typeof tx !== "object") return "";
+  const blocks = [renderTxBlock("매매", tx.sales), renderTxBlock("전월세", tx.rent)].filter(Boolean);
+  if (!blocks.length) return "";
+  const label = { apart: "아파트", officetel: "오피스텔", villa: "연립·다세대", land: "토지" }[tx.type] || "";
+  return `<section class="reportSection"><h3>국토부 실거래가${label ? ` <span class="count">${label}</span>` : ""}</h3>`
+    + blocks.join("")
+    + `<p class="sourceNote">출처: 국토교통부 실거래가 · 최근 6개월</p></section>`;
+}
+
+function renderTxBlock(title, block) {
+  if (!block || !block.count) return "";
+  const won = (man) => `${fmtMoney(Number(man) * 10000)}`;
+  const scope = block.matched
+    ? '<span class="txScope txMatched">같은 단지</span>'
+    : '<span class="txScope txNear">인근 시세</span>';
+  const stats = `<div class="txStats">`
+    + `<div><span>건수</span><b>${block.count}건</b></div>`
+    + `<div><span>최저</span><b>${won(block.min)}</b></div>`
+    + `<div><span>평균</span><b>${won(block.avg)}</b></div>`
+    + `<div><span>최고</span><b>${won(block.max)}</b></div></div>`;
+  const rows = (block.recent || []).map((r) => {
+    const amount = title === "전월세" && r.monthly
+      ? `${won(r.amount)} / 월 ${won(r.monthly)}`
+      : won(r.amount);
+    return `<tr><td>${escapeHtml(r.date || "")}</td>`
+      + `<td>${r.area ? `${r.area}㎡` : ""}</td>`
+      + `<td>${r.floor ? `${escapeHtml(String(r.floor))}층` : ""}</td>`
+      + `<td class="txAmount">${amount}</td></tr>`;
+  }).join("");
+  return `<div class="txBlock"><h4>${title} ${scope}</h4>${stats}`
+    + `<table class="dataTable txTable"><thead><tr><th>계약일</th><th>전용</th><th>층</th><th>${title === "전월세" ? "보증금/월세" : "거래가"}</th></tr></thead>`
+    + `<tbody>${rows}</tbody></table></div>`;
+}
+
+function fmtYmd(value) {
+  const s = String(value || "").trim();
+  if (/^\d{8}$/.test(s)) return `${s.slice(0, 4)}.${s.slice(4, 6)}.${s.slice(6, 8)}`;
+  return s;
 }
 
 function tableHtml(table) {
