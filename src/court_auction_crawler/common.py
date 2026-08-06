@@ -8,6 +8,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 import os
 from pathlib import Path
+import re
 from typing import Iterator
 import unicodedata
 
@@ -36,6 +37,27 @@ def is_rate_limited(body: str) -> bool:
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+# integrity_check 출력 중 REINDEX로 안전하게 고쳐지는 손상. 인덱스는 테이블 데이터에서
+# 다시 만들어지므로 이 부류는 자동 복구해도 잃을 게 없다. 페이지·테이블 손상은 여기 없다.
+INDEX_ONLY_PROBLEM_RE = re.compile(
+    r"(?:missing from index|wrong # of entries in index|non-unique entry in index)\s+(\S+)"
+)
+
+
+def index_problems(problems: list[str]) -> list[str] | None:
+    """integrity_check 결과가 '인덱스 한정 손상'이면 재생성할 인덱스 이름들을 돌려준다.
+    한 줄이라도 그 밖의 손상(페이지·테이블 등)이 섞여 있으면 None — 자동 복구하면 안 된다."""
+    names: list[str] = []
+    for line in problems:
+        match = INDEX_ONLY_PROBLEM_RE.search(line)
+        if not match:
+            return None
+        name = match.group(1)
+        if name not in names:
+            names.append(name)
+    return names
 
 
 def normalized_path(path: str | Path) -> Path:

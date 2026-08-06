@@ -10,7 +10,7 @@ import re
 from typing import Any
 
 from .building_registry import fetch_building_registry
-from .common import RateLimitError, self_restart, singleton_lock
+from .common import RateLimitError, index_problems, self_restart, singleton_lock
 from .crawler import collect_all_sync, collect_sync
 from .detail_crawler import collect_details_sync
 from .transactions import classify_transaction_kind, fetch_transactions
@@ -142,6 +142,13 @@ def build_parser() -> argparse.ArgumentParser:
     collect_loop.add_argument("--db", default="data/auction.sqlite3", help="SQLite DB 경로")
     collect_loop.add_argument("--geocode-limit", type=int, default=2000, help="사이클마다 좌표 변환할 최대 물건 수")
     collect_loop.add_argument("--idle-minutes", type=float, default=15.0, help="수집이 꺼져 있을 때 재확인 간격(분)")
+
+    db_check = subparsers.add_parser(
+        "db-check",
+        help="DB 무결성을 점검합니다(아침 상태확인용). 인덱스 한정 손상은 --repair로 복구합니다.",
+    )
+    db_check.add_argument("--db", default="data/auction.sqlite3", help="SQLite DB 경로")
+    db_check.add_argument("--repair", action="store_true", help="인덱스 한정 손상이면 REINDEX로 복구합니다.")
 
     lifecycle = subparsers.add_parser("lifecycle", help="매각기일이 지나고 새 기일이 없는 물건을 종결 처리합니다.")
     lifecycle.add_argument("--db", default="data/auction.sqlite3", help="SQLite DB 경로")
@@ -333,6 +340,9 @@ def main(argv: list[str] | None = None) -> int:
             output = save_items_to_excel(items, args.output)
             print(f"Excel 저장: {output}")
         return 0
+
+    if args.command == "db-check":
+        return run_db_check(AuctionStore(args.db), repair=args.repair)
 
     if args.command == "collect-loop":
         return run_collect_loop(
@@ -540,6 +550,43 @@ def run_collect_cycle(
     return {"items": items, "totals": totals}
 
 
+def run_db_check(store: AuctionStore, *, repair: bool = False) -> int:
+    """DB 무결성을 점검하고, 인덱스 한정 손상이면(그리고 repair면) REINDEX로 되살린다.
+
+    반환값은 종료 코드다. 0=정상, 1=손상이 남음. 아침 상태확인과 수집 데몬이 공유한다."""
+    problems = store.integrity_check()
+    if not problems:
+        print("DB 무결성: 정상(integrity_check ok)", flush=True)
+        return 0
+
+    print(f"!! DB 손상 감지 {len(problems)}건:", flush=True)
+    for line in problems[:20]:
+        print(f"   - {line}", flush=True)
+    if len(problems) > 20:
+        print(f"   ... 외 {len(problems) - 20}건", flush=True)
+
+    names = index_problems(problems)
+    if names is None:
+        print(
+            "!! 인덱스 밖(페이지·테이블) 손상이라 자동 복구하지 않는다. "
+            "백업 복구나 .recover가 필요하다.",
+            flush=True,
+        )
+        return 1
+    if not repair:
+        print(f"   인덱스 한정 손상이다. --repair로 복구 가능: {', '.join(names)}", flush=True)
+        return 1
+
+    print(f"== 인덱스 재생성: {', '.join(names)}", flush=True)
+    store.repair_indexes(names)
+    remaining = store.integrity_check()
+    if remaining:
+        print(f"!! 복구 후에도 손상이 남았다 {len(remaining)}건", flush=True)
+        return 1
+    print("== 복구 완료(integrity_check ok)", flush=True)
+    return 0
+
+
 def run_collect_loop(
     store: AuctionStore,
     *,
@@ -561,6 +608,14 @@ def run_collect_loop(
                 print(f"===== 자동 수집 꺼짐 - {idle_minutes:g}분 후 재확인 =====", flush=True)
                 time.sleep(idle_minutes * 60)
                 continue
+
+            # 사이클마다 무결성을 먼저 본다. 인덱스 손상을 방치하면 수집 도중
+            # 'database disk image is malformed'로 죽고 launchd 재시작만 반복한다(실측).
+            # 1.9G DB에서 1~2초라 사이클 비용에 묻힌다. 점검 자체가 실패해도 수집은 계속한다.
+            try:
+                run_db_check(store, repair=True)
+            except Exception as exc:  # noqa: BLE001
+                print(f"!! DB 무결성 점검 건너뜀: {str(exc)[:150]}", flush=True)
 
             run_kind = controller.next_run_kind()
             window = controller.collection_window(run_kind)

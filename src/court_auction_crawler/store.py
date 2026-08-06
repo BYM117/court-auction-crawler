@@ -1264,6 +1264,36 @@ class AuctionStore:
         with self.connect() as conn:
             conn.execute("SELECT 1").fetchone()
 
+    def integrity_check(self) -> list[str]:
+        """DB 손상을 점검하고 문제 목록을 돌려준다(정상이면 빈 리스트).
+
+        quick_check가 아니라 integrity_check를 쓴다. 실측: 인덱스 항목이 빠진
+        손상을 quick_check는 ok로 통과시켰고, 그 상태로 수집기가
+        'database disk image is malformed'로 죽었다. 1.9G DB에서 1~2초라 아끼는
+        의미가 없다."""
+        with self.connect() as conn:
+            rows = conn.execute("PRAGMA integrity_check").fetchall()
+        problems = [str(row[0]) for row in rows]
+        if problems == ["ok"]:
+            return []
+        return problems
+
+    def repair_indexes(self, index_names: Iterator[str] | list[str] | None = None) -> None:
+        """인덱스를 테이블 데이터로부터 재생성한다. 이름을 안 주면 DB 전체를 다시 만든다.
+        테이블 본문은 건드리지 않으므로 인덱스 한정 손상에서는 데이터 손실이 없다."""
+        names = list(index_names or [])
+        with self.connect() as conn:
+            if not names:
+                conn.execute("REINDEX")
+                return
+            for name in names:
+                # 인덱스 이름은 integrity_check 출력에서만 오고, 실재하는 것만 재생성한다.
+                exists = conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='index' AND name=?", (name,)
+                ).fetchone()
+                if exists:
+                    conn.execute(f'REINDEX "{name}"')
+
     def stats(self, include_detail_breakdown: bool = False) -> dict[str, Any]:
         # 대시보드가 5초마다 폴링하는 경로다. auction_documents GROUP BY(수만 건,
         # 상세수집기 동시 쓰기 경합)는 42초까지 걸려 서버 전체를 마비시키므로

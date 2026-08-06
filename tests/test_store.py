@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from court_auction_crawler.common import index_problems
 from court_auction_crawler.models import AuctionItem
 from court_auction_crawler.store import (
     SCHEMA_VERSION,
@@ -529,6 +530,69 @@ class MigrationTests(unittest.TestCase):
             version = conn.execute("PRAGMA user_version").fetchone()[0]
             conn.close()
             self.assertEqual(version, SCHEMA_VERSION)
+
+
+class IntegrityCheckTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.store = AuctionStore(Path(self.tmp.name) / "auction.sqlite3")
+        self.store.upsert_items(
+            [
+                AuctionItem(
+                    {
+                        "수집구분": "진행",
+                        "사건번호": "서울중앙지방법원 2026타경100",
+                        "물건번호": "1",
+                        "소재지": "서울특별시 중구",
+                        "최저매각가격": "100,000,000원",
+                    }
+                )
+            ]
+        )
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_healthy_db_reports_no_problems(self):
+        self.assertEqual(self.store.integrity_check(), [])
+
+    def test_repair_indexes_rebuilds_without_losing_rows(self):
+        self.store.repair_indexes()
+
+        self.assertEqual(self.store.integrity_check(), [])
+        self.assertIsNotNone(self.store.get_item("auction:서울중앙지방법원:2026타경100:1"))
+
+    def test_repair_indexes_targets_named_index_and_skips_unknown(self):
+        # integrity_check 출력에서 온 이름이라 실재하지 않을 수 있다. 조용히 건너뛴다.
+        self.store.repair_indexes(["idx_auction_items_detail_due", "존재하지_않는_인덱스"])
+
+        self.assertEqual(self.store.integrity_check(), [])
+
+
+class IndexProblemClassificationTests(unittest.TestCase):
+    def test_index_only_problems_yield_index_names(self):
+        problems = [
+            "row 27839 missing from index idx_auction_items_detail_due",
+            "row 43363 missing from index idx_auction_items_detail_due",
+            "wrong # of entries in index idx_auction_items_source",
+        ]
+
+        self.assertEqual(
+            index_problems(problems),
+            ["idx_auction_items_detail_due", "idx_auction_items_source"],
+        )
+
+    def test_table_level_damage_is_never_auto_repairable(self):
+        # 페이지·테이블 손상이 한 줄이라도 섞이면 REINDEX로 고칠 수 없다.
+        problems = [
+            "row 27839 missing from index idx_auction_items_detail_due",
+            "Page 4213 is never used",
+        ]
+
+        self.assertIsNone(index_problems(problems))
+
+    def test_empty_problem_list_is_index_only_with_nothing_to_do(self):
+        self.assertEqual(index_problems([]), [])
 
 
 if __name__ == "__main__":

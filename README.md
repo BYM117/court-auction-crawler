@@ -190,6 +190,31 @@ PYTHONPATH=src .venv/bin/python -m court_auction_crawler.cli enrich-prices \
 - 토지·아파트·빌라·다세대·단독주택을 다룹니다. 오피스텔·상가는 국세청 기준시가(로컬 파일)라 꽁지맵이 자체 인덱스로 처리합니다.
 - 조회 실패/미시도만 골라 처리하므로 여러 번 나눠 실행해도 안전합니다. `--limit`로 하루 한도에 맞추세요.
 
+## DB 무결성 점검
+
+아침 상태확인에 넣어 쓰는 커맨드입니다. 손상이 있으면 종료코드 1로 알립니다.
+
+```bash
+PYTHONPATH=src .venv/bin/python -m court_auction_crawler.cli db-check --db data/auction.sqlite3
+```
+
+인덱스 항목 누락처럼 **인덱스에 한정된 손상**이면 `--repair`로 되살립니다. 인덱스는 테이블
+데이터에서 다시 만들어지므로 데이터 손실이 없습니다.
+
+```bash
+PYTHONPATH=src .venv/bin/python -m court_auction_crawler.cli db-check --db data/auction.sqlite3 --repair
+```
+
+페이지·테이블 손상이 섞여 있으면 자동 복구하지 않고 그대로 보고합니다. 그때는 백업 복구나
+`sqlite3 .recover`가 필요합니다.
+
+`quick_check`가 아니라 `integrity_check`를 씁니다. 실측으로, 인덱스 항목이 빠진 손상을
+`quick_check`는 ok로 통과시켰고 그 상태로 수집기가 `database disk image is malformed`로
+죽었습니다. 1.9G DB에서 1~2초라 아낄 이유가 없습니다.
+
+목록 수집 데몬(`collect-loop`)은 사이클마다 이 점검을 먼저 돌리고, 인덱스 한정 손상이면
+스스로 복구한 뒤 수집을 계속합니다.
+
 ## HTML 파일에서 Excel 만들기
 
 이미 저장해둔 결과 페이지 HTML이 있다면 브라우저 없이 변환할 수 있습니다.
