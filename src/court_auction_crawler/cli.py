@@ -14,6 +14,7 @@ from .common import RateLimitError, index_problems, self_restart, singleton_lock
 from .crawler import collect_all_sync, collect_sync
 from .detail_crawler import collect_details_sync
 from .transactions import classify_transaction_kind, fetch_transactions
+from .web_push import build_uploader, push_once
 from .excel import save_items_to_excel
 from .geocoder import env_value, geocode_address, is_mappable_property, normalize_auction_address
 from .models import SearchOptions
@@ -142,6 +143,25 @@ def build_parser() -> argparse.ArgumentParser:
     collect_loop.add_argument("--db", default="data/auction.sqlite3", help="SQLite DB 경로")
     collect_loop.add_argument("--geocode-limit", type=int, default=2000, help="사이클마다 좌표 변환할 최대 물건 수")
     collect_loop.add_argument("--idle-minutes", type=float, default=15.0, help="수집이 꺼져 있을 때 재확인 간격(분)")
+
+    push_web = subparsers.add_parser(
+        "push-web",
+        help="바뀐 물건·사진만 웹(객체 스토리지)으로 올립니다. 중단해도 다음 실행이 이어받습니다.",
+    )
+    push_web.add_argument("--db", default="data/auction.sqlite3", help="SQLite DB 경로")
+    push_web.add_argument(
+        "--dest",
+        default="local://outputs/web-push",
+        help="업로드 대상. local://경로 또는 s3://버킷 (R2는 s3://, --endpoint-url 필요)",
+    )
+    push_web.add_argument("--endpoint-url", default="", help="S3 호환 엔드포인트(R2 계정 엔드포인트)")
+    push_web.add_argument("--item-limit", type=int, default=500, help="이번 실행에서 올릴 최대 물건 수")
+    push_web.add_argument("--asset-limit", type=int, default=500, help="이번 실행에서 올릴 최대 사진 수")
+    push_web.add_argument("--active-only", action="store_true", help="활성 물건만 올립니다.")
+    push_web.add_argument("--skip-snapshot", action="store_true", help="스냅샷을 건너뜁니다.")
+    push_web.add_argument("--skip-assets", action="store_true", help="사진을 건너뜁니다.")
+    push_web.add_argument("--dry-run", action="store_true", help="실제로 올리지 않고 대상만 셉니다.")
+    push_web.add_argument("--status", action="store_true", help="지금까지 올린 현황만 출력합니다.")
 
     db_check = subparsers.add_parser(
         "db-check",
@@ -340,6 +360,9 @@ def main(argv: list[str] | None = None) -> int:
             output = save_items_to_excel(items, args.output)
             print(f"Excel 저장: {output}")
         return 0
+
+    if args.command == "push-web":
+        return run_push_web(args)
 
     if args.command == "db-check":
         return run_db_check(AuctionStore(args.db), repair=args.repair)
@@ -548,6 +571,63 @@ def run_collect_cycle(
         if not deals.get("no_key"):
             print(f"실거래가: 확보 {deals['ok']}개, 대상 {deals['targets']}개")
     return {"items": items, "totals": totals}
+
+
+def run_push_web(args: Any) -> int:
+    """바뀐 것만 웹으로 올린다. 자격증명은 .env에서 읽어 명령줄에 노출하지 않는다."""
+    store = AuctionStore(args.db)
+    if args.status:
+        stats = store.web_sync_stats()
+        pushed = stats["pushed"]
+        for kind in ("snapshot", "item", "asset"):
+            entry = pushed.get(kind, {"count": 0, "bytes": 0})
+            total = {"item": stats["items_total"], "asset": stats["assets_total"]}.get(kind)
+            scope = f" / 전체 {total}" if total else ""
+            print(f"{kind}: {entry['count']}건{scope}, {entry['bytes'] / 1024 / 1024:.1f}MB")
+        print(f"마지막 푸시: {stats['last_pushed_at'] or '없음'}")
+        return 0
+
+    credentials: dict[str, Any] = {}
+    if args.dest.startswith(("s3://", "r2://")):
+        credentials = {
+            "endpoint_url": args.endpoint_url or env_value("R2_ENDPOINT_URL"),
+            "access_key": env_value("R2_ACCESS_KEY_ID"),
+            "secret_key": env_value("R2_SECRET_ACCESS_KEY"),
+        }
+        if not (credentials["endpoint_url"] and credentials["access_key"] and credentials["secret_key"]):
+            print("R2 자격증명이 없습니다. .env에 R2_ENDPOINT_URL, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY를 넣으세요.")
+            return 1
+
+    uploader = build_uploader(args.dest, **credentials)
+    started = time.time()
+
+    def on_progress(kind: str, index: int, total: int) -> None:
+        if total and (index % 100 == 0 or index == total):
+            print(f"  {kind} {index}/{total}", flush=True)
+
+    summary = push_once(
+        store,
+        uploader,
+        item_limit=args.item_limit,
+        asset_limit=args.asset_limit,
+        include_inactive=not args.active_only,
+        skip_snapshot=args.skip_snapshot,
+        skip_assets=args.skip_assets,
+        dry_run=args.dry_run,
+        on_progress=on_progress,
+    )
+    elapsed = time.time() - started
+    mode = "(모의 실행)" if args.dry_run else ""
+    print(
+        f"웹 푸시 완료{mode}: 물건 {summary.items_pushed}건 올림 / {summary.items_skipped}건 변화없음, "
+        f"사진 {summary.assets_pushed}건, {summary.bytes_pushed / 1024 / 1024:.1f}MB, {elapsed:.1f}초",
+        flush=True,
+    )
+    if summary.errors:
+        print(f"!! 실패 {len(summary.errors)}건:", flush=True)
+        for line in summary.errors[:10]:
+            print(f"   - {line}", flush=True)
+    return 1 if summary.errors else 0
 
 
 def run_db_check(store: AuctionStore, *, repair: bool = False) -> int:

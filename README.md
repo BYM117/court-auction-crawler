@@ -190,6 +190,38 @@ PYTHONPATH=src .venv/bin/python -m court_auction_crawler.cli enrich-prices \
 - 토지·아파트·빌라·다세대·단독주택을 다룹니다. 오피스텔·상가는 국세청 기준시가(로컬 파일)라 꽁지맵이 자체 인덱스로 처리합니다.
 - 조회 실패/미시도만 골라 처리하므로 여러 번 나눠 실행해도 안전합니다. `--limit`로 하루 한도에 맞추세요.
 
+## 웹으로 데이터 올리기
+
+수집은 이 맥에서 계속하고, 바뀐 것만 객체 스토리지로 밀어 올립니다. 맥이 꺼져 있어도
+웹은 마지막으로 올라간 내용으로 계속 서비스됩니다.
+
+계정 없이 파이프라인 전체를 확인하려면 로컬 디렉터리로 내보냅니다.
+
+```bash
+PYTHONPATH=src .venv/bin/python -m court_auction_crawler.cli push-web \
+  --db data/auction.sqlite3 \
+  --dest local://outputs/web-push \
+  --item-limit 200 --asset-limit 200
+```
+
+R2로 올릴 때는 `.env`에 `R2_ENDPOINT_URL`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`를
+넣고 대상을 버킷으로 바꿉니다(`pip install boto3` 필요).
+
+```bash
+PYTHONPATH=src .venv/bin/python -m court_auction_crawler.cli push-web \
+  --db data/auction.sqlite3 --dest s3://court-auction
+```
+
+올리는 것은 세 가지입니다.
+
+- `v1/snapshot.json.gz` — 지도·목록용 요약(활성+좌표). 매번 통째로 교체합니다.
+- `v1/items/<해시>.json` — 물건별 상세(v1 공개 스키마). 페이로드 해시가 바뀐 것만 올립니다.
+- `v1/assets/<sha256>.<확장자>` — 사진 원본. 내용 해시가 경로라 같은 사진은 한 번만 올라갑니다.
+
+무엇을 어떤 내용으로 올렸는지는 `web_sync` 테이블이 기억합니다. 중간에 멈춰도 다음 실행이
+남은 것부터 이어받습니다. 진행 상황은 `--status`, 실제로 올리지 않고 세어만 보려면
+`--dry-run`을 씁니다.
+
 ## DB 무결성 점검
 
 아침 상태확인에 넣어 쓰는 커맨드입니다. 손상이 있으면 종료코드 1로 알립니다.

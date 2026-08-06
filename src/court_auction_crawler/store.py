@@ -304,6 +304,21 @@ class AuctionStore:
                     ON auction_assets(item_key, kind)
                 """
             )
+            # 웹으로 무엇을 어떤 내용으로 올렸는지. 이게 없으면 매일 사진 12G를 다시 올린다.
+            # hash는 종류별로 다른 걸 본다 - 물건은 content_hash, 사진은 sha256.
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS web_sync (
+                    kind TEXT NOT NULL,
+                    ref TEXT NOT NULL,
+                    hash TEXT NOT NULL DEFAULT '',
+                    remote_key TEXT NOT NULL DEFAULT '',
+                    size INTEGER NOT NULL DEFAULT 0,
+                    pushed_at TEXT NOT NULL,
+                    PRIMARY KEY (kind, ref)
+                )
+                """
+            )
             version = conn.execute("PRAGMA user_version").fetchone()[0]
             if version < SCHEMA_VERSION:
                 if version < 1:
@@ -1263,6 +1278,102 @@ class AuctionStore:
         sqlite3.OperationalError가 난다. 워치독이 이걸로 서버 상태를 판정한다."""
         with self.connect() as conn:
             conn.execute("SELECT 1").fetchone()
+
+    # 웹 푸시가 마지막으로 올린 뒤에 물건이 달라졌는지 판정할 때 보는 시각들.
+    # content_hash는 목록 필드만 덮어서(상세·좌표·건축물대장·실거래가는 빠진다)
+    # 이것만 믿으면 상세가 채워져도 푸시가 안 일어난다.
+    _PUSH_FRESHNESS_SQL = (
+        "MAX(COALESCE(i.updated_at,''), COALESCE(i.detail_collected_at,''), "
+        "COALESCE(i.geocoded_at,''), COALESCE(i.official_price_at,''), "
+        "COALESCE(i.building_at,''), COALESCE(i.transactions_at,''))"
+    )
+
+    def pending_item_pushes(self, *, limit: int = 500, include_inactive: bool = True) -> list[dict[str, Any]]:
+        """웹에 올릴 후보 물건. 한 번도 안 올렸거나, 올린 뒤 무언가 갱신된 것만 고른다.
+
+        여기서는 시각만 보고 싼값에 후보를 좁힌다. 실제 변경 여부는 페이로드를 만들어
+        해시를 비교해 확정한다(상세 763MB를 매번 다 읽지 않기 위한 2단 판정)."""
+        # <= 인 이유: 시각이 초 단위라 푸시와 갱신이 같은 초에 걸리면 변경을 놓친다.
+        # 같은 초를 다시 후보로 잡아도 페이로드 해시 비교에서 걸러지므로 손해가 없다.
+        clauses = ["(w.ref IS NULL OR w.pushed_at <= " + self._PUSH_FRESHNESS_SQL + ")"]
+        if not include_inactive:
+            clauses.append("i.is_active = 1")
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT i.*, COALESCE(w.hash, '') AS pushed_hash
+                  FROM auction_items i
+                  LEFT JOIN web_sync w ON w.kind = 'item' AND w.ref = i.item_key
+                 WHERE {' AND '.join(clauses)}
+                 ORDER BY i.is_active DESC, i.updated_at DESC
+                 LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def pending_asset_pushes(self, *, limit: int = 500, include_inactive: bool = True) -> list[dict[str, Any]]:
+        """웹에 올릴 후보 사진. sha256이 파일 내용 그대로라 시각을 볼 필요 없이 정확하다."""
+        clauses = ["(w.ref IS NULL OR w.hash <> a.sha256)"]
+        if not include_inactive:
+            clauses.append("i.is_active = 1")
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT a.*
+                  FROM auction_assets a
+                  JOIN auction_items i ON i.item_key = a.item_key
+                  LEFT JOIN web_sync w ON w.kind = 'asset' AND w.ref = CAST(a.id AS TEXT)
+                 WHERE {' AND '.join(clauses)}
+                 ORDER BY i.is_active DESC, a.id
+                 LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def mark_pushed_many(self, records: list[tuple[str, str, str, str, int]]) -> None:
+        """푸시 기록을 한 트랜잭션에 모아 쓴다.
+
+        객체마다 쓰기 트랜잭션을 열면 상세수집기와 락을 다투느라 사진 50장에 수 분이
+        걸린다(실측). 초기 전량이 20만 객체라 여기서 갈린다."""
+        if not records:
+            return
+        now = utc_now()
+        with self.connect() as conn:
+            conn.executemany(
+                """
+                INSERT INTO web_sync (kind, ref, hash, remote_key, size, pushed_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(kind, ref) DO UPDATE SET
+                    hash = excluded.hash,
+                    remote_key = excluded.remote_key,
+                    size = excluded.size,
+                    pushed_at = excluded.pushed_at
+                """,
+                [(*record, now) for record in records],
+            )
+
+    def mark_pushed(self, kind: str, ref: str, *, hash_value: str, remote_key: str, size: int) -> None:
+        self.mark_pushed_many([(kind, ref, hash_value, remote_key, size)])
+
+    def web_sync_stats(self) -> dict[str, Any]:
+        with self.connect() as conn:
+            pushed = {
+                row["kind"]: {"count": row["count"], "bytes": row["bytes"] or 0}
+                for row in conn.execute(
+                    "SELECT kind, COUNT(*) AS count, SUM(size) AS bytes FROM web_sync GROUP BY kind"
+                ).fetchall()
+            }
+            items_total = conn.execute("SELECT COUNT(*) AS c FROM auction_items").fetchone()["c"]
+            assets_total = conn.execute("SELECT COUNT(*) AS c FROM auction_assets").fetchone()["c"]
+            last = conn.execute("SELECT MAX(pushed_at) AS at FROM web_sync").fetchone()["at"]
+        return {
+            "pushed": pushed,
+            "items_total": items_total,
+            "assets_total": assets_total,
+            "last_pushed_at": last,
+        }
 
     def integrity_check(self) -> list[str]:
         """DB 손상을 점검하고 문제 목록을 돌려준다(정상이면 빈 리스트).
