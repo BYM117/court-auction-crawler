@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 import os
 from pathlib import Path
 from typing import Iterator
+import unicodedata
 
 # 낙찰·취하 등 '더 진행되지 않는' 상태 키워드. 활성 판정과 스크리닝이 공유한다.
 TERMINAL_STATUS_KEYWORDS = ("낙찰", "매각", "취하", "기각", "정지", "취소", "종결", "배당")
@@ -35,6 +36,23 @@ def is_rate_limited(body: str) -> bool:
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def normalized_path(path: str | Path) -> Path:
+    """한글 경로를 NFC로 정규화한 Path. macOS는 같은 '경매물건 크롤링'을 폴더마다
+    NFC/NFD 어느 쪽으로도 저장하므로(파일 접근은 둘 다 되지만 문자열 비교는 깨진다),
+    DB에 적힌 자산 경로와 실행 시 계산한 루트를 비교하기 전에 형태를 맞춰야 한다.
+    맥을 옮기면 같은 물건의 사진 경로만 형태가 갈려 서빙이 404로 죽는다."""
+    return Path(unicodedata.normalize("NFC", str(path)))
+
+
+def path_is_within(path: str | Path, root: str | Path) -> bool:
+    """path가 root 안에 있는지 정규화 형태 차이에 흔들리지 않게 판정한다."""
+    try:
+        normalized_path(path).relative_to(normalized_path(root))
+    except ValueError:
+        return False
+    return True
 
 
 def read_pid(path: str | Path) -> int | None:

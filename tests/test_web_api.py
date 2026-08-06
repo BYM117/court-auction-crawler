@@ -2,9 +2,11 @@ import json
 import os
 import tempfile
 import time
+import unicodedata
 import unittest
 from pathlib import Path
 
+from court_auction_crawler.common import path_is_within
 from court_auction_crawler.models import AuctionItem
 from court_auction_crawler.store import AuctionStore
 from court_auction_crawler.web import (
@@ -124,6 +126,18 @@ class WebApiTests(unittest.TestCase):
         self.assertEqual(payload["detail_collection"]["status"], "collected")
         self.assertEqual(payload["documents"][0]["document_type"], "매각물건명세서")
         self.assertEqual(payload["assets"][0]["url"], "/api/v1/assets/1")
+
+    def test_asset_path_containment_survives_unicode_form_mismatch(self):
+        # 맥을 옮기면 DB에 적힌 한글 경로(NFC)와 실행 시 계산한 루트(NFD)의 형태가
+        # 갈린다. 형태만 다를 뿐 같은 폴더이므로 사진·문서 서빙이 막히면 안 된다.
+        root = "/Users/bym/Documents/경매물건 크롤링/data/auction-assets"
+        stored = unicodedata.normalize(
+            "NFC", root + "/auction_서울중앙지방법원_2026타경100_1/photos/01.png"
+        )
+
+        self.assertTrue(path_is_within(stored, unicodedata.normalize("NFD", root)))
+        self.assertTrue(path_is_within(stored, unicodedata.normalize("NFC", root)))
+        self.assertFalse(path_is_within("/Users/bym/Documents/기타/photo.png", root))
 
     def test_collector_control_only_toggles_enabled_file(self):
         # 서버 컨트롤러는 수집을 직접 실행하지 않고 enabled 파일만 토글한다.

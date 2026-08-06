@@ -13,7 +13,7 @@ from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
 from . import __version__
-from .common import process_is_running, read_pid
+from .common import path_is_within, process_is_running, read_pid
 # 순수 변환 함수는 enrichment.py로 분리했고, 기존 `from .web import ...` 경로를
 # 유지하기 위해 여기서 re-export한다.
 from .enrichment import (  # noqa: F401
@@ -251,9 +251,7 @@ class AuctionWebHandler(BaseHTTPRequestHandler):
         allowed_root = Path(configured_root).resolve() if configured_root else (
             self.store.db_path.parent / "auction-assets"
         ).resolve()
-        try:
-            path.relative_to(allowed_root)
-        except ValueError:
+        if not path_is_within(path, allowed_root):
             self._send_json({"error": "not_found"}, HTTPStatus.NOT_FOUND)
             return
         if not path.is_file():

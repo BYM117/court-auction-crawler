@@ -1,7 +1,9 @@
 #!/bin/zsh
 set -eu
 
-cd "${COURT_AUCTION_WORKSPACE:-/Users/bym/Documents/경매물건 크롤링}"
+SCRIPT_DIR="${0:A:h}"
+PROJECT_ROOT="${COURT_AUCTION_WORKSPACE:-${SCRIPT_DIR:h}}"
+cd "$PROJECT_ROOT"
 
 export PYTHONUNBUFFERED=1
 export PYTHONPATH=src

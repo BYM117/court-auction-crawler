@@ -71,6 +71,18 @@ python3.14 -m venv .venv
 .venv/bin/python -m playwright install chromium
 ```
 
+> **관리자 비밀번호 없이 하려면** Homebrew 대신 uv를 쓴다(홈 디렉터리에만 설치되고 sudo가 필요 없다):
+> ```bash
+> curl -LsSf https://astral.sh/uv/install.sh | sh
+> ~/.local/bin/uv python install 3.14
+> ~/.local/bin/uv venv --python 3.14 .venv
+> ~/.local/bin/uv pip install --python .venv/bin/python certifi openpyxl playwright==1.60.0 pytest
+> ```
+> playwright를 **원본 맥과 같은 버전으로 고정**하면 rsync로 받은 `.playwright-browsers`(chromium 1223)를
+> 그대로 재사용해 브라우저를 다시 내려받지 않는다. 실행 경로는 `.venv/bin/python`으로 같아 스크립트 수정이 필요 없다.
+>
+> rsync로 `.venv` 폴더까지 딸려왔다면 원본 맥의 파이썬을 가리키는 죽은 심볼릭 링크이므로 지우고 새로 만든다.
+
 동작 확인:
 ```bash
 PYTHONPATH=src .venv/bin/python -m pytest -q     # 85 passed 나오면 코드 정상
@@ -104,6 +116,33 @@ rsync -avz \
   ~/.claude/projects/-Users-bym-Documents---------/
 ```
 > 대상 맥 사용자명이 `bym`이 아니면 이 폴더명(`-Users-bym-...`)도 새 경로 인코딩으로 바뀌어야 하므로, 그럴 땐 먼저 대상 맥에서 `claude`를 이 프로젝트 폴더에서 한 번 실행해 폴더를 생성시킨 뒤 그 이름에 맞춰 복사한다. 이후 `claude --resume`으로 이 대화를 이어갈 수 있다.
+
+---
+
+## 4-1. 대상 맥: 자산 경로 재작성 (사용자명이 다를 때 필수)
+
+`auction_assets.file_path`·`auction_documents.file_path`에는 **원본 맥의 절대경로**가 들어 있다.
+사용자명이 바뀌면 사진·문서 API가 전부 404가 되므로 한 번 치환한다(파일은 그대로 두고 DB만 고친다).
+
+```bash
+cd ~/Documents/"경매물건 크롤링"
+sqlite3 data/auction.sqlite3 <<'SQL'
+BEGIN;
+UPDATE auction_assets
+   SET file_path = '/Users/새사용자명/' || substr(file_path, length('/Users/bym/') + 1)
+ WHERE file_path LIKE '/Users/bym/%';
+UPDATE auction_documents
+   SET file_path = '/Users/새사용자명/' || substr(file_path, length('/Users/bym/') + 1)
+ WHERE file_path LIKE '/Users/bym/%';
+COMMIT;
+SQL
+```
+
+확인: `sqlite3 data/auction.sqlite3 "SELECT COUNT(*) FROM auction_assets WHERE file_path LIKE '/Users/bym/%';"` 가 0이어야 한다.
+
+> 참고: 한글 폴더명은 맥마다 NFC/NFD 어느 쪽으로도 저장된다. 파일 접근은 양쪽 다 되지만
+> 문자열 비교는 깨지므로, 서버의 경로 검사는 `common.path_is_within()`이 NFC로 맞춘 뒤 비교한다.
+> 이 처리가 없으면 경로를 올바로 치환해도 사진이 404로 나온다.
 
 ---
 
