@@ -40,6 +40,12 @@ DOCUMENT_TYPES = {
     "현황조사서": 14,
     "감정평가서": 14,
 }
+# 매각물건명세서 본문이 그려지는 뷰어. 경매 사이트가 아니라 법원 문서열람 시스템이다.
+STREAMDOCS_FRAME_HINT = "streamdocs"
+# 본문으로 인정할 최소 길이. 뷰어가 덜 그려졌을 때는 페이지 표시('1/5')뿐이라 10자 안팎이고,
+# 실제 명세서는 1,300자를 넘는다(실측).
+STREAMDOCS_MIN_CHARS = 300
+STREAMDOCS_MAX_WAIT = 20.0
 
 
 class HealthGovernor:
@@ -619,16 +625,23 @@ class CourtAuctionDetailCrawler:
                     await popup.wait_for_timeout(200)
                     metadata = await extract_tables(popup)
                     title = find_document_title(metadata) or document_type
+                    # 이 팝업(매각물건명세서)은 본문이 표가 아니라 다른 시스템의
+                    # StreamDocs 뷰어 iframe 안에 그려진다. 팝업 자체에서 뽑을 수 있는 건
+                    # 사건 정보와 문서 목록뿐이라, 뷰어에서 본문 텍스트를 따로 가져온다.
+                    body_text = await self._read_streamdocs_text(popup)
                     download = (
                         await self._download_document(popup, target["item_key"], document_type)
                         if self.download_document_files
                         else None
                     )
-                    status = "collected" if download else "metadata_only"
+                    # 예전에는 파일을 받았을 때만 collected로 쳤다. 그래서 파일 저장을 끄고
+                    # 돌리는 평소 운영에서는 이 문서가 영원히 collected가 되지 못했다.
+                    # 다른 두 문서와 같이 '본문을 확보했는가'로 판정한다.
+                    has_content = len(body_text) >= STREAMDOCS_MIN_CHARS or bool(download)
                     self.store.save_document_status(
                         target["item_key"],
                         document_type,
-                        status=status,
+                        status="collected" if has_content else "metadata_only",
                         title=title,
                         source_url=popup.url,
                         file_path=download.get("file_path", "") if download else "",
@@ -637,14 +650,15 @@ class CourtAuctionDetailCrawler:
                         sha256=download.get("sha256", "") if download else "",
                         metadata={
                             "tables": metadata,
-                            "capture_method": download.get("capture_method", "") if download else "",
+                            "text": body_text,
+                            "capture_method": (
+                                download.get("capture_method", "") if download else
+                                ("streamdocs_text" if body_text else "")
+                            ),
                         },
-                        next_retry_at="" if download else retry_after(hours=12),
+                        next_retry_at="" if has_content else retry_after(hours=12),
                     )
-                    if download:
-                        result["collected"] += 1
-                    else:
-                        result["pending"] += 1
+                    result["collected" if has_content else "pending"] += 1
             except Exception as exc:
                 self.store.save_document_status(
                     target["item_key"],
@@ -659,6 +673,36 @@ class CourtAuctionDetailCrawler:
                     await popup.close()
             await page.wait_for_timeout(500)
         return result
+
+    async def _read_streamdocs_text(self, popup: Page) -> str:
+        """StreamDocs 뷰어 iframe에서 문서 본문 텍스트를 읽는다.
+
+        뷰어는 문서를 그려 넣는 데 시간이 들쭉날쭉하다(실측 7~8초, 때로 그 이상).
+        고정 대기로는 페이지 표시('1/5')만 잡히고 본문을 놓치므로, 내용이 임계치를
+        넘고 두 번 연속 같아질 때까지 기다린다. 텍스트 레이어가 전 페이지를 한 번에
+        담고 있어 페이지를 넘길 필요는 없다."""
+        deadline = time.monotonic() + STREAMDOCS_MAX_WAIT
+        last = ""
+        stable = 0
+        while time.monotonic() < deadline:
+            frame = next((f for f in popup.frames if STREAMDOCS_FRAME_HINT in f.url), None)
+            if frame is not None:
+                try:
+                    text = await frame.evaluate(
+                        "() => document.body ? document.body.innerText : ''"
+                    )
+                except Exception:  # noqa: BLE001 - 렌더 도중 프레임이 갈리면 다음 회차에 다시 본다
+                    text = ""
+                if len(text) >= STREAMDOCS_MIN_CHARS:
+                    if text == last:
+                        stable += 1
+                        if stable >= 2:
+                            return text.strip()
+                    else:
+                        stable = 0
+                last = text
+            await popup.wait_for_timeout(600)
+        return last.strip() if len(last) >= STREAMDOCS_MIN_CHARS else ""
 
     async def _download_resource(
         self,

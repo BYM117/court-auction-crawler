@@ -6,6 +6,7 @@ from pathlib import Path
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 from court_auction_crawler.detail_crawler import (
+    CourtAuctionDetailCrawler,
     HealthGovernor,
     collect_details_sync,
     document_next_retry,
@@ -15,6 +16,70 @@ from court_auction_crawler.detail_crawler import (
     safe_path_part,
 )
 from court_auction_crawler.store import AuctionStore
+
+
+class FakeFrame:
+    def __init__(self, url: str, texts: list[str]) -> None:
+        self.url = url
+        self._texts = texts
+        self.calls = 0
+
+    async def evaluate(self, _script: str) -> str:
+        value = self._texts[min(self.calls, len(self._texts) - 1)]
+        self.calls += 1
+        return value
+
+
+class FakePopup:
+    def __init__(self, frames: list[FakeFrame]) -> None:
+        self.frames = frames
+        self.waits = 0
+
+    async def wait_for_timeout(self, _ms: int) -> None:
+        self.waits += 1
+
+
+class StreamdocsTextTests(unittest.IsolatedAsyncioTestCase):
+    """매각물건명세서 본문은 뷰어가 다 그린 뒤에야 읽힌다. 덜 그려진 상태를 본문으로
+    착각하면 빈 문서를 collected로 저장하게 된다."""
+
+    def _crawler(self):
+        return CourtAuctionDetailCrawler.__new__(CourtAuctionDetailCrawler)
+
+    async def test_returns_body_once_it_stops_changing(self):
+        body = "의 정 부 지 방 법 원 매각물건명세서 " + "가" * 400
+        frame = FakeFrame("https://pvo.scourt.go.kr/streamdocs/view/sd", [body, body, body])
+        popup = FakePopup([frame])
+
+        text = await self._crawler()._read_streamdocs_text(popup)
+
+        self.assertTrue(text.startswith("의 정 부 지 방 법 원"))
+
+    async def test_waits_through_partially_rendered_text(self):
+        short = "/ 5\n1/5"
+        body = "매각물건명세서 " + "나" * 400
+        frame = FakeFrame("https://pvo.scourt.go.kr/streamdocs/view/sd", [short, short, body, body, body])
+        popup = FakePopup([frame])
+
+        text = await self._crawler()._read_streamdocs_text(popup)
+
+        self.assertIn("매각물건명세서", text)
+        self.assertGreaterEqual(len(text), 300)
+
+    async def test_page_indicator_alone_is_not_treated_as_content(self):
+        frame = FakeFrame("https://pvo.scourt.go.kr/streamdocs/view/sd", ["/ 5\n1/5"])
+        popup = FakePopup([frame])
+
+        text = await self._crawler()._read_streamdocs_text(popup)
+
+        self.assertEqual(text, "")
+
+    async def test_missing_viewer_frame_yields_nothing(self):
+        popup = FakePopup([FakeFrame("https://ecfs.scourt.go.kr/sgvo/other.html", ["x" * 900])])
+
+        text = await self._crawler()._read_streamdocs_text(popup)
+
+        self.assertEqual(text, "")
 
 
 class DetailCrawlerHelperTests(unittest.TestCase):

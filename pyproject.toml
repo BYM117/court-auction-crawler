@@ -14,6 +14,10 @@ dependencies = [
 dev = [
     "pytest>=8.0.0",
 ]
+# push-web으로 R2/S3에 올릴 때만 필요하다. 수집·서버는 표준 라이브러리만 쓴다.
+push = [
+    "boto3>=1.34.0",
+]
 
 [project.scripts]
 auction-crawler = "court_auction_crawler.cli:main"
