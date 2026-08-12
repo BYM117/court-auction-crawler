@@ -1637,9 +1637,19 @@ def first_value(values: dict[str, str], keys: tuple[str, ...]) -> str:
 
 
 def infer_court_from_case(case_no: str) -> str:
-    marker = " "
-    if marker in case_no:
-        prefix = case_no.split(marker, 1)[0].strip()
+    """사건번호 앞에 붙은 법원명을 뽑는다.
+
+    사이트는 '안양지원 2025타경101127'로 줄 때도 있고 '안양지원2025타경101127'처럼
+    붙여서 줄 때도 있다. 공백만 보고 자르면 붙은 형태에서 법원을 통째로 놓치는데,
+    그러면 item_key가 'auction:-:...'가 되고 상세 크롤러가 법원 드롭다운을 고르지
+    못해 그 물건은 상세 수집 대상에서 아예 빠진다(실측: 활성 4,065건이 시도조차
+    되지 않은 채 pending에 머물러 있었다).
+
+    그래서 공백이 아니라 사건번호가 시작되는 위치를 기준으로 자른다."""
+    text = clean_text(case_no)
+    match = CASE_NO_RE.search(text)
+    if match:
+        prefix = text[: match.start()].strip()
         if prefix.endswith(("법원", "지원")):
             return prefix
     return ""

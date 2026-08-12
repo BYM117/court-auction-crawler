@@ -10,10 +10,42 @@ from court_auction_crawler.store import (
     SCHEMA_VERSION,
     AuctionStore,
     build_item_key,
+    infer_court_from_case,
     extract_common_fields,
     is_valid_auction_item,
     representative_case_no,
 )
+
+
+class CourtInferenceTests(unittest.TestCase):
+    """사이트가 법원명을 사건번호에 붙여서 주는 경우가 있다. 이걸 놓치면 item_key가
+    'auction:-:...'가 되고, 상세 크롤러가 법원을 못 골라 그 물건은 상세 수집 대상에서
+    통째로 빠진다."""
+
+    def test_court_glued_to_case_number_is_recovered(self):
+        self.assertEqual(infer_court_from_case("안양지원2025타경101127"), "안양지원")
+        self.assertEqual(infer_court_from_case("수원지방법원2024타경8712"), "수원지방법원")
+
+    def test_space_separated_form_still_works(self):
+        self.assertEqual(infer_court_from_case("서울중앙지방법원 2025타경100"), "서울중앙지방법원")
+
+    def test_merged_case_uses_the_leading_court(self):
+        self.assertEqual(
+            infer_court_from_case("안양지원2025타경101127(중복)2025타경2"), "안양지원"
+        )
+
+    def test_case_number_without_court_yields_nothing(self):
+        self.assertEqual(infer_court_from_case("2025타경1234"), "")
+        self.assertEqual(infer_court_from_case(""), "")
+
+    def test_prefix_that_is_not_a_court_is_rejected(self):
+        self.assertEqual(infer_court_from_case("경매물건2025타경1234"), "")
+
+    def test_glued_court_produces_a_key_that_includes_the_court(self):
+        # 법원이 키에 들어가야 다른 법원의 같은 사건번호와 섞이지 않는다.
+        key = build_item_key({"사건번호": "안양지원2025타경101127", "물건번호": "1"})
+
+        self.assertEqual(key, "auction:안양지원:2025타경101127:1")
 
 
 class ItemKeyTests(unittest.TestCase):
