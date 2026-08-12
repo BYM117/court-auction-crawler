@@ -13,6 +13,12 @@ export PLAYWRIGHT_BROWSERS_PATH=.playwright-browsers
 # 3시간(quick)/24시간(full) 주기를 자동 판단한다. 단일 실행 보장은 CLI가
 # data/collect-all.pid 락으로 처리하고, 연속 실패 시 스스로 종료해 launchd가
 # 깨끗하게 되살린다.
+#
+# --push-dest: 사이클마다 바뀐 물건·사진을 R2로 올린다(맥은 내보내기만 하고
+# 외부 요청은 받지 않는다). .env에 R2 키가 없으면 조용히 건너뛴다.
+PUSH_DEST="${COURT_AUCTION_PUSH_DEST:-s3://court-auction}"
+
 exec .venv/bin/python -m court_auction_crawler.cli collect-loop \
   --db data/auction.sqlite3 \
-  --geocode-limit 2000
+  --geocode-limit 2000 \
+  --push-dest "$PUSH_DEST"

@@ -143,6 +143,10 @@ def build_parser() -> argparse.ArgumentParser:
     collect_loop.add_argument("--db", default="data/auction.sqlite3", help="SQLite DB 경로")
     collect_loop.add_argument("--geocode-limit", type=int, default=2000, help="사이클마다 좌표 변환할 최대 물건 수")
     collect_loop.add_argument("--idle-minutes", type=float, default=15.0, help="수집이 꺼져 있을 때 재확인 간격(분)")
+    collect_loop.add_argument("--push-dest", default="", help="사이클마다 웹으로 올릴 대상(예: s3://court-auction). 비우면 푸시하지 않습니다.")
+    collect_loop.add_argument("--push-item-limit", type=int, default=10000, help="사이클당 올릴 최대 물건 수")
+    collect_loop.add_argument("--push-asset-limit", type=int, default=30000, help="사이클당 올릴 최대 사진 수")
+    collect_loop.add_argument("--push-concurrency", type=int, default=12, help="동시 업로드 수")
 
     push_web = subparsers.add_parser(
         "push-web",
@@ -373,6 +377,10 @@ def main(argv: list[str] | None = None) -> int:
             AuctionStore(args.db),
             geocode_limit=args.geocode_limit,
             idle_minutes=args.idle_minutes,
+            push_dest=args.push_dest,
+            push_item_limit=args.push_item_limit,
+            push_asset_limit=args.push_asset_limit,
+            push_concurrency=args.push_concurrency,
         )
 
     if args.command == "collect-details":
@@ -574,6 +582,60 @@ def run_collect_cycle(
     return {"items": items, "totals": totals}
 
 
+def build_push_uploader(dest: str, endpoint_url: str = "") -> tuple[Any, str]:
+    """푸시 대상 업로더를 만든다. 자격증명은 .env에서 읽어 명령줄에 노출하지 않는다.
+    준비가 안 됐으면 (None, 사유)를 돌려주고, 호출부가 조용히 건너뛴다."""
+    if not dest:
+        return None, "푸시 대상이 지정되지 않았습니다."
+    credentials: dict[str, Any] = {}
+    if dest.startswith(("s3://", "r2://")):
+        credentials = {
+            "endpoint_url": endpoint_url or env_value("R2_ENDPOINT_URL"),
+            "access_key": env_value("R2_ACCESS_KEY_ID"),
+            "secret_key": env_value("R2_SECRET_ACCESS_KEY"),
+        }
+        if not all(credentials.values()):
+            return None, "R2 자격증명이 없습니다 (.env의 R2_ENDPOINT_URL, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY)."
+    try:
+        return build_uploader(dest, **credentials), ""
+    except Exception as exc:  # noqa: BLE001
+        return None, f"업로더 생성 실패: {str(exc)[:150]}"
+
+
+def run_push_cycle(
+    store: AuctionStore,
+    dest: str,
+    *,
+    item_limit: int,
+    asset_limit: int,
+    concurrency: int,
+    endpoint_url: str = "",
+) -> None:
+    """수집 사이클 끝에 붙는 웹 푸시. 실패해도 수집을 멈추지 않는다.
+
+    한 사이클에서 올릴 양에 상한을 둔다. 스키마가 바뀌어 전량 재업로드가 걸리면
+    상한 없이는 다음 수집이 몇 시간 밀린다. 상한을 둬도 몇 사이클이면 다 따라잡는다."""
+    uploader, reason = build_push_uploader(dest, endpoint_url)
+    if uploader is None:
+        print(f"웹 푸시 건너뜀: {reason}", flush=True)
+        return
+    started = time.time()
+    summary = push_once(
+        store,
+        uploader,
+        item_limit=item_limit,
+        asset_limit=asset_limit,
+        concurrency=concurrency,
+    )
+    print(
+        f"웹 푸시: 물건 {summary.items_pushed}건, 사진 {summary.assets_pushed}건, "
+        f"{summary.bytes_pushed / 1024 / 1024:.1f}MB, {time.time() - started:.0f}초",
+        flush=True,
+    )
+    for line in summary.errors[:5]:
+        print(f"  !! 푸시 실패: {line}", flush=True)
+
+
 def run_push_web(args: Any) -> int:
     """바뀐 것만 웹으로 올린다. 자격증명은 .env에서 읽어 명령줄에 노출하지 않는다."""
     store = AuctionStore(args.db)
@@ -588,18 +650,10 @@ def run_push_web(args: Any) -> int:
         print(f"마지막 푸시: {stats['last_pushed_at'] or '없음'}")
         return 0
 
-    credentials: dict[str, Any] = {}
-    if args.dest.startswith(("s3://", "r2://")):
-        credentials = {
-            "endpoint_url": args.endpoint_url or env_value("R2_ENDPOINT_URL"),
-            "access_key": env_value("R2_ACCESS_KEY_ID"),
-            "secret_key": env_value("R2_SECRET_ACCESS_KEY"),
-        }
-        if not (credentials["endpoint_url"] and credentials["access_key"] and credentials["secret_key"]):
-            print("R2 자격증명이 없습니다. .env에 R2_ENDPOINT_URL, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY를 넣으세요.")
-            return 1
-
-    uploader = build_uploader(args.dest, **credentials)
+    uploader, reason = build_push_uploader(args.dest, args.endpoint_url)
+    if uploader is None:
+        print(reason)
+        return 1
     started = time.time()
 
     def on_progress(kind: str, index: int, total: int) -> None:
@@ -675,6 +729,10 @@ def run_collect_loop(
     geocode_limit: int = 2000,
     idle_minutes: float = 15.0,
     max_consecutive_failures: int = 3,
+    push_dest: str = "",
+    push_item_limit: int = 10_000,
+    push_asset_limit: int = 30_000,
+    push_concurrency: int = 12,
 ) -> int:
     """목록 수집 상시 데몬. collector.enabled가 켜져 있을 때만 수집하고,
     3시간(quick)/24시간(full) 주기를 자동 판단한다. 연속 실패가 쌓이면 프로세스를
@@ -723,6 +781,19 @@ def run_collect_loop(
                 consecutive_failures = 0
                 if run_kind == "full":
                     controller.record_full_run()
+                if push_dest:
+                    # 수집·보강이 끝난 뒤에 올려야 이번 사이클의 변경분이 함께 나간다.
+                    # 푸시가 실패해도 수집 사이클은 성공으로 친다(수집과 배포는 별개다).
+                    try:
+                        run_push_cycle(
+                            store,
+                            push_dest,
+                            item_limit=push_item_limit,
+                            asset_limit=push_asset_limit,
+                            concurrency=push_concurrency,
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        print(f"!! 웹 푸시 실패(수집은 정상): {str(exc)[:200]}", flush=True)
             except Exception as exc:  # noqa: BLE001 - 데몬은 어떤 실패에도 죽지 않고 자가복구
                 consecutive_failures += 1
                 print(f"===== 자동 수집 실패({consecutive_failures}/{max_consecutive_failures}): {exc} =====", flush=True)
