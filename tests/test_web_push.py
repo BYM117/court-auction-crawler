@@ -8,6 +8,8 @@ from court_auction_crawler.models import AuctionItem
 from court_auction_crawler.store import AuctionStore
 from court_auction_crawler.web_push import (
     LocalDirUploader,
+    apply_prune,
+    plan_prune,
     SNAPSHOT_KEY,
     asset_object_key,
     build_uploader,
@@ -189,6 +191,50 @@ class PushPipelineTests(unittest.TestCase):
         )
 
         self.assertEqual(len(self.store.pending_asset_pushes(limit=0)), 1)
+
+    def test_prune_finds_objects_no_longer_referenced(self):
+        push_once(self.store, self.uploader, skip_assets=True)
+        # 물건이 DB에서 사라지면 R2 객체는 아무도 참조하지 않는 고아가 된다.
+        with self.store.connect() as conn:
+            conn.execute("DELETE FROM auction_items WHERE item_key = ?", (self.item_key,))
+
+        report = plan_prune(self.store, self.uploader, min_expected=0)
+
+        self.assertEqual(len(report.orphan_items), 1)
+        self.assertEqual(report.orphan_sync_rows, 1)
+
+    def test_prune_keeps_the_snapshot_and_live_objects(self):
+        push_once(self.store, self.uploader, skip_assets=True)
+
+        report = plan_prune(self.store, self.uploader, min_expected=0)
+
+        self.assertEqual(report.orphans, [])
+        self.assertTrue((self.dest / SNAPSHOT_KEY).is_file())
+
+    def test_prune_deletes_only_after_apply(self):
+        push_once(self.store, self.uploader, skip_assets=True)
+        target = self.dest / item_object_key(self.item_key)
+        with self.store.connect() as conn:
+            conn.execute("DELETE FROM auction_items WHERE item_key = ?", (self.item_key,))
+
+        report = plan_prune(self.store, self.uploader, min_expected=0)
+        self.assertTrue(target.is_file())  # 조회만으로는 지워지지 않는다
+
+        apply_prune(self.store, self.uploader, report)
+
+        self.assertFalse(target.is_file())
+        with self.store.connect() as conn:
+            left = conn.execute("SELECT COUNT(*) FROM web_sync WHERE kind='item'").fetchone()[0]
+        self.assertEqual(left, 0)
+
+    def test_prune_refuses_when_the_database_looks_empty(self):
+        # DB를 못 읽은 상태로 돌리면 버킷을 통째로 비우게 된다.
+        push_once(self.store, self.uploader, skip_assets=True)
+
+        report = plan_prune(self.store, self.uploader, min_expected=1000)
+
+        self.assertIn("중단", report.refused)
+        self.assertEqual(report.orphans, [])
 
     def test_dry_run_writes_nothing(self):
         summary = push_once(self.store, self.uploader, skip_assets=True, dry_run=True)

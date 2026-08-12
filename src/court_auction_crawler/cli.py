@@ -14,7 +14,7 @@ from .common import RateLimitError, index_problems, self_restart, singleton_lock
 from .crawler import collect_all_sync, collect_sync
 from .detail_crawler import collect_details_sync
 from .transactions import classify_transaction_kind, fetch_transactions
-from .web_push import build_uploader, push_once
+from .web_push import apply_prune, build_uploader, plan_prune, push_once
 from .excel import save_items_to_excel
 from .geocoder import env_value, geocode_address, is_mappable_property, normalize_auction_address
 from .models import SearchOptions
@@ -167,6 +167,15 @@ def build_parser() -> argparse.ArgumentParser:
     push_web.add_argument("--concurrency", type=int, default=12, help="동시 업로드 수(왕복 지연이 커서 이게 속도를 좌우합니다)")
     push_web.add_argument("--dry-run", action="store_true", help="실제로 올리지 않고 대상만 셉니다.")
     push_web.add_argument("--status", action="store_true", help="지금까지 올린 현황만 출력합니다.")
+
+    prune_web = subparsers.add_parser(
+        "prune-web",
+        help="웹에 남았지만 DB가 참조하지 않는 객체(고아)를 정리합니다. 기본은 조회만 합니다.",
+    )
+    prune_web.add_argument("--db", default="data/auction.sqlite3", help="SQLite DB 경로")
+    prune_web.add_argument("--dest", default="s3://court-auction", help="정리할 대상")
+    prune_web.add_argument("--endpoint-url", default="", help="S3 호환 엔드포인트")
+    prune_web.add_argument("--delete", action="store_true", help="실제로 지웁니다(기본은 조회만).")
 
     db_check = subparsers.add_parser(
         "db-check",
@@ -368,6 +377,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "push-web":
         return run_push_web(args)
+
+    if args.command == "prune-web":
+        return run_prune_web(args)
 
     if args.command == "db-check":
         return run_db_check(AuctionStore(args.db), repair=args.repair)
@@ -684,6 +696,37 @@ def run_push_web(args: Any) -> int:
         for line in summary.errors[:10]:
             print(f"   - {line}", flush=True)
     return 1 if summary.errors else 0
+
+
+def run_prune_web(args: Any) -> int:
+    """웹에 남은 고아 객체를 정리한다. 지우기 전에 무엇이 지워질지 먼저 보여준다."""
+    store = AuctionStore(args.db)
+    uploader, reason = build_push_uploader(args.dest, args.endpoint_url)
+    if uploader is None:
+        print(reason)
+        return 1
+
+    report = plan_prune(store, uploader)
+    if report.refused:
+        print(f"!! 정리 중단: {report.refused}")
+        return 1
+
+    print(f"웹 객체 {report.remote_total}개 확인")
+    print(f"  고아 물건 JSON: {len(report.orphan_items)}개")
+    print(f"  고아 사진: {len(report.orphan_assets)}개")
+    print(f"  고아 푸시 기록(web_sync): {report.orphan_sync_rows}건")
+    for key in report.orphans[:5]:
+        print(f"    예: {key}")
+    if not report.orphans and not report.orphan_sync_rows:
+        print("정리할 것이 없습니다.")
+        return 0
+    if not args.delete:
+        print("--delete를 붙이면 실제로 지웁니다.")
+        return 0
+
+    apply_prune(store, uploader, report)
+    print(f"정리 완료: 객체 {report.deleted}개, 푸시 기록 {report.orphan_sync_rows}건 삭제")
+    return 0
 
 
 def run_db_check(store: AuctionStore, *, repair: bool = False) -> int:

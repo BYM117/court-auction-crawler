@@ -235,6 +235,19 @@ PYTHONPATH=src .venv/bin/python -m court_auction_crawler.cli push-web \
 **맥은 내보내기만 합니다.** 외부에서 맥으로 들어오는 연결은 없고, 포트를 열거나 고정 IP를
 둘 필요도 없습니다. 맥이 꺼져 있어도 웹은 마지막으로 올라간 데이터로 계속 서비스됩니다.
 
+### 웹 고아 객체 정리
+
+물건이 DB에서 삭제되면(중복 정리 등) 이미 올라간 R2 객체는 아무도 참조하지 않는 고아로
+남습니다. 무엇이 지워질지 먼저 확인하고, `--delete`를 붙여야 실제로 지웁니다.
+
+```bash
+PYTHONPATH=src .venv/bin/python -m court_auction_crawler.cli prune-web --dest s3://court-auction
+```
+
+스냅샷과 살아 있는 객체는 건드리지 않고, `web_sync`에 남은 고아 기록도 같이 정리합니다.
+DB에서 읽은 물건이 비정상적으로 적으면(경로 오지정 등) 버킷을 통째로 비우지 않도록
+아무것도 지우지 않고 중단합니다.
+
 ## DB 무결성 점검
 
 아침 상태확인에 넣어 쓰는 커맨드입니다. 손상이 있으면 종료코드 1로 알립니다.

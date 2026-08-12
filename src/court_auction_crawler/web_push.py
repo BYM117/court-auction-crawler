@@ -86,6 +86,10 @@ class Uploader(Protocol):
 
     def put(self, key: str, data: bytes, content_type: str) -> None: ...
 
+    def list_keys(self, prefix: str) -> list[str]: ...
+
+    def delete_keys(self, keys: list[str]) -> int: ...
+
 
 class LocalDirUploader:
     """로컬 디렉터리에 그대로 쓴다. 계정 없이 파이프라인을 끝까지 검증할 때 쓴다."""
@@ -97,6 +101,21 @@ class LocalDirUploader:
         target = self.root / key
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(data)
+
+    def list_keys(self, prefix: str) -> list[str]:
+        base = self.root / prefix
+        if not base.exists():
+            return []
+        return [str(p.relative_to(self.root)) for p in base.rglob("*") if p.is_file()]
+
+    def delete_keys(self, keys: list[str]) -> int:
+        removed = 0
+        for key in keys:
+            target = self.root / key
+            if target.is_file():
+                target.unlink()
+                removed += 1
+        return removed
 
 
 class S3Uploader:
@@ -128,6 +147,28 @@ class S3Uploader:
 
     def put(self, key: str, data: bytes, content_type: str) -> None:
         self._client.put_object(Bucket=self.bucket, Key=key, Body=data, ContentType=content_type)
+
+    def list_keys(self, prefix: str) -> list[str]:
+        keys: list[str] = []
+        token = None
+        while True:
+            params: dict[str, Any] = {"Bucket": self.bucket, "Prefix": prefix, "MaxKeys": 1000}
+            if token:
+                params["ContinuationToken"] = token
+            response = self._client.list_objects_v2(**params)
+            keys.extend(item["Key"] for item in response.get("Contents", []))
+            if not response.get("IsTruncated"):
+                return keys
+            token = response["NextContinuationToken"]
+
+    def delete_keys(self, keys: list[str]) -> int:
+        removed = 0
+        for batch in _chunks(keys, 1000):  # S3 delete_objects는 한 번에 1000개까지다
+            self._client.delete_objects(
+                Bucket=self.bucket, Delete={"Objects": [{"Key": key} for key in batch]}
+            )
+            removed += len(batch)
+        return removed
 
 
 def build_uploader(dest: str, **credentials: Any) -> Uploader:
@@ -300,6 +341,83 @@ def push_assets(
         done += len(chunk)
         if on_progress:
             on_progress(done, len(candidates))
+
+
+@dataclass
+class PruneReport:
+    remote_total: int = 0
+    orphan_items: list[str] = field(default_factory=list)
+    orphan_assets: list[str] = field(default_factory=list)
+    orphan_sync_rows: int = 0
+    deleted: int = 0
+    refused: str = ""
+
+    @property
+    def orphans(self) -> list[str]:
+        return self.orphan_items + self.orphan_assets
+
+
+def plan_prune(store: AuctionStore, uploader: Uploader, *, min_expected: int = 1_000) -> PruneReport:
+    """R2에 남았지만 DB 어디에서도 참조하지 않는 객체를 찾는다(삭제는 하지 않는다).
+
+    DB가 비었거나 읽기에 실패한 상태로 돌리면 버킷을 통째로 비우게 된다. 기대 목록이
+    비정상적으로 적으면 아무것도 지우지 않고 사유만 돌려준다."""
+    report = PruneReport()
+    with store.connect() as conn:
+        item_keys = [row[0] for row in conn.execute("SELECT item_key FROM auction_items")]
+        asset_hashes = {
+            row[0] for row in conn.execute("SELECT DISTINCT sha256 FROM auction_assets") if row[0]
+        }
+    if len(item_keys) < min_expected:
+        report.refused = (
+            f"DB에서 읽은 물건이 {len(item_keys)}건뿐이라 중단합니다"
+            f"(기대 최소 {min_expected}건). DB 경로를 확인하세요."
+        )
+        return report
+
+    expected_items = {item_object_key(key) for key in item_keys}
+    remote = uploader.list_keys("v1/")
+    report.remote_total = len(remote)
+    for key in remote:
+        if key == SNAPSHOT_KEY:
+            continue
+        if key.startswith("v1/items/"):
+            if key not in expected_items:
+                report.orphan_items.append(key)
+        elif key.startswith("v1/assets/"):
+            digest = Path(key).stem
+            if digest not in asset_hashes:
+                report.orphan_assets.append(key)
+    with store.connect() as conn:
+        report.orphan_sync_rows = conn.execute(
+            """
+            SELECT COUNT(*) FROM web_sync w
+             WHERE (w.kind = 'item'
+                    AND NOT EXISTS (SELECT 1 FROM auction_items i WHERE i.item_key = w.ref))
+                OR (w.kind = 'asset'
+                    AND NOT EXISTS (SELECT 1 FROM auction_assets a WHERE CAST(a.id AS TEXT) = w.ref))
+            """
+        ).fetchone()[0]
+    return report
+
+
+def apply_prune(store: AuctionStore, uploader: Uploader, report: PruneReport) -> PruneReport:
+    """찾아둔 고아를 실제로 지운다. R2 객체와 web_sync 기록을 함께 정리한다."""
+    if report.refused:
+        return report
+    if report.orphans:
+        report.deleted = uploader.delete_keys(report.orphans)
+    with store.connect() as conn:
+        conn.execute(
+            """
+            DELETE FROM web_sync
+             WHERE (kind = 'item'
+                    AND NOT EXISTS (SELECT 1 FROM auction_items i WHERE i.item_key = web_sync.ref))
+                OR (kind = 'asset'
+                    AND NOT EXISTS (SELECT 1 FROM auction_assets a WHERE CAST(a.id AS TEXT) = web_sync.ref))
+            """
+        )
+    return report
 
 
 def push_once(
