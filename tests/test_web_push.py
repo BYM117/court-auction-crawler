@@ -169,6 +169,27 @@ class PushPipelineTests(unittest.TestCase):
         self.assertEqual(summary.errors, [])
         self.assertEqual(summary.assets_pushed, 0)
 
+    def test_limit_zero_means_everything_not_nothing(self):
+        # LIMIT 0으로 나가면 전량 업로드가 조용히 0건으로 끝난다(실측).
+        self.assertEqual(len(self.store.pending_item_pushes(limit=0)), 1)
+        self.assertEqual(len(self.store.pending_item_pushes(limit=-1)), 1)
+        self.assertEqual(len(self.store.pending_item_pushes(limit=1)), 1)
+
+    def test_asset_limit_zero_means_everything(self):
+        photo = self.root / "photo.png"
+        photo.write_bytes(b"\x89PNG fake")
+        self.store.save_asset(
+            self.item_key,
+            kind="photo",
+            label="전경도_1",
+            file_path=str(photo),
+            content_type="image/png",
+            file_size=photo.stat().st_size,
+            sha256="deadbeef",
+        )
+
+        self.assertEqual(len(self.store.pending_asset_pushes(limit=0)), 1)
+
     def test_dry_run_writes_nothing(self):
         summary = push_once(self.store, self.uploader, skip_assets=True, dry_run=True)
 

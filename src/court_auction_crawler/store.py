@@ -1288,6 +1288,12 @@ class AuctionStore:
         "COALESCE(i.building_at,''), COALESCE(i.transactions_at,''))"
     )
 
+    @staticmethod
+    def _push_limit(limit: int) -> int:
+        """0 이하는 '전부'로 읽는다. list_detail_targets와 같은 약속인데 여기만 달라서
+        --item-limit 0이 LIMIT 0으로 나가 한 건도 안 올라갔다."""
+        return 1_000_000 if limit is None or limit <= 0 else min(limit, 1_000_000)
+
     def pending_item_pushes(self, *, limit: int = 500, include_inactive: bool = True) -> list[dict[str, Any]]:
         """웹에 올릴 후보 물건. 한 번도 안 올렸거나, 올린 뒤 무언가 갱신된 것만 고른다.
 
@@ -1301,14 +1307,17 @@ class AuctionStore:
         with self.connect() as conn:
             rows = conn.execute(
                 f"""
-                SELECT i.*, COALESCE(w.hash, '') AS pushed_hash
+                -- i.* 로 받으면 detail_json까지 딸려와 전량 모드에서 수백 MB를 메모리에
+                -- 올린다(실측: 4.6만 행에 RSS가 계속 불어나 진행이 멈췄다). 페이로드는
+                -- 어차피 get_item으로 다시 읽으므로 여기서는 판정에 쓰는 두 컬럼만 본다.
+                SELECT i.item_key, COALESCE(w.hash, '') AS pushed_hash
                   FROM auction_items i
                   LEFT JOIN web_sync w ON w.kind = 'item' AND w.ref = i.item_key
                  WHERE {' AND '.join(clauses)}
                  ORDER BY i.is_active DESC, i.updated_at DESC
                  LIMIT ?
                 """,
-                (limit,),
+                (self._push_limit(limit),),
             ).fetchall()
         return [dict(row) for row in rows]
 
@@ -1320,7 +1329,7 @@ class AuctionStore:
         with self.connect() as conn:
             rows = conn.execute(
                 f"""
-                SELECT a.*
+                SELECT a.id, a.item_key, a.file_path, a.content_type, a.sha256
                   FROM auction_assets a
                   JOIN auction_items i ON i.item_key = a.item_key
                   LEFT JOIN web_sync w ON w.kind = 'asset' AND w.ref = CAST(a.id AS TEXT)
@@ -1328,7 +1337,7 @@ class AuctionStore:
                  ORDER BY i.is_active DESC, a.id
                  LIMIT ?
                 """,
-                (limit,),
+                (self._push_limit(limit),),
             ).fetchall()
         return [dict(row) for row in rows]
 
