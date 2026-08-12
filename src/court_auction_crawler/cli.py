@@ -160,6 +160,7 @@ def build_parser() -> argparse.ArgumentParser:
     push_web.add_argument("--active-only", action="store_true", help="활성 물건만 올립니다.")
     push_web.add_argument("--skip-snapshot", action="store_true", help="스냅샷을 건너뜁니다.")
     push_web.add_argument("--skip-assets", action="store_true", help="사진을 건너뜁니다.")
+    push_web.add_argument("--concurrency", type=int, default=12, help="동시 업로드 수(왕복 지연이 커서 이게 속도를 좌우합니다)")
     push_web.add_argument("--dry-run", action="store_true", help="실제로 올리지 않고 대상만 셉니다.")
     push_web.add_argument("--status", action="store_true", help="지금까지 올린 현황만 출력합니다.")
 
@@ -614,6 +615,7 @@ def run_push_web(args: Any) -> int:
         skip_snapshot=args.skip_snapshot,
         skip_assets=args.skip_assets,
         dry_run=args.dry_run,
+        concurrency=args.concurrency,
         on_progress=on_progress,
     )
     elapsed = time.time() - started

@@ -15,12 +15,13 @@
 검증할 수 있고, 나중에 사진만 다른 스토리지로 옮겨도 이 파일 밖은 바뀌지 않는다."""
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 import gzip
 import hashlib
 import json
 from pathlib import Path
-from typing import Any, Callable, Protocol
+from typing import Any, Callable, Iterator, Protocol
 from urllib.parse import urlparse
 
 from .common import utc_now
@@ -33,6 +34,51 @@ ASSET_KEY_TEMPLATE = "v1/assets/{digest}{suffix}"
 
 # 푸시 기록을 몇 건씩 모아 쓸지. 객체마다 쓰기 트랜잭션을 열면 수집 데몬과 락을 다툰다.
 MARK_BATCH = 100
+# 동시 업로드 수. 한 건씩 올리면 왕복 지연(실측 0.9초)이 그대로 쌓여 16만 객체에
+# 40시간이 넘는다. 업로드는 대기가 대부분이라 동시에 띄우면 거의 그만큼 빨라진다.
+DEFAULT_CONCURRENCY = 12
+
+
+def _chunks(items: list[Any], size: int) -> Iterator[list[Any]]:
+    for start in range(0, len(items), size):
+        yield items[start : start + size]
+
+
+def _upload_all(
+    uploader: Uploader,
+    uploads: list[tuple[str, bytes, str]],
+    concurrency: int,
+    summary: PushSummary,
+    kind: str,
+) -> set[str]:
+    """묶음을 동시에 올리고, 실패한 객체 키를 돌려준다.
+
+    실패분은 호출부가 기록에서 빼서 다음 실행이 다시 시도하게 한다. 한 건 실패가
+    나머지를 막지 않는다."""
+    if not uploads:
+        return set()
+    failed: set[str] = set()
+    if concurrency <= 1:
+        for key, body, content_type in uploads:
+            try:
+                uploader.put(key, body, content_type)
+            except Exception as exc:  # noqa: BLE001
+                failed.add(key)
+                summary.errors.append(f"{kind} {key}: {str(exc)[:120]}")
+        return failed
+    with ThreadPoolExecutor(max_workers=concurrency) as pool:
+        futures = {
+            pool.submit(uploader.put, key, body, content_type): key
+            for key, body, content_type in uploads
+        }
+        for future in as_completed(futures):
+            key = futures[future]
+            try:
+                future.result()
+            except Exception as exc:  # noqa: BLE001
+                failed.add(key)
+                summary.errors.append(f"{kind} {key}: {str(exc)[:120]}")
+    return failed
 
 
 class Uploader(Protocol):
@@ -172,42 +218,45 @@ def push_items(
     limit: int = 500,
     include_inactive: bool = True,
     dry_run: bool = False,
+    concurrency: int = DEFAULT_CONCURRENCY,
     summary: PushSummary,
     on_progress: Callable[[int, int], None] | None = None,
 ) -> None:
     candidates = store.pending_item_pushes(limit=limit, include_inactive=include_inactive)
-    marks: list[tuple[str, str, str, str, int]] = []
-    for index, row in enumerate(candidates, start=1):
-        item_key = row["item_key"]
-        summary.items_checked += 1
-        try:
-            item = store.get_item(item_key)
-            if item is None:
-                continue
-            payload = public_auction_detail(item)
-            digest = payload_digest(payload)
-            key = item_object_key(item_key)
-            if digest == row.get("pushed_hash"):
-                # 시각만 갱신됐고 내용은 그대로다. 다시 올리지 않되 pushed_at을 밀어
-                # 다음 실행에서 이 물건이 또 후보로 잡히지 않게 한다.
-                marks.append(("item", item_key, digest, key, 0))
-                summary.items_skipped += 1
-            else:
+    done = 0
+    for chunk in _chunks(candidates, MARK_BATCH):
+        uploads: list[tuple[str, bytes, str]] = []
+        marks: list[tuple[str, str, str, str, int]] = []
+        for row in chunk:
+            item_key = row["item_key"]
+            summary.items_checked += 1
+            try:
+                item = store.get_item(item_key)
+                if item is None:
+                    continue
+                payload = public_auction_detail(item)
+                digest = payload_digest(payload)
+                key = item_object_key(item_key)
+                if digest == row.get("pushed_hash"):
+                    # 시각만 갱신됐고 내용은 그대로다. 다시 올리지 않되 pushed_at을 밀어
+                    # 다음 실행에서 이 물건이 또 후보로 잡히지 않게 한다.
+                    marks.append(("item", item_key, digest, key, 0))
+                    summary.items_skipped += 1
+                    continue
                 body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-                if not dry_run:
-                    uploader.put(key, body, "application/json; charset=utf-8")
+                uploads.append((key, body, "application/json; charset=utf-8"))
                 marks.append(("item", item_key, digest, key, len(body)))
-                summary.items_pushed += 1
-                summary.bytes_pushed += len(body)
-        except Exception as exc:  # noqa: BLE001 - 한 건 실패로 전체를 멈추지 않는다
-            summary.errors.append(f"item {item_key}: {str(exc)[:120]}")
-        if len(marks) >= MARK_BATCH and not dry_run:
+            except Exception as exc:  # noqa: BLE001 - 한 건 실패로 전체를 멈추지 않는다
+                summary.errors.append(f"item {item_key}: {str(exc)[:120]}")
+        if not dry_run:
+            failed = _upload_all(uploader, uploads, concurrency, summary, "item")
+            marks = [m for m in marks if m[3] not in failed]
             store.mark_pushed_many(marks)
-            marks.clear()
+        summary.items_pushed += sum(1 for m in marks if m[4] > 0)
+        summary.bytes_pushed += sum(m[4] for m in marks)
+        done += len(chunk)
         if on_progress:
-            on_progress(index, len(candidates))
-    if not dry_run:
-        store.mark_pushed_many(marks)
+            on_progress(done, len(candidates))
 
 
 def push_assets(
@@ -217,34 +266,40 @@ def push_assets(
     limit: int = 500,
     include_inactive: bool = True,
     dry_run: bool = False,
+    concurrency: int = DEFAULT_CONCURRENCY,
     summary: PushSummary,
     on_progress: Callable[[int, int], None] | None = None,
 ) -> None:
     candidates = store.pending_asset_pushes(limit=limit, include_inactive=include_inactive)
-    marks: list[tuple[str, str, str, str, int]] = []
-    for index, asset in enumerate(candidates, start=1):
-        summary.assets_checked += 1
-        try:
-            path = Path(str(asset.get("file_path", "")))
-            if not path.is_file():
-                # 파일이 없으면 올릴 게 없다. 재시도해도 같으니 조용히 넘긴다.
-                continue
-            key = asset_object_key(asset)
-            if not dry_run:
+    done = 0
+    for chunk in _chunks(candidates, MARK_BATCH):
+        uploads: list[tuple[str, bytes, str]] = []
+        marks: list[tuple[str, str, str, str, int]] = []
+        for asset in chunk:
+            summary.assets_checked += 1
+            try:
+                path = Path(str(asset.get("file_path", "")))
+                if not path.is_file():
+                    # 파일이 없으면 올릴 게 없다. 재시도해도 같으니 조용히 넘긴다.
+                    continue
+                key = asset_object_key(asset)
+                if dry_run:
+                    summary.assets_pushed += 1
+                    continue
                 body = path.read_bytes()
-                uploader.put(key, body, str(asset.get("content_type") or "application/octet-stream"))
+                uploads.append((key, body, str(asset.get("content_type") or "application/octet-stream")))
                 marks.append(("asset", str(asset["id"]), str(asset.get("sha256", "")), key, len(body)))
-                summary.bytes_pushed += len(body)
-            summary.assets_pushed += 1
-        except Exception as exc:  # noqa: BLE001
-            summary.errors.append(f"asset {asset.get('id')}: {str(exc)[:120]}")
-        if len(marks) >= MARK_BATCH and not dry_run:
+            except Exception as exc:  # noqa: BLE001
+                summary.errors.append(f"asset {asset.get('id')}: {str(exc)[:120]}")
+        if not dry_run:
+            failed = _upload_all(uploader, uploads, concurrency, summary, "asset")
+            marks = [m for m in marks if m[3] not in failed]
             store.mark_pushed_many(marks)
-            marks.clear()
+            summary.assets_pushed += len(marks)
+            summary.bytes_pushed += sum(m[4] for m in marks)
+        done += len(chunk)
         if on_progress:
-            on_progress(index, len(candidates))
-    if not dry_run:
-        store.mark_pushed_many(marks)
+            on_progress(done, len(candidates))
 
 
 def push_once(
@@ -257,6 +312,7 @@ def push_once(
     skip_snapshot: bool = False,
     skip_assets: bool = False,
     dry_run: bool = False,
+    concurrency: int = DEFAULT_CONCURRENCY,
     on_progress: Callable[[str, int, int], None] | None = None,
 ) -> PushSummary:
     """스냅샷·물건·사진을 한 번 밀어 올린다. 중단돼도 다음 실행이 남은 것부터 이어받는다."""
@@ -271,6 +327,7 @@ def push_once(
         limit=item_limit,
         include_inactive=include_inactive,
         dry_run=dry_run,
+        concurrency=concurrency,
         summary=summary,
         on_progress=(lambda i, n: on_progress("item", i, n)) if on_progress else None,
     )
@@ -281,6 +338,7 @@ def push_once(
             limit=asset_limit,
             include_inactive=include_inactive,
             dry_run=dry_run,
+            concurrency=concurrency,
             summary=summary,
             on_progress=(lambda i, n: on_progress("asset", i, n)) if on_progress else None,
         )
