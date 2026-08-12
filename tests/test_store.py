@@ -13,7 +13,9 @@ from court_auction_crawler.store import (
     infer_court_from_case,
     extract_common_fields,
     is_valid_auction_item,
+    merge_detail_json,
     representative_case_no,
+    strip_address_label,
 )
 
 
@@ -562,6 +564,97 @@ class MigrationTests(unittest.TestCase):
             version = conn.execute("PRAGMA user_version").fetchone()[0]
             conn.close()
             self.assertEqual(version, SCHEMA_VERSION)
+
+
+class AddressLabelTests(unittest.TestCase):
+    """부동산이 아닌 물건은 목록 표 구조가 달라 주소 앞에 항목 라벨이 붙어 들어온다."""
+
+    def test_leading_labels_are_stripped(self):
+        self.assertEqual(strip_address_label("사용본거지 : 부산광역시 사하구"), "부산광역시 사하구")
+        self.assertEqual(strip_address_label("선적항 : 동해면 검포항"), "동해면 검포항")
+        self.assertEqual(strip_address_label("소재지 : 경상북도 경산시"), "경상북도 경산시")
+        self.assertEqual(strip_address_label("어장의위치 : 완도군"), "완도군")
+
+    def test_colon_inside_a_real_address_is_kept(self):
+        # 통째로 자르면 멀쩡한 주소가 잘린다.
+        kept = "제주특별자치도 제주시 애월읍 곽지리 378-10 (현장표시 : 곽지리 산1)"
+        self.assertEqual(strip_address_label(kept), kept)
+
+        kept2 = "충청북도 충주시 호암토성2로 1 [집합건물 건물의번호 : 제101동]"
+        self.assertEqual(strip_address_label(kept2), kept2)
+
+    def test_normal_address_is_untouched(self):
+        self.assertEqual(
+            strip_address_label("서울특별시 중구 세종대로 110"), "서울특별시 중구 세종대로 110"
+        )
+
+    def test_extracted_field_uses_the_stripped_form(self):
+        fields = extract_common_fields(
+            {"사건번호": "부산지방법원 2025타경1", "물건번호": "1", "소재지": "사용본거지 : 부산광역시 사하구"}
+        )
+
+        self.assertEqual(fields["address"], "부산광역시 사하구")
+
+
+class DetailPreservationTests(unittest.TestCase):
+    """목록 갱신이 상세 크롤링 결과를 덮으면, 물건이 바뀔 때마다 상세가 껍데기로
+    되돌아가고 그 상태가 API와 웹으로 그대로 나간다."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.store = AuctionStore(Path(self.tmp.name) / "auction.sqlite3")
+        self.item_key = "auction:서울중앙지방법원:2026타경100:1"
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _sighting(self, minimum_bid: str) -> AuctionItem:
+        return AuctionItem(
+            {
+                "사건번호": "서울중앙지방법원 2026타경100",
+                "물건번호": "1",
+                "소재지": "서울특별시 중구 세종대로 110",
+                "최저매각가격": minimum_bid,
+                "담당계": "경매1계",
+            }
+        )
+
+    def test_list_update_keeps_crawled_detail(self):
+        self.store.upsert_items([self._sighting("100,000,000원")])
+        self.store.save_item_detail(
+            self.item_key, {"sections": [{"title": "물건 상세"}], "tables": [{"caption": "기일내역"}]}
+        )
+
+        self.store.upsert_items([self._sighting("90,000,000원")])
+        item = self.store.get_item(self.item_key)
+
+        self.assertIn("sections", item["detail"])
+        self.assertIn("tables", item["detail"])
+        self.assertEqual(item["minimum_bid"], "90,000,000원")
+
+    def test_list_fields_still_refresh_on_update(self):
+        self.store.upsert_items([self._sighting("100,000,000원")])
+        self.store.save_item_detail(self.item_key, {"sections": [{"title": "물건 상세"}]})
+
+        changed = AuctionItem(
+            {
+                "사건번호": "서울중앙지방법원 2026타경100",
+                "물건번호": "1",
+                "소재지": "서울특별시 중구 세종대로 110",
+                "최저매각가격": "80,000,000원",
+                "담당계": "경매9계",
+            }
+        )
+        self.store.upsert_items([changed])
+        item = self.store.get_item(self.item_key)
+
+        self.assertEqual(item["detail"]["담당계"], "경매9계")
+        self.assertIn("sections", item["detail"])
+
+    def test_merge_survives_broken_existing_json(self):
+        self.assertEqual(json.loads(merge_detail_json("{깨진", {"담당계": "경매1계"})), {"담당계": "경매1계"})
+        self.assertEqual(json.loads(merge_detail_json(None, {"담당계": "경매1계"})), {"담당계": "경매1계"})
+        self.assertEqual(json.loads(merge_detail_json("[1,2]", {"담당계": "경매1계"})), {"담당계": "경매1계"})
 
 
 class IntegrityCheckTests(unittest.TestCase):

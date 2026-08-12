@@ -474,7 +474,8 @@ class AuctionStore:
                 content_hash = stable_hash(values)
                 list_hash = stable_list_hash(values)
                 existing = conn.execute(
-                    "SELECT raw_json, content_hash, list_hash, sale_date FROM auction_items WHERE item_key = ?",
+                    "SELECT raw_json, detail_json, content_hash, list_hash, sale_date "
+                    "FROM auction_items WHERE item_key = ?",
                     (item_key,),
                 ).fetchone()
 
@@ -577,7 +578,7 @@ class AuctionStore:
                             extracted["status"],
                             extracted["detail_url"],
                             raw_json,
-                            json_dumps(extract_detail_fields(values)),
+                            merge_detail_json(existing["detail_json"], extract_detail_fields(values)),
                             content_hash,
                             list_hash,
                             now,
@@ -1610,7 +1611,7 @@ def extract_common_fields(values: dict[str, str]) -> dict[str, str]:
         "case_no": case_no,
         "item_no": first_value(values, ITEM_KEYS),
         "court": court,
-        "address": first_value(values, ADDRESS_KEYS),
+        "address": strip_address_label(first_value(values, ADDRESS_KEYS)),
         "category": first_value(values, CATEGORY_KEYS),
         "appraisal": first_value(values, APPRAISAL_KEYS),
         "minimum_bid": first_value(values, MINIMUM_KEYS),
@@ -1618,6 +1619,37 @@ def extract_common_fields(values: dict[str, str]) -> dict[str, str]:
         "status": first_value(values, STATUS_KEYS),
         "detail_url": first_value(values, DETAIL_URL_KEYS),
     }
+
+
+# 주소 맨 앞에 붙어 오는 항목 라벨. 부동산이 아닌 물건(자동차·선박·어장)은 목록 표
+# 구조가 달라서 '사용본거지 : 부산광역시…'처럼 라벨이 값에 섞여 들어온다(실측 1,368건).
+ADDRESS_LABEL_RE = re.compile(r"^(소재지|사용본거지|선적항|어장의위치|소재지목록)\s*:\s*")
+
+
+def strip_address_label(address: str) -> str:
+    """주소 맨 앞의 항목 라벨만 벗긴다.
+
+    '(현장표시 : …)'나 '[집합건물 건물의번호 : …]'처럼 주소 안에 콜론이 들어간 정상
+    표기가 있어서, 통째로 자르면 멀쩡한 주소가 잘린다. 시작 위치의 알려진 라벨만 본다."""
+    return ADDRESS_LABEL_RE.sub("", clean_text(address), count=1)
+
+
+def merge_detail_json(existing_text: str | None, list_fields: dict[str, str]) -> str:
+    """목록에서 뽑은 값을 기존 상세 위에 얹는다. 통째로 갈아끼우면 안 된다.
+
+    상세 크롤러가 채운 본문(기일내역·감정평가·사진 목록 등 평균 22KB)을 목록 갱신이
+    덮어써서, 물건이 한 번 바뀔 때마다 상세가 68바이트짜리 껍데기로 되돌아가고 있었다
+    (실측 6,871건). detail_status는 collected로 남아 있어 겉으로는 정상으로 보인다.
+    재수집 대기열이 결국 다시 채우지만, 그 사이 API와 웹에는 빈 상세가 나간다."""
+    try:
+        merged = json.loads(existing_text) if existing_text else {}
+    except (TypeError, ValueError):
+        merged = {}
+    if not isinstance(merged, dict):
+        merged = {}
+    # 목록이 더 최신인 값(담당계·비고 등)만 갱신하고 크롤링 본문은 남긴다.
+    merged.update(list_fields)
+    return json_dumps(merged)
 
 
 def extract_detail_fields(values: dict[str, str]) -> dict[str, str]:
