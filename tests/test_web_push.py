@@ -6,6 +6,7 @@ from pathlib import Path
 
 from court_auction_crawler.models import AuctionItem
 from court_auction_crawler.store import AuctionStore
+from court_auction_crawler.common import asset_object_name
 from court_auction_crawler.web_push import (
     LocalDirUploader,
     apply_prune,
@@ -35,9 +36,21 @@ class ObjectKeyTests(unittest.TestCase):
         )
 
     def test_asset_key_uses_content_hash_so_identical_photos_upload_once(self):
-        key = asset_object_key({"sha256": "abc123", "file_path": "/tmp/사진/01-x.PNG"})
+        key = asset_object_key({"sha256": "abc123", "content_type": "image/png"})
 
         self.assertEqual(key, "v1/assets/abc123.png")
+
+    def test_upload_path_matches_the_name_published_in_the_payload(self):
+        # 웹은 payload의 object_key로 사진을 찾는다. 둘이 어긋나면 사진이 전부 깨진다.
+        asset = {"sha256": "abc123", "content_type": "image/png", "file_path": "/tmp/x.PNG"}
+
+        self.assertEqual(
+            asset_object_key(asset),
+            "v1/assets/" + asset_object_name(asset["sha256"], asset["content_type"]),
+        )
+
+    def test_asset_without_hash_has_no_name(self):
+        self.assertEqual(asset_object_name("", "image/png"), "")
 
     def test_payload_digest_ignores_key_order(self):
         self.assertEqual(

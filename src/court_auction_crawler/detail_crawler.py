@@ -898,6 +898,10 @@ class CourtAuctionDetailCrawler:
             if loaded is None:
                 continue
             content, mime = loaded
+            # 사이트가 JPEG를 image/png로 알려주는 경우가 많다(실측 표본 300건 중
+            # 286건이 실제로는 JPEG). 알려준 값을 그대로 믿으면 파일 확장자와
+            # Content-Type이 전부 어긋난다. 바이트가 말하는 쪽을 우선한다.
+            mime = sniff_image_mime(content) or mime
             digest = hashlib.sha256(content).hexdigest()
             suffix = ".jpg" if "jpeg" in mime else ".png" if "png" in mime else ".gif" if "gif" in mime else ".bin"
             label = photo.get("label", "") or f"사진_{index}"
@@ -974,6 +978,24 @@ class CourtAuctionDetailCrawler:
                 return content, "image/png"
             except Exception:
                 return None
+
+
+IMAGE_SIGNATURES: tuple[tuple[bytes, str], ...] = (
+    (b"\x89PNG\r\n\x1a\n", "image/png"),
+    (b"\xff\xd8\xff", "image/jpeg"),
+    (b"GIF87a", "image/gif"),
+    (b"GIF89a", "image/gif"),
+)
+
+
+def sniff_image_mime(content: bytes) -> str:
+    """이미지 바이트 앞머리로 실제 형식을 판정한다. 모르면 빈 문자열."""
+    for signature, mime in IMAGE_SIGNATURES:
+        if content.startswith(signature):
+            return mime
+    if content[:4] == b"RIFF" and content[8:12] == b"WEBP":
+        return "image/webp"
+    return ""
 
 
 async def extract_tables(page: Page) -> list[dict[str, Any]]:

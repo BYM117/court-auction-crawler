@@ -14,6 +14,7 @@ from court_auction_crawler.detail_crawler import (
     find_table_value,
     is_benign_case_error,
     safe_path_part,
+    sniff_image_mime,
 )
 from court_auction_crawler.store import AuctionStore
 
@@ -80,6 +81,27 @@ class StreamdocsTextTests(unittest.IsolatedAsyncioTestCase):
         text = await self._crawler()._read_streamdocs_text(popup)
 
         self.assertEqual(text, "")
+
+
+class ImageSniffTests(unittest.TestCase):
+    """법원 사이트는 JPEG를 image/png로 알려준다(표본 300건 중 286건). 알려준 값을
+    그대로 믿으면 확장자와 Content-Type이 전부 어긋난 채 저장된다."""
+
+    def test_jpeg_bytes_are_detected_regardless_of_declared_type(self):
+        self.assertEqual(sniff_image_mime(b"\xff\xd8\xff\xe0" + b"0" * 20), "image/jpeg")
+
+    def test_png_and_gif_are_detected(self):
+        self.assertEqual(sniff_image_mime(b"\x89PNG\r\n\x1a\n" + b"0" * 20), "image/png")
+        self.assertEqual(sniff_image_mime(b"GIF89a" + b"0" * 20), "image/gif")
+
+    def test_webp_needs_both_riff_and_webp_markers(self):
+        self.assertEqual(sniff_image_mime(b"RIFF" + b"1234" + b"WEBP"), "image/webp")
+        self.assertEqual(sniff_image_mime(b"RIFF" + b"1234" + b"AVI "), "")
+
+    def test_unknown_bytes_fall_back_to_the_declared_type(self):
+        # 빈 문자열을 주면 호출부가 사이트가 알려준 값을 그대로 쓴다.
+        self.assertEqual(sniff_image_mime(b"not an image"), "")
+        self.assertEqual(sniff_image_mime(b""), "")
 
 
 class DetailCrawlerHelperTests(unittest.TestCase):

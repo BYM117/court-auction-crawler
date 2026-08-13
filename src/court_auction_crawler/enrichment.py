@@ -11,7 +11,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from . import __version__
-from .common import TERMINAL_STATUS_KEYWORDS
+from .common import TERMINAL_STATUS_KEYWORDS, asset_object_name
 
 BRACKET_RE = re.compile(r"\[([^\]]+)]")
 PAREN_RE = re.compile(r"\(([^)]*)\)")
@@ -449,7 +449,13 @@ def public_auction_detail(item: dict[str, Any]) -> dict[str, Any]:
                 for document in item.get("documents", [])
             ],
             "assets": [
-                {**asset, "url": f"/api/v1/assets/{asset.get('id')}"}
+                {
+                    **asset,
+                    "url": f"/api/v1/assets/{asset.get('id')}",
+                    # 웹(Vercel)에는 DB가 없어서 위의 숫자 id로는 사진을 찾을 수 없다.
+                    # 객체 스토리지에 올라간 이름을 같이 실어 보내야 서명 URL을 만든다.
+                    "object_key": asset_object_name(asset.get("sha256", ""), asset.get("content_type", "")),
+                }
                 for asset in item.get("assets", [])
             ],
         }

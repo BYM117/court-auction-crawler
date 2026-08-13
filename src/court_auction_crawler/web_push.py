@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterator, Protocol
 from urllib.parse import urlparse
 
-from .common import utc_now
+from .common import asset_object_name, utc_now
 from .enrichment import public_auction_detail, public_auction_summary
 from .store import AuctionStore
 
@@ -195,8 +195,10 @@ def item_object_key(item_key: str) -> str:
 
 
 def asset_object_key(asset: dict[str, Any]) -> str:
-    suffix = Path(str(asset.get("file_path", ""))).suffix.lower()
-    return ASSET_KEY_TEMPLATE.format(digest=asset.get("sha256", ""), suffix=suffix)
+    """공개 payload에 실리는 이름과 반드시 같아야 한다(common.asset_object_name 공유)."""
+    return "v1/assets/" + asset_object_name(
+        asset.get("sha256", ""), asset.get("content_type", "")
+    )
 
 
 @dataclass

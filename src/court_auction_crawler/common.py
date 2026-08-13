@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from datetime import datetime, timezone
+import mimetypes
 import os
 from pathlib import Path
 import re
@@ -58,6 +59,23 @@ def index_problems(problems: list[str]) -> list[str] | None:
         if name not in names:
             names.append(name)
     return names
+
+
+def asset_object_name(sha256: str, content_type: str) -> str:
+    """객체 스토리지에 올릴 사진 파일 이름. 내용 해시가 곧 이름이라 같은 사진은 한 번만
+    올라간다.
+
+    올리는 쪽(push-web)과 공개 payload에 이름을 싣는 쪽(enrichment)이 반드시 같은
+    문자열을 만들어야 웹이 사진을 찾는다. 그래서 한 함수로 모았다. 확장자를 파일 경로가
+    아니라 content_type에서 뽑는 이유는, 공개 payload에는 서버 내부 파일 경로를 싣지
+    않기 때문이다(양쪽 모두 가진 정보로만 만들어야 한다)."""
+    digest = str(sha256 or "").strip()
+    if not digest:
+        return ""
+    suffix = mimetypes.guess_extension(str(content_type or "").split(";", 1)[0].strip() or "") or ""
+    if suffix == ".jpe":  # mimetypes가 image/jpeg에 대해 내주는 값이 환경마다 갈린다
+        suffix = ".jpg"
+    return f"{digest}{suffix}"
 
 
 def normalized_path(path: str | Path) -> Path:
