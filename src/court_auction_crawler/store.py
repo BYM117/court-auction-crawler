@@ -241,6 +241,13 @@ class AuctionStore:
                 conn.execute("ALTER TABLE auction_items ADD COLUMN last_changed_at TEXT")
             if "next_check_at" not in columns:
                 conn.execute("ALTER TABLE auction_items ADD COLUMN next_check_at TEXT")
+            for land_col, land_ddl in (
+                ("land_use_detail", "TEXT NOT NULL DEFAULT ''"),
+                ("land_use_status", "TEXT NOT NULL DEFAULT ''"),
+                ("land_use_at", "TEXT"),
+            ):
+                if land_col not in columns:
+                    conn.execute(f"ALTER TABLE auction_items ADD COLUMN {land_col} {land_ddl}")
             if "is_active" not in columns:
                 conn.execute("ALTER TABLE auction_items ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1")
             if "crawl_priority" not in columns:
@@ -1106,6 +1113,7 @@ class AuctionStore:
         item["detail"] = json.loads(item.pop("detail_json") or "{}")
         item["building"] = json.loads(item.get("building_detail") or "{}")
         item["transactions"] = json.loads(item.get("transactions_detail") or "{}")
+        item["land_use"] = json.loads(item.get("land_use_detail") or "{}")
         item["events"] = [dict(event) for event in events]
         item["documents"] = []
         for document in documents:
@@ -1259,6 +1267,20 @@ class AuctionStore:
                 (json.dumps(detail or {}, ensure_ascii=False), status, utc_now(), utc_now(), item_key),
             )
 
+    def update_land_use(
+        self, item_key: str, *, detail: dict[str, Any] | None, status: str
+    ) -> None:
+        """토지이용계획 조회 결과를 저장한다."""
+        with self.connect() as conn:
+            conn.execute(
+                """
+                UPDATE auction_items
+                   SET land_use_detail = ?, land_use_status = ?, land_use_at = ?, updated_at = ?
+                 WHERE item_key = ?
+                """,
+                (json.dumps(detail or {}, ensure_ascii=False), status, utc_now(), utc_now(), item_key),
+            )
+
     def list_missing_enrichment(
         self,
         field: str,
@@ -1269,7 +1291,7 @@ class AuctionStore:
     ) -> list[dict[str, Any]]:
         """PNU는 있으나 부가정보(building/transactions)를 아직 못 채운(또는 재시도 대상) 물건.
         field는 'building' 또는 'transactions'."""
-        if field not in ("building", "transactions"):
+        if field not in ("building", "transactions", "land_use"):
             raise ValueError(f"unknown enrichment field: {field}")
         status_col, at_col = f"{field}_status", f"{field}_at"
         clauses = ["pnu != ''"]

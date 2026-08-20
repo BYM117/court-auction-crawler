@@ -10,6 +10,7 @@ import re
 from typing import Any
 
 from .building_registry import fetch_building_registry
+from .land_use import fetch_land_use
 from .common import RateLimitError, index_problems, self_restart, singleton_lock
 from .crawler import collect_all_sync, collect_popularity_sync, collect_results_sync, collect_sync
 from .detail_crawler import collect_details_sync
@@ -188,6 +189,15 @@ def build_parser() -> argparse.ArgumentParser:
     collect_results.add_argument("--headful", action="store_true", help="브라우저 창을 표시합니다.")
     collect_results.add_argument("--max-pages", type=int, default=200, help="법원당 최대 페이지 수")
     collect_results.add_argument("--delay", type=float, default=1.5, help="페이지 사이 대기 시간, 초 단위")
+
+    enrich_land_use = subparsers.add_parser(
+        "enrich-land-use", help="PNU가 있는 물건의 토지이용계획(용도지역·지구)을 채웁니다."
+    )
+    enrich_land_use.add_argument("--db", default="data/auction.sqlite3", help="SQLite DB 경로")
+    enrich_land_use.add_argument("--limit", type=int, default=300, help="이번 실행의 최대 물건 수")
+    enrich_land_use.add_argument("--include-inactive", action="store_true", help="종결 물건도 포함")
+    enrich_land_use.add_argument("--retry-days", type=int, default=90, help="실패분 재시도 유예일")
+    enrich_land_use.add_argument("--quiet", action="store_true", help="진행 로그를 줄입니다.")
 
     collect_popularity = subparsers.add_parser(
         "collect-popularity",
@@ -564,6 +574,22 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
 
+    if args.command == "enrich-land-use":
+        store = AuctionStore(args.db)
+        result = run_enrich_land_use(
+            store, limit=args.limit, include_inactive=args.include_inactive,
+            retry_days=args.retry_days, quiet=args.quiet,
+        )
+        if result.get("no_key"):
+            print("VWORLD_API_KEY가 없어 토지이용계획 조회를 실행할 수 없습니다 (.env).")
+            return 1
+        counts = result.get("counts", {})
+        print(
+            f"토지이용계획 채움: 확보 {result['ok']}개 / 대상 {result['targets']}개 "
+            f"(없음 {counts.get('miss', 0)}, 오류 {counts.get('error', 0)})"
+        )
+        return 0
+
     if args.command == "enrich-transactions":
         store = AuctionStore(args.db)
         result = run_enrich_transactions(
@@ -677,6 +703,13 @@ def run_collect_cycle(
         print(f"인기도 지표: {popularity['saved']}건 저장")
     except Exception as exc:  # noqa: BLE001 - 부가 지표 실패로 사이클을 멈추지 않는다
         print(f"!! 인기도 수집 건너뜀: {str(exc)[:150]}")
+
+    try:
+        land = run_enrich_land_use(store, limit=500, quiet=True)
+        if not land.get("no_key"):
+            print(f"토지이용계획: 확보 {land['ok']}개, 대상 {land['targets']}개")
+    except Exception as exc:  # noqa: BLE001
+        print(f"!! 토지이용계획 건너뜀: {str(exc)[:150]}")
 
     lifecycle = store.apply_lifecycle()
     print(f"생명주기 정리: 활성 {lifecycle['checked']}개 중 {lifecycle['deactivated']}개 종결 처리")
@@ -1170,6 +1203,44 @@ def run_enrich_buildings(
             store.update_building(row["item_key"], detail=asdict(reg), status="ok")
             counts["ok"] = counts.get("ok", 0) + 1
         if not quiet and index % 50 == 0:
+            print(f"  진행 {index}/{len(rows)} · 확보 {counts.get('ok', 0)}")
+    return {"no_key": False, "targets": len(rows), "ok": counts.get("ok", 0), "counts": counts}
+
+
+def run_enrich_land_use(
+    store: AuctionStore,
+    *,
+    limit: int = 300,
+    include_inactive: bool = False,
+    retry_days: int = 90,
+    quiet: bool = False,
+) -> dict[str, Any]:
+    """PNU는 있으나 토지이용계획을 아직 못 채운 물건을 채운다(브이월드).
+
+    용도지역은 잘 바뀌지 않으므로 재시도 주기를 길게 둔다."""
+    if not env_value("VWORLD_API_KEY"):
+        return {"no_key": True, "targets": 0, "ok": 0}
+    active = None if include_inactive else True
+    rows = store.list_missing_enrichment(
+        "land_use", limit=limit, active=active, retry_failed_after_days=retry_days
+    )
+    counts: dict[str, int] = {}
+    for index, row in enumerate(rows, start=1):
+        try:
+            info = fetch_land_use(str(row.get("pnu") or ""))
+        except Exception as error:  # noqa: BLE001 - 조회 실패는 status로만
+            if not quiet:
+                print(f"  토지이용계획 오류: {row['item_key']} {error}")
+            store.update_land_use(row["item_key"], detail=None, status="error")
+            counts["error"] = counts.get("error", 0) + 1
+            continue
+        if info is None:
+            store.update_land_use(row["item_key"], detail=None, status="miss")
+            counts["miss"] = counts.get("miss", 0) + 1
+        else:
+            store.update_land_use(row["item_key"], detail=asdict(info), status="ok")
+            counts["ok"] = counts.get("ok", 0) + 1
+        if not quiet and index % 100 == 0:
             print(f"  진행 {index}/{len(rows)} · 확보 {counts.get('ok', 0)}")
     return {"no_key": False, "targets": len(rows), "ok": counts.get("ok", 0), "counts": counts}
 

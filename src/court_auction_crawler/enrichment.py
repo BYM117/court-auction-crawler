@@ -545,6 +545,7 @@ def public_auction_detail(item: dict[str, Any]) -> dict[str, Any]:
             "raw": item.get("raw", {}),
             "detail": item.get("detail", {}),
             "building": item.get("building") or {},
+            "land_use": item.get("land_use") or {},
             "transactions": item.get("transactions") or {},
             "events": item.get("events", []),
             "sale_results": build_sale_results(item.get("sale_results", [])),
