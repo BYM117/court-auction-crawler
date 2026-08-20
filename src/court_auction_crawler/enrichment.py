@@ -21,6 +21,66 @@ AREA_RE = re.compile(r"([\d,.]+)\s*㎡")
 FAIL_COUNT_RE = re.compile(r"유찰\s*(\d+)")
 LOT_NUMBER_RE = re.compile(r"(?:산\s*)?\d+(?:-\d+)?")
 
+# 1평 = 400/121 ㎡. 경매 정보는 평 단위로 읽는 사람이 많아 ㎡와 나란히 싣는다.
+SQM_PER_PYEONG = 400 / 121
+
+# 비고에 문장으로 섞여 오는 특수권리. 목록에서 태그로 걸러 볼 수 있게 뽑아낸다.
+# 값이 태그 이름, 키가 비고에서 찾을 표현이다.
+SPECIAL_RIGHT_KEYWORDS: tuple[tuple[str, str], ...] = (
+    ("유치권", "유치권"),
+    ("법정지상권", "법정지상권"),
+    ("분묘", "분묘기지권"),
+    ("대항력", "대항력있는임차인"),
+    ("선순위", "선순위임차인"),
+    ("별도등기", "별도등기"),
+    ("농지취득", "농지취득자격증명"),
+    ("맹지", "맹지"),
+    ("위반건축물", "위반건축물"),
+    ("재매각", "재매각"),
+    ("일괄매각", "일괄매각"),
+    ("공유자우선매수", "공유자우선매수"),
+    ("제시외", "제시외건물"),
+)
+
+
+def to_pyeong(sqm: float | None) -> float | None:
+    if not sqm or sqm <= 0:
+        return None
+    return round(sqm / SQM_PER_PYEONG, 2)
+
+
+def price_per_pyeong(amount: int | None, sqm: float | None) -> int | None:
+    """평당 단가. 전용면적이 있으면 그 기준, 없으면 넘겨받은 면적 기준이다."""
+    pyeong = to_pyeong(sqm)
+    if not amount or not pyeong:
+        return None
+    return int(round(amount / pyeong))
+
+
+def parse_special_rights(*texts: Any) -> list[str]:
+    haystack = " ".join(str(text or "") for text in texts)
+    if not haystack.strip():
+        return []
+    found: list[str] = []
+    for keyword, label in SPECIAL_RIGHT_KEYWORDS:
+        if keyword in haystack and label not in found:
+            found.append(label)
+    return found
+
+
+def days_until(date_text: str) -> int | None:
+    """매각기일까지 남은 날. 지난 기일은 음수."""
+    from datetime import date as _date
+
+    match = re.search(r"(\d{4})[.\-](\d{2})[.\-](\d{2})", str(date_text or ""))
+    if not match:
+        return None
+    try:
+        target = _date(int(match.group(1)), int(match.group(2)), int(match.group(3)))
+    except ValueError:
+        return None
+    return (target - _date.today()).days
+
 
 def safe_external_url(value: Any) -> str:
     text = str(value or "").strip()
@@ -108,6 +168,12 @@ def public_auction_summary(item: dict[str, Any]) -> dict[str, Any]:
         "updated_at": item.get("updated_at", ""),
         "detail_status": item.get("detail_status", "pending"),
         "detail_collected_at": item.get("detail_collected_at", ""),
+        # 목록 카드용 대표 사진. 웹에는 DB가 없으므로 스토리지 객체 이름을 실어 보낸다.
+        "thumbnail": (
+            asset_object_name(item.get("thumb_sha256", ""), item.get("thumb_content_type", ""))
+            if item.get("thumb_sha256")
+            else ""
+        ),
     }
     summary.update(public_auction_enrichment(item))
     return summary
@@ -131,6 +197,30 @@ def build_official_price(item: dict[str, Any]) -> dict[str, Any] | None:
     }
 
 
+def build_sale_results(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """매각결과검색에서 받은 기일별 결과. 낙찰가율은 감정가 대비다."""
+    results = []
+    for row in rows:
+        amount = row.get("sale_amount")
+        appraisal = row.get("appraisal")
+        rate = None
+        if amount and appraisal:
+            rate = round(amount / appraisal, 4)
+        results.append(
+            {
+                "sale_date": normalize_date_text(row.get("sale_date", "")),
+                "result": row.get("result", ""),
+                "sold": amount is not None,
+                "sale_amount": amount,
+                "minimum_bid": row.get("minimum_bid"),
+                "appraisal": appraisal,
+                "sale_rate": rate,
+                "collected_at": row.get("collected_at", ""),
+            }
+        )
+    return results
+
+
 def public_auction_enrichment(item: dict[str, Any]) -> dict[str, Any]:
     appraisal = parse_first_money(item.get("appraisal"))
     minimum_bid = parse_first_money(item.get("minimum_bid"))
@@ -139,6 +229,16 @@ def public_auction_enrichment(item: dict[str, Any]) -> dict[str, Any]:
     fail_count = parse_fail_count(item.get("status", ""))
     active = parse_item_active(item)
     screening = build_screening(item, appraisal, minimum_bid, minimum_bid_percent, address_info, fail_count)
+    area = parse_area_info(address_info)
+    # 평당가는 전용(건물)면적 기준이 관례다. 토지만 있는 물건은 토지면적으로 잡는다.
+    unit_sqm = area.get("building_sqm") or area.get("land_sqm") or area.get("total_sqm")
+    raw = item.get("raw")
+    if not isinstance(raw, dict):
+        try:
+            raw = json.loads(item.get("raw_json") or "{}")
+        except (TypeError, ValueError):
+            raw = {}
+    flags = parse_special_rights(raw.get("비고"), item.get("address"), address_info.get("detail"))
 
     return {
         "case": {
@@ -154,13 +254,20 @@ def public_auction_enrichment(item: dict[str, Any]) -> dict[str, Any]:
             "status": item.get("status", ""),
             "fail_count": fail_count,
             "is_active": active,
+            "days_until_sale": days_until(item.get("sale_date", "")),
+            "special_rights": flags,
             "detail_url": safe_external_url(item.get("detail_url", "")),
         },
         "property": {
             "category": item.get("category", ""),
             "type_guess": infer_property_type(item.get("category", ""), item.get("address", "")),
             "address": address_info,
-            "area": parse_area_info(address_info),
+            "area": {
+                **area,
+                "total_pyeong": to_pyeong(area.get("total_sqm")),
+                "land_pyeong": to_pyeong(area.get("land_sqm")),
+                "building_pyeong": to_pyeong(area.get("building_sqm")),
+            },
             "share": parse_share_info(address_info),
             "registry_search_hint": build_registry_search_hint(address_info, item.get("category", "")),
         },
@@ -169,6 +276,11 @@ def public_auction_enrichment(item: dict[str, Any]) -> dict[str, Any]:
             "minimum_bid": minimum_bid,
             "minimum_bid_rate": round(minimum_bid_percent / 100, 4) if minimum_bid_percent is not None else None,
             "minimum_bid_percent": minimum_bid_percent,
+            "appraisal_per_pyeong": price_per_pyeong(appraisal, unit_sqm),
+            "minimum_bid_per_pyeong": price_per_pyeong(minimum_bid, unit_sqm),
+            "per_pyeong_basis": (
+                "building" if area.get("building_sqm") else ("land" if area.get("land_sqm") else "total")
+            ),
             "official": build_official_price(item),
             "raw": {
                 "appraisal": item.get("appraisal", ""),
@@ -429,6 +541,7 @@ def public_auction_detail(item: dict[str, Any]) -> dict[str, Any]:
             "building": item.get("building") or {},
             "transactions": item.get("transactions") or {},
             "events": item.get("events", []),
+            "sale_results": build_sale_results(item.get("sale_results", [])),
             "detail_collection": {
                 "status": item.get("detail_status", "pending"),
                 "collected_at": item.get("detail_collected_at", ""),

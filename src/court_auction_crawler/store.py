@@ -712,7 +712,18 @@ class AuctionStore:
                        last_seen_at, last_changed_at, next_check_at, is_active,
                        crawl_priority, detail_status, detail_collected_at,
                        detail_checked_at, detail_next_retry_at, detail_fail_count,
-                       updated_at
+                       updated_at,
+                       -- 비고에 특수권리(유치권·법정지상권·지분매각 등)가 문장으로 들어
+                       -- 있어 목록에서도 태그로 뽑아 쓴다. 평균 400바이트라 부담이 없다.
+                       raw_json,
+                       -- 목록 썸네일. 사진 전체를 실으면 스냅샷이 몇 배로 불어나므로
+                       -- 대표 한 장의 해시·타입만 싣고 웹이 객체 이름을 만들게 한다.
+                       (SELECT a.sha256 FROM auction_assets a
+                         WHERE a.item_key = auction_items.item_key AND a.kind = 'photo'
+                         ORDER BY a.id LIMIT 1) AS thumb_sha256,
+                       (SELECT a.content_type FROM auction_assets a
+                         WHERE a.item_key = auction_items.item_key AND a.kind = 'photo'
+                         ORDER BY a.id LIMIT 1) AS thumb_content_type
                   FROM auction_items
                   {where}
                  ORDER BY {order_by}
@@ -1065,6 +1076,15 @@ class AuctionStore:
                 """,
                 (item_key,),
             ).fetchall()
+            sale_results = conn.execute(
+                """
+                SELECT sale_date, result, sale_amount, minimum_bid, appraisal, collected_at
+                  FROM auction_sale_results
+                 WHERE item_key = ?
+                 ORDER BY sale_date DESC
+                """,
+                (item_key,),
+            ).fetchall()
 
         item = dict(row)
         item["raw"] = json.loads(item.pop("raw_json") or "{}")
@@ -1078,6 +1098,7 @@ class AuctionStore:
             document_payload["metadata"] = json.loads(document_payload.pop("metadata_json") or "{}")
             item["documents"].append(document_payload)
         item["assets"] = [dict(asset) for asset in assets]
+        item["sale_results"] = [dict(result) for result in sale_results]
         return item
 
     def update_coordinates(
