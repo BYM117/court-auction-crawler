@@ -114,7 +114,7 @@ def build_parser() -> argparse.ArgumentParser:
     collect_all.add_argument("--asset-dir", default="data/auction-assets", help="사진과 법원 문서 저장 디렉터리")
     collect_all.add_argument("--skip-documents", action="store_true", help="상세정보만 수집하고 법원 문서는 건너뜁니다.")
     collect_all.add_argument("--download-document-files", action="store_true", help="대용량 법원 문서 원본도 로컬에 저장합니다.")
-    collect_all.add_argument("--max-pages", type=int, default=50, help="각 파티션에서 수집할 최대 페이지 수")
+    collect_all.add_argument("--max-pages", type=int, default=200, help="각 파티션에서 수집할 최대 페이지 수")
     collect_all.add_argument("--max-items", type=int, help="전체 수집할 최대 물건 수")
     collect_all.add_argument("--delay", type=float, default=1.5, help="페이지 사이 대기 시간, 초 단위")
     collect_all.add_argument("--output", help="수집 후 Excel 파일도 저장할 경로")
@@ -810,7 +810,9 @@ def run_collect_loop(
             )
             options = SearchOptions(
                 auto_search=True,
-                max_pages=50,
+                # 페이지당 20~27건이라 인천(1,600건대)은 60페이지를 넘는다.
+                # 50이면 큰 법원에서 뒷부분이 잘린다.
+                max_pages=200,
                 delay=2.0,
                 date_chunk_days=31,
                 collection_mode="both",

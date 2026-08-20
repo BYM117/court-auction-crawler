@@ -333,10 +333,10 @@ class CourtAuctionCrawler:
         items: list[AuctionItem] = []
         await self._select_largest_page_size(page)
         total_count = await self._read_total_count(page)
-        rows_traversed = 0
+        pages_walked = 0
 
         for page_number in range(1, self.options.max_pages + 1):
-            rows_traversed += await self._count_result_rows(page)
+            pages_walked = page_number
             page_items = await self._extract_court_items(page, config)
             if not page_items and not await self._is_court_result_page(page):
                 table_rows = await self._extract_best_table(page)
@@ -350,37 +350,23 @@ class CourtAuctionCrawler:
                     if self.options.max_items and len(items) >= self.options.max_items:
                         return items
 
-            if total_count is not None and rows_traversed >= total_count:
+            if total_count is not None and len(items) >= total_count:
                 break
             if not await self._go_next_page(page, page_number):
                 break
 
-        # 사이트의 '총 N건'은 일괄매각 필지 행까지 포함한 목록행 수라서 물건 수와
-        # 크게 어긋난다. 같은 단위인 '순회한 행 수'로 비교해야 실누락만 잡힌다.
-        if total_count is not None and rows_traversed:
-            shortfall = total_count - rows_traversed
+        # 사이트의 '총 N건'은 목록행 수가 아니라 물건 수다. 행 수로 오해하고 페이지당
+        # 40행씩 더해 비교하면 총 건수를 실제보다 훨씬 빨리 넘겨 마지막 페이지들을
+        # 통째로 버린다(창원 08.26: 5페이지 중 4페이지만 훑어 129건 중 101건).
+        # 그래서 종료도 경고도 수집한 물건 수로 판정한다.
+        if total_count is not None and items:
+            shortfall = total_count - len(items)
             if shortfall > max(3, int(total_count * 0.05)):
                 print(
-                    f"  !! 수집 부족 의심: 사이트 표시 {total_count}행 중 "
-                    f"{rows_traversed}행 순회 (물건 {len(items)}건)"
+                    f"  !! 수집 부족 의심: 사이트 표시 {total_count}건 중 "
+                    f"{len(items)}건 수집 ({pages_walked}페이지 순회)"
                 )
         return items
-
-    async def _count_result_rows(self, page: Page) -> int:
-        try:
-            trs = await page.evaluate(
-                """
-                () => {
-                  const table = [...document.querySelectorAll('table')]
-                    .find((t) => (t.innerText || '').includes('사건번호') && (t.innerText || '').includes('최저매각가격'));
-                  return table ? table.querySelectorAll('tr').length : 0;
-                }
-                """
-            )
-        except Exception:
-            return 0
-        # 목록행 하나가 물건행+내역행 2줄로 렌더되고 헤더가 2줄이다.
-        return max(0, (int(trs) - 2) // 2)
 
     async def _extract_best_table(self, page: Page) -> list[list[str]]:
         return await page.evaluate(
