@@ -20,9 +20,24 @@ from .geocoder import env_value
 
 BASE_URL = "https://api.vworld.kr/ned/data/getLandUseAttr"
 
-# 용도지역은 '무엇을 지을 수 있는가'를 정하는 가장 상위 구분이라 대표값으로 올린다.
-# 나머지(구역·지구)는 제약 조건이므로 목록으로만 남긴다.
+# 용도지역은 '무엇을 지을 수 있는가'를 정하므로 대표값으로 올리고, 나머지
+# (구역·지구)는 제약 조건이라 목록으로만 남긴다.
 ZONE_SUFFIXES = ("지역",)
+
+# 응답에는 '도시지역'(상위 구분)과 '제2종일반주거지역'(실제 용도지역)이 함께 온다.
+# 사람이 알고 싶은 건 뒤쪽이므로 국토계획법상 용도지역 21종에 해당하는 것을 먼저 고른다.
+# '관리지역'을 그대로 두면 '생활소음진동관리지역'까지 잡히므로 실제 용도지역명만 적는다.
+ZONE_CORE_WORDS = (
+    "주거지역",
+    "상업지역",
+    "공업지역",
+    "녹지지역",
+    "계획관리지역",
+    "생산관리지역",
+    "보전관리지역",
+    "농림지역",
+    "자연환경보전지역",
+)
 
 
 @dataclass(slots=True)
@@ -59,7 +74,7 @@ def fetch_land_use(pnu: str) -> LandUse | None:
 
     first = rows[0]
     return LandUse(
-        zone=zones[0] if zones else "",
+        zone=pick_primary_zone(zones),
         zones=zones,
         districts=districts,
         legal_dong=str(first.get("ldCodeNm") or "").strip(),
@@ -67,6 +82,16 @@ def fetch_land_use(pnu: str) -> LandUse | None:
         updated_at=str(first.get("lastUpdtDt") or "").strip(),
         detail={"count": len(rows)},
     )
+
+
+def pick_primary_zone(zones: list[str]) -> str:
+    """용도지역 목록에서 대표 하나를 고른다.
+
+    '도시지역'처럼 상위 구분만 올리면 정작 알고 싶은 '제2종일반주거지역'이 묻힌다."""
+    for zone in zones:
+        if any(word in zone for word in ZONE_CORE_WORDS):
+            return zone
+    return zones[0] if zones else ""
 
 
 def _rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
