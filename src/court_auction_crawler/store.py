@@ -12,7 +12,7 @@ from typing import Any, Iterator
 
 from .common import TERMINAL_STATUS_KEYWORDS, utc_now
 from .models import AuctionItem, SyncSummary
-from .utils import clean_text, parse_date
+from .utils import clean_text, parse_date, parse_money, parse_sale_result
 
 
 SCHEMA_VERSION = 4
@@ -172,6 +172,24 @@ class AuctionStore:
                     court TEXT NOT NULL,
                     item_count INTEGER NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS auction_sale_results (
+                    court TEXT NOT NULL,
+                    case_no TEXT NOT NULL,
+                    item_no TEXT NOT NULL,
+                    sale_date TEXT NOT NULL,
+                    result TEXT NOT NULL DEFAULT '',
+                    sale_amount INTEGER,
+                    minimum_bid INTEGER,
+                    appraisal INTEGER,
+                    item_key TEXT NOT NULL DEFAULT '',
+                    raw_json TEXT NOT NULL DEFAULT '{}',
+                    collected_at TEXT NOT NULL,
+                    PRIMARY KEY (court, case_no, item_no, sale_date)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_sale_results_item
+                    ON auction_sale_results(item_key, sale_date DESC);
 
                 CREATE TABLE IF NOT EXISTS auction_documents (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1545,6 +1563,79 @@ class AuctionStore:
             )
             deactivated = cursor.rowcount
         return {"checked": checked, "deactivated": deactivated}
+
+    def record_sale_results(self, rows: list[dict[str, str]]) -> dict[str, int]:
+        """매각결과 화면에서 받은 행을 저장한다.
+
+        사이트가 직전 기일들의 결과만 짧게 보여주므로 같은 기일을 여러 번 받게 된다.
+        (법원, 사건, 물건, 기일)로 덮어써서 중복을 막는다."""
+        now = utc_now()
+        prepared: list[tuple[Any, ...]] = []
+        for values in rows:
+            common = extract_common_fields(values)
+            case_no = representative_case_no(common["case_no"])
+            sale_date = common["sale_date"]
+            if not (case_no and common["item_no"] and sale_date):
+                continue
+            result, amount = parse_sale_result(values.get("매각결과", ""))
+            prepared.append(
+                (
+                    common["court"],
+                    case_no,
+                    common["item_no"],
+                    sale_date,
+                    result,
+                    amount,
+                    parse_money(common["minimum_bid"]),
+                    parse_money(common["appraisal"]),
+                    build_item_key(values),
+                    json_dumps(values),
+                    now,
+                )
+            )
+        if not prepared:
+            return {"received": len(rows), "saved": 0, "sold": 0}
+        with self.connect() as conn:
+            conn.executemany(
+                """
+                INSERT INTO auction_sale_results(
+                    court, case_no, item_no, sale_date, result,
+                    sale_amount, minimum_bid, appraisal, item_key, raw_json, collected_at)
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(court, case_no, item_no, sale_date) DO UPDATE SET
+                    result = excluded.result,
+                    sale_amount = excluded.sale_amount,
+                    minimum_bid = excluded.minimum_bid,
+                    appraisal = excluded.appraisal,
+                    item_key = excluded.item_key,
+                    raw_json = excluded.raw_json,
+                    collected_at = excluded.collected_at
+                """,
+                prepared,
+            )
+        return {
+            "received": len(rows),
+            "saved": len(prepared),
+            "sold": sum(1 for row in prepared if row[5] is not None),
+        }
+
+    def sale_result_summary(self) -> dict[str, Any]:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT COUNT(*) AS total,
+                       SUM(CASE WHEN sale_amount IS NOT NULL THEN 1 ELSE 0 END) AS sold,
+                       MIN(sale_date) AS first_date,
+                       MAX(sale_date) AS last_date
+                  FROM auction_sale_results
+                """
+            ).fetchone()
+        return {
+            "total": row["total"] or 0,
+            "sold": row["sold"] or 0,
+            "first_date": row["first_date"] or "",
+            "last_date": row["last_date"] or "",
+        }
 
     def record_court_stats(
         self,

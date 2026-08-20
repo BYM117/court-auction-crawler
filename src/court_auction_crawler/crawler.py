@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 import os
 from pathlib import Path
+import re
 from typing import Callable
 from urllib.parse import urlparse
 
@@ -16,6 +17,7 @@ from .parser import rows_to_items
 COURT_AUCTION_URL = "https://www.courtauction.go.kr/"
 COURT_DETAIL_SEARCH_URL = "https://www.courtauction.go.kr/pgj/index.on?w2xPath=/pgj/ui/pgj100/PGJ151F00.xml"
 COURT_SCHEDULED_SEARCH_URL = "https://www.courtauction.go.kr/pgj/index.on?w2xPath=/pgj/ui/pgj100/PGJ157M00.xml"
+COURT_RESULT_SEARCH_URL = "https://www.courtauction.go.kr/pgj/index.on?w2xPath=/pgj/ui/pgj100/PGJ158M00.xml"
 
 # 법원경매 사이트는 WebSquare SPA라 백그라운드 요청이 끊이지 않아 networkidle이
 # 사실상 오지 않는다. 대신 결과 영역의 내용 토큰이 바뀌는 것을 직접 기다린다.
@@ -39,6 +41,12 @@ class SearchPageConfig:
     start_date_selector: str
     end_date_selector: str
     search_button_selector: str
+    # 결과표를 찾는 표식과 마지막 상세 칸의 이름. 매각결과 화면만 '진행상태' 대신
+    # '매각결과'를 쓰고 값에 낙찰가가 함께 들어온다(예: "매각 151,436,000").
+    table_marker: str = "진행상태"
+    status_field: str = "진행상태"
+    # 매각결과 화면은 소재지와 내역이 한 칸으로 합쳐져 뒤쪽 열이 하나씩 앞당겨진다.
+    column_offset: int = 0
 
 
 CURRENT_SEARCH = SearchPageConfig(
@@ -61,6 +69,23 @@ SCHEDULED_SEARCH = SearchPageConfig(
     start_date_selector="#mf_wfm_mainFrame_cal_dspslSchdGdsPerdStr_input",
     end_date_selector="#mf_wfm_mainFrame_cal_dspslSchdGdsPerdEnd_input",
     search_button_selector="#mf_wfm_mainFrame_btn_dspslSchdGdsSrch",
+)
+
+# 매각결과검색. 낙찰 여부와 낙찰가(매각대금)를 주는 유일한 화면이다.
+# 기간 조건이 없고 법원만 고르면 되며, 사이트가 '매각기일 다음날부터 7일간'만
+# 보여주므로 놓치면 그 기일의 낙찰가는 영영 받을 수 없다.
+RESULT_SEARCH = SearchPageConfig(
+    mode="result",
+    label="결과",
+    source_label="결과",
+    url=COURT_RESULT_SEARCH_URL,
+    court_selector="#mf_wfm_mainFrame_sbx_dspslRsltSrchCortOfc",
+    start_date_selector="",
+    end_date_selector="",
+    search_button_selector="#mf_wfm_mainFrame_btn_dspslRsltSrch",
+    table_marker="매각결과",
+    status_field="매각결과",
+    column_offset=-1,
 )
 
 
@@ -196,6 +221,38 @@ class CourtAuctionCrawler:
             )
         except PlaywrightTimeoutError:
             pass
+
+    async def collect_results(
+        self,
+        on_court: Callable[[str, list[AuctionItem]], None] | None = None,
+    ) -> list[AuctionItem]:
+        """법원별 매각결과(낙찰 여부·낙찰가)를 훑는다.
+
+        기간 조건이 없는 화면이라 법원만 바꿔가며 조회하면 된다. 사이트가 직전
+        기일들의 결과만 짧게 보여주므로 자주 돌수록 놓치는 기일이 줄어든다."""
+        _prefer_local_browser_cache()
+        collected: list[AuctionItem] = []
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=not self.options.headful)
+            page = await browser.new_page(viewport={"width": 1440, "height": 1000})
+            await page.goto(COURT_AUCTION_URL, wait_until="domcontentloaded")
+            await self._open_search_page(page, RESULT_SEARCH, force=True)
+            courts = self._filter_courts(await self._get_court_options(page, RESULT_SEARCH.court_selector))
+            for index, court in enumerate(courts, start=1):
+                print(f"[{index}/{len(courts)}] 결과 {court} 수집 중")
+                try:
+                    await self._open_search_page(page, RESULT_SEARCH, force=True)
+                    await self._select_court(page, court, RESULT_SEARCH.court_selector)
+                    await self._click_search(page, RESULT_SEARCH)
+                    items = await self._collect_result_pages(page, RESULT_SEARCH)
+                except Exception as exc:
+                    print(f"  !! 결과 수집 실패: {court} - {exc}")
+                    continue
+                if on_court:
+                    on_court(court, items)
+                collected.extend(items)
+            await browser.close()
+        return collected
 
     async def _collect_partition(
         self,
@@ -344,7 +401,7 @@ class CourtAuctionCrawler:
         for page_number in range(1, self.options.max_pages + 1):
             pages_walked = page_number
             page_items = await self._extract_court_items(page, config)
-            if not page_items and not await self._is_court_result_page(page):
+            if not page_items and not await self._is_court_result_page(page, config.table_marker):
                 table_rows = await self._extract_best_table(page)
                 page_items = rows_to_items(table_rows)
 
@@ -424,14 +481,14 @@ class CourtAuctionCrawler:
         # 이 행에서 새로 시작한 셀(fresh)인지 이월된 셀인지 구분해 물건 행을 찾는다.
         rows = await page.evaluate(
             """
-            ({ courtSelector, sourceLabel }) => {
+            ({ courtSelector, sourceLabel, tableMarker, statusField, columnOffset }) => {
               const clean = (value) => (value || '').replace(/\\s+/g, ' ').trim();
               const courtSelect = document.querySelector(courtSelector);
               const court = courtSelect ? courtSelect.options[courtSelect.selectedIndex]?.textContent.trim() : '';
               const table = [...document.querySelectorAll('table')]
                 .find((candidate) => {
                   const text = clean(candidate.innerText);
-                  return text.includes('사건번호') && text.includes('최저매각가격') && text.includes('진행상태');
+                  return text.includes('사건번호') && text.includes('최저매각가격') && text.includes(tableMarker);
                 });
               if (!table) return [];
 
@@ -479,12 +536,12 @@ class CourtAuctionCrawler:
                 // 물건 행의 물건번호는 반드시 이 행에서 시작한 셀이어야 한다.
                 // (일괄매각의 추가 필지 행은 물건번호가 이월값이라 여기서 걸러진다)
                 if (
-                  first.texts.length >= 8 &&
+                  first.texts.length >= 8 + columnOffset &&
                   first.fresh[2] &&
                   /^\\d+$/.test(itemNo) &&
                   freshTexts(second).length >= 3
                 ) {
-                  const deptDate = first.texts[7] || '';
+                  const deptDate = first.texts[7 + columnOffset] || '';
                   const saleDate = (deptDate.match(/\\d{4}\\.\\d{2}\\.\\d{2}/) || [''])[0];
                   const dept = deptDate.replace(saleDate, '').trim();
                   const detail = freshTexts(second);
@@ -494,13 +551,13 @@ class CourtAuctionCrawler:
                     '사건번호': first.texts[1] || '',
                     '물건번호': itemNo,
                     '소재지': first.texts[3] || '',
-                    '비고': first.texts[5] || '',
-                    '감정평가액': first.texts[6] || '',
+                    '비고': first.texts[5 + columnOffset] || '',
+                    '감정평가액': first.texts[6 + columnOffset] || '',
                     '담당계': dept,
                     '매각기일': saleDate,
                     '용도': detail[0] || '',
                     '최저매각가격': detail[1] || '',
-                    '진행상태': detail[2] || '',
+                    [statusField]: detail[2] || '',
                     '상세URL': first.href || second.href || '',
                   });
                   index += 1;
@@ -509,18 +566,25 @@ class CourtAuctionCrawler:
               return items;
             }
             """,
-            {"courtSelector": config.court_selector, "sourceLabel": config.source_label},
+            {
+                "courtSelector": config.court_selector,
+                "sourceLabel": config.source_label,
+                "tableMarker": config.table_marker,
+                "statusField": config.status_field,
+                "columnOffset": config.column_offset,
+            },
         )
         return [AuctionItem(row) for row in rows]
 
-    async def _is_court_result_page(self, page: Page) -> bool:
+    async def _is_court_result_page(self, page: Page, marker: str = "진행상태") -> bool:
         return await page.evaluate(
             """
-            () => {
+            (marker) => {
               const text = (document.body.innerText || '').replace(/\\s+/g, ' ');
-              return text.includes('사건번호') && text.includes('최저매각가격') && text.includes('진행상태');
+              return text.includes('사건번호') && text.includes('최저매각가격') && text.includes(marker);
             }
-            """
+            """,
+            marker,
         )
 
     def _collection_configs(self) -> list[SearchPageConfig]:
@@ -689,6 +753,13 @@ def collect_all_sync(
     on_partition: Callable[[CrawlPartition, list[AuctionItem]], None] | None = None,
 ) -> list[AuctionItem]:
     return asyncio.run(CourtAuctionCrawler(options).collect_all(on_partition))
+
+
+def collect_results_sync(
+    options: SearchOptions,
+    on_court: Callable[[str, list[AuctionItem]], None] | None = None,
+) -> list[AuctionItem]:
+    return asyncio.run(CourtAuctionCrawler(options).collect_results(on_court))
 
 
 def build_partitions(

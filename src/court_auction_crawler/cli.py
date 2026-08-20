@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import date, datetime, timedelta, timezone
 import json
 from pathlib import Path
@@ -11,7 +11,7 @@ from typing import Any
 
 from .building_registry import fetch_building_registry
 from .common import RateLimitError, index_problems, self_restart, singleton_lock
-from .crawler import collect_all_sync, collect_sync
+from .crawler import collect_all_sync, collect_results_sync, collect_sync
 from .detail_crawler import collect_details_sync
 from .transactions import classify_transaction_kind, fetch_transactions
 from .web_push import apply_prune, build_uploader, plan_prune, push_once
@@ -176,6 +176,18 @@ def build_parser() -> argparse.ArgumentParser:
     prune_web.add_argument("--dest", default="s3://court-auction", help="정리할 대상")
     prune_web.add_argument("--endpoint-url", default="", help="S3 호환 엔드포인트")
     prune_web.add_argument("--delete", action="store_true", help="실제로 지웁니다(기본은 조회만).")
+
+    collect_results = subparsers.add_parser(
+        "collect-results",
+        help="법원별 매각결과(낙찰 여부·낙찰가)를 수집합니다. 사이트가 기일 직후 짧게만 제공합니다.",
+    )
+    collect_results.add_argument("--db", default="data/auction.sqlite3", help="SQLite DB 경로")
+    collect_results.add_argument("--court", help="특정 법원명만 수집")
+    collect_results.add_argument("--court-limit", type=int, help="앞에서 N개 법원만 수집")
+    collect_results.add_argument("--court-start", help="지정한 법원명부터 이어서 수집")
+    collect_results.add_argument("--headful", action="store_true", help="브라우저 창을 표시합니다.")
+    collect_results.add_argument("--max-pages", type=int, default=200, help="법원당 최대 페이지 수")
+    collect_results.add_argument("--delay", type=float, default=1.5, help="페이지 사이 대기 시간, 초 단위")
 
     db_check = subparsers.add_parser(
         "db-check",
@@ -446,6 +458,24 @@ def main(argv: list[str] | None = None) -> int:
         print(f"스냅샷 저장: {output} (물건 {payload['total']}개, 생성 {payload['generated_at']})")
         return 0
 
+    if args.command == "collect-results":
+        store = AuctionStore(args.db)
+        options = SearchOptions(
+            court=args.court,
+            court_limit=args.court_limit,
+            court_start=args.court_start,
+            headful=args.headful,
+            max_pages=args.max_pages,
+            delay=args.delay,
+            collection_mode="result",
+        )
+        totals = run_result_cycle(store, options)
+        print(
+            f"매각결과 수집 완료: {totals['saved']}건 저장 "
+            f"(낙찰 {totals['sold']}건, 누적 낙찰 {totals['cumulative_sold']}건)"
+        )
+        return 0
+
     if args.command == "lifecycle":
         result = AuctionStore(args.db).apply_lifecycle(
             past_grace_days=args.past_grace_days,
@@ -527,6 +557,29 @@ def main(argv: list[str] | None = None) -> int:
     raise ValueError(f"지원하지 않는 명령입니다: {args.command}")
 
 
+def run_result_cycle(store: AuctionStore, options: SearchOptions) -> dict[str, int]:
+    """법원별 매각결과를 훑어 낙찰 여부와 낙찰가를 저장한다."""
+    totals = {"received": 0, "saved": 0, "sold": 0}
+
+    def save_court(court: str, items) -> None:
+        result = store.record_sale_results([item.normalized() for item in items])
+        for key in totals:
+            totals[key] += result[key]
+        if result["saved"]:
+            print(f"  -> {result['saved']}건 (낙찰 {result['sold']})")
+
+    result_options = replace(
+        options,
+        collection_mode="result",
+        court=options.court,
+        court_limit=options.court_limit,
+        court_start=options.court_start,
+    )
+    collect_results_sync(result_options, on_court=save_court)
+    totals["cumulative_sold"] = store.sale_result_summary()["sold"]
+    return totals
+
+
 def run_collect_cycle(
     store: AuctionStore,
     options: SearchOptions,
@@ -566,6 +619,17 @@ def run_collect_cycle(
         print(f"법원별 수집 기록 저장: {len(court_counts)}개 (법원×구분)")
         for warning in coverage_warnings:
             print(f"!! 커버리지 경고: {warning}")
+    # 매각결과는 사이트가 기일 직후 짧은 기간만 보여준다. 생명주기 정리로 물건이
+    # 비활성이 되기 전에, 목록 수집 직후 곧바로 받아둬야 낙찰가를 놓치지 않는다.
+    try:
+        results = run_result_cycle(store, options)
+        print(
+            f"매각결과: {results['saved']}건 저장 "
+            f"(낙찰 {results['sold']}건, 누적 {results['cumulative_sold']}건)"
+        )
+    except Exception as exc:  # noqa: BLE001 - 결과 수집 실패로 사이클 전체를 멈추지 않는다
+        print(f"!! 매각결과 수집 건너뜀: {str(exc)[:150]}")
+
     lifecycle = store.apply_lifecycle()
     print(f"생명주기 정리: 활성 {lifecycle['checked']}개 중 {lifecycle['deactivated']}개 종결 처리")
     if geocode_limit > 0:
