@@ -191,6 +191,13 @@ class AuctionStore:
                 CREATE INDEX IF NOT EXISTS idx_sale_results_item
                     ON auction_sale_results(item_key, sale_date DESC);
 
+                CREATE TABLE IF NOT EXISTS auction_popularity (
+                    item_key TEXT PRIMARY KEY,
+                    view_count INTEGER,
+                    interest_count INTEGER,
+                    checked_at TEXT NOT NULL
+                );
+
                 CREATE TABLE IF NOT EXISTS auction_documents (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     item_key TEXT NOT NULL,
@@ -723,7 +730,11 @@ class AuctionStore:
                          ORDER BY a.id LIMIT 1) AS thumb_sha256,
                        (SELECT a.content_type FROM auction_assets a
                          WHERE a.item_key = auction_items.item_key AND a.kind = 'photo'
-                         ORDER BY a.id LIMIT 1) AS thumb_content_type
+                         ORDER BY a.id LIMIT 1) AS thumb_content_type,
+                       (SELECT p.view_count FROM auction_popularity p
+                         WHERE p.item_key = auction_items.item_key) AS view_count,
+                       (SELECT p.interest_count FROM auction_popularity p
+                         WHERE p.item_key = auction_items.item_key) AS interest_count
                   FROM auction_items
                   {where}
                  ORDER BY {order_by}
@@ -1085,6 +1096,10 @@ class AuctionStore:
                 """,
                 (item_key,),
             ).fetchall()
+            popularity = conn.execute(
+                "SELECT view_count, interest_count, checked_at FROM auction_popularity WHERE item_key = ?",
+                (item_key,),
+            ).fetchone()
 
         item = dict(row)
         item["raw"] = json.loads(item.pop("raw_json") or "{}")
@@ -1099,6 +1114,7 @@ class AuctionStore:
             item["documents"].append(document_payload)
         item["assets"] = [dict(asset) for asset in assets]
         item["sale_results"] = [dict(result) for result in sale_results]
+        item["popularity"] = dict(popularity) if popularity else {}
         return item
 
     def update_coordinates(
@@ -1639,6 +1655,39 @@ class AuctionStore:
             "saved": len(prepared),
             "sold": sum(1 for row in prepared if row[5] is not None),
         }
+
+    def record_popularity(self, rows: list[dict[str, str]], field: str) -> dict[str, int]:
+        """다수조회·다수관심 화면에서 받은 인기도 지표를 저장한다.
+
+        두 화면이 각각 조회수와 관심등록수를 주므로 한 번에 한 칸만 채운다.
+        상위 물건만 나오는 화면이라 값이 없는 물건은 그대로 비워 둔다."""
+        column = {"조회수": "view_count", "관심등록수": "interest_count"}.get(field)
+        if not column:
+            return {"received": len(rows), "saved": 0}
+        now = utc_now()
+        prepared: list[tuple[Any, ...]] = []
+        for values in rows:
+            count = parse_money(values.get(field, ""))
+            if count is None:
+                continue
+            item_key = build_item_key(values)
+            if not item_key.startswith("auction:"):
+                continue
+            prepared.append((item_key, count, now))
+        if not prepared:
+            return {"received": len(rows), "saved": 0}
+        with self.connect() as conn:
+            conn.executemany(
+                f"""
+                INSERT INTO auction_popularity(item_key, {column}, checked_at)
+                VALUES(?, ?, ?)
+                ON CONFLICT(item_key) DO UPDATE SET
+                    {column} = excluded.{column},
+                    checked_at = excluded.checked_at
+                """,
+                prepared,
+            )
+        return {"received": len(rows), "saved": len(prepared)}
 
     def sale_result_summary(self) -> dict[str, Any]:
         with self.connect() as conn:

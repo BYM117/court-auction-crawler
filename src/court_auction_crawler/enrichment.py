@@ -256,6 +256,12 @@ def public_auction_enrichment(item: dict[str, Any]) -> dict[str, Any]:
             "is_active": active,
             "days_until_sale": days_until(item.get("sale_date", "")),
             "special_rights": flags,
+            # 법원 사이트의 다수조회·다수관심 화면에서 받은 인기도. 상위 물건에만 값이 있다.
+            "popularity": {
+                "view_count": item.get("view_count") or (item.get("popularity") or {}).get("view_count"),
+                "interest_count": item.get("interest_count")
+                or (item.get("popularity") or {}).get("interest_count"),
+            },
             "detail_url": safe_external_url(item.get("detail_url", "")),
         },
         "property": {

@@ -11,7 +11,7 @@ from typing import Any
 
 from .building_registry import fetch_building_registry
 from .common import RateLimitError, index_problems, self_restart, singleton_lock
-from .crawler import collect_all_sync, collect_results_sync, collect_sync
+from .crawler import collect_all_sync, collect_popularity_sync, collect_results_sync, collect_sync
 from .detail_crawler import collect_details_sync
 from .transactions import classify_transaction_kind, fetch_transactions
 from .web_push import apply_prune, build_uploader, plan_prune, push_once
@@ -188,6 +188,17 @@ def build_parser() -> argparse.ArgumentParser:
     collect_results.add_argument("--headful", action="store_true", help="브라우저 창을 표시합니다.")
     collect_results.add_argument("--max-pages", type=int, default=200, help="법원당 최대 페이지 수")
     collect_results.add_argument("--delay", type=float, default=1.5, help="페이지 사이 대기 시간, 초 단위")
+
+    collect_popularity = subparsers.add_parser(
+        "collect-popularity",
+        help="다수조회물건·다수관심물건에서 조회수와 관심등록수를 수집합니다.",
+    )
+    collect_popularity.add_argument("--db", default="data/auction.sqlite3", help="SQLite DB 경로")
+    collect_popularity.add_argument("--court", help="특정 법원명만 수집")
+    collect_popularity.add_argument("--court-limit", type=int, help="앞에서 N개 법원만 수집")
+    collect_popularity.add_argument("--headful", action="store_true", help="브라우저 창을 표시합니다.")
+    collect_popularity.add_argument("--max-pages", type=int, default=200, help="법원당 최대 페이지 수")
+    collect_popularity.add_argument("--delay", type=float, default=1.5, help="페이지 사이 대기 시간, 초 단위")
 
     db_check = subparsers.add_parser(
         "db-check",
@@ -476,6 +487,21 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
 
+    if args.command == "collect-popularity":
+        store = AuctionStore(args.db)
+        totals = run_popularity_cycle(
+            store,
+            SearchOptions(
+                court=args.court,
+                court_limit=args.court_limit,
+                headful=args.headful,
+                max_pages=args.max_pages,
+                delay=args.delay,
+            ),
+        )
+        print(f"인기도 수집 완료: {totals['saved']}건 저장")
+        return 0
+
     if args.command == "lifecycle":
         result = AuctionStore(args.db).apply_lifecycle(
             past_grace_days=args.past_grace_days,
@@ -580,6 +606,22 @@ def run_result_cycle(store: AuctionStore, options: SearchOptions) -> dict[str, i
     return totals
 
 
+def run_popularity_cycle(store: AuctionStore, options: SearchOptions) -> dict[str, int]:
+    """다수조회·다수관심 화면에서 인기도 지표를 받아 저장한다."""
+    totals = {"received": 0, "saved": 0}
+
+    def save_court(court: str, items) -> None:
+        rows = [item.normalized() for item in items]
+        for field in ("조회수", "관심등록수"):
+            if any(field in row for row in rows):
+                result = store.record_popularity(rows, field)
+                totals["received"] += result["received"]
+                totals["saved"] += result["saved"]
+
+    collect_popularity_sync(replace(options, collection_mode="popular"), on_court=save_court)
+    return totals
+
+
 def run_collect_cycle(
     store: AuctionStore,
     options: SearchOptions,
@@ -629,6 +671,12 @@ def run_collect_cycle(
         )
     except Exception as exc:  # noqa: BLE001 - 결과 수집 실패로 사이클 전체를 멈추지 않는다
         print(f"!! 매각결과 수집 건너뜀: {str(exc)[:150]}")
+
+    try:
+        popularity = run_popularity_cycle(store, options)
+        print(f"인기도 지표: {popularity['saved']}건 저장")
+    except Exception as exc:  # noqa: BLE001 - 부가 지표 실패로 사이클을 멈추지 않는다
+        print(f"!! 인기도 수집 건너뜀: {str(exc)[:150]}")
 
     lifecycle = store.apply_lifecycle()
     print(f"생명주기 정리: 활성 {lifecycle['checked']}개 중 {lifecycle['deactivated']}개 종결 처리")

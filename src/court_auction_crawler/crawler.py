@@ -18,6 +18,8 @@ COURT_AUCTION_URL = "https://www.courtauction.go.kr/"
 COURT_DETAIL_SEARCH_URL = "https://www.courtauction.go.kr/pgj/index.on?w2xPath=/pgj/ui/pgj100/PGJ151F00.xml"
 COURT_SCHEDULED_SEARCH_URL = "https://www.courtauction.go.kr/pgj/index.on?w2xPath=/pgj/ui/pgj100/PGJ157M00.xml"
 COURT_RESULT_SEARCH_URL = "https://www.courtauction.go.kr/pgj/index.on?w2xPath=/pgj/ui/pgj100/PGJ158M00.xml"
+COURT_POPULAR_VIEW_URL = "https://www.courtauction.go.kr/pgj/index.on?w2xPath=/pgj/ui/pgj100/PGJ155M00.xml&pgmDvsNum=1"
+COURT_POPULAR_INTEREST_URL = "https://www.courtauction.go.kr/pgj/index.on?w2xPath=/pgj/ui/pgj100/PGJ155M00.xml&pgmDvsNum=2"
 
 # 법원경매 사이트는 WebSquare SPA라 백그라운드 요청이 끊이지 않아 networkidle이
 # 사실상 오지 않는다. 대신 결과 영역의 내용 토큰이 바뀌는 것을 직접 기다린다.
@@ -47,6 +49,11 @@ class SearchPageConfig:
     status_field: str = "진행상태"
     # 매각결과 화면은 소재지와 내역이 한 칸으로 합쳐져 뒤쪽 열이 하나씩 앞당겨진다.
     column_offset: int = 0
+    # 다수조회·다수관심 화면만 담당계 뒤에 숫자 칸이 하나 더 붙는다(조회수/관심등록수).
+    extra_field: str = ""
+    # 다수조회·다수관심은 법원을 골라도 전국 물건이 섞여 나온다. 선택값을 믿고
+    # 법원을 붙이면 엉뚱한 물건 키가 만들어지므로 사건번호에서 법원을 읽게 둔다.
+    trust_court_select: bool = True
 
 
 CURRENT_SEARCH = SearchPageConfig(
@@ -86,6 +93,35 @@ RESULT_SEARCH = SearchPageConfig(
     table_marker="매각결과",
     status_field="매각결과",
     column_offset=-1,
+)
+
+
+# 다수조회물건·다수관심물건. 옥션원이 자체 트래픽으로 만드는 인기도 지표를
+# 법원 사이트가 직접 제공하는 화면이다. 같은 XML을 pgmDvsNum으로 나눠 쓴다.
+POPULAR_VIEW_SEARCH = SearchPageConfig(
+    mode="popular_view",
+    label="다수조회",
+    source_label="다수조회",
+    url=COURT_POPULAR_VIEW_URL,
+    court_selector="#mf_wfm_mainFrame_sbx_mjrtyInqCortOfc",
+    start_date_selector="",
+    end_date_selector="",
+    search_button_selector="#mf_wfm_mainFrame_btn_srchMjrtyInqGds",
+    extra_field="조회수",
+    trust_court_select=False,
+)
+
+POPULAR_INTEREST_SEARCH = SearchPageConfig(
+    mode="popular_interest",
+    label="다수관심",
+    source_label="다수관심",
+    url=COURT_POPULAR_INTEREST_URL,
+    court_selector="#mf_wfm_mainFrame_sbx_mjrtyItrtCortOfc",
+    start_date_selector="",
+    end_date_selector="",
+    search_button_selector="#mf_wfm_mainFrame_btn_mjrtyItrtSrch",
+    extra_field="관심등록수",
+    trust_court_select=False,
 )
 
 
@@ -230,23 +266,43 @@ class CourtAuctionCrawler:
 
         기간 조건이 없는 화면이라 법원만 바꿔가며 조회하면 된다. 사이트가 직전
         기일들의 결과만 짧게 보여주므로 자주 돌수록 놓치는 기일이 줄어든다."""
+        return await self._collect_by_court(RESULT_SEARCH, on_court)
+
+    async def collect_popularity(
+        self,
+        on_court: Callable[[str, list[AuctionItem]], None] | None = None,
+    ) -> list[AuctionItem]:
+        """다수조회물건·다수관심물건에서 인기도 지표를 훑는다.
+
+        두 화면 모두 상위 물건만 보여주므로 전체 물건에 값이 붙지는 않는다."""
+        collected: list[AuctionItem] = []
+        for config in (POPULAR_VIEW_SEARCH, POPULAR_INTEREST_SEARCH):
+            collected.extend(await self._collect_by_court(config, on_court))
+        return collected
+
+    async def _collect_by_court(
+        self,
+        config: SearchPageConfig,
+        on_court: Callable[[str, list[AuctionItem]], None] | None = None,
+    ) -> list[AuctionItem]:
+        """기간 조건이 없는 화면들(매각결과·다수조회·다수관심)을 법원 단위로 훑는다."""
         _prefer_local_browser_cache()
         collected: list[AuctionItem] = []
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=not self.options.headful)
             page = await browser.new_page(viewport={"width": 1440, "height": 1000})
             await page.goto(COURT_AUCTION_URL, wait_until="domcontentloaded")
-            await self._open_search_page(page, RESULT_SEARCH, force=True)
-            courts = self._filter_courts(await self._get_court_options(page, RESULT_SEARCH.court_selector))
+            await self._open_search_page(page, config, force=True)
+            courts = self._filter_courts(await self._get_court_options(page, config.court_selector))
             for index, court in enumerate(courts, start=1):
-                print(f"[{index}/{len(courts)}] 결과 {court} 수집 중")
+                print(f"[{index}/{len(courts)}] {config.label} {court} 수집 중")
                 try:
-                    await self._open_search_page(page, RESULT_SEARCH, force=True)
-                    await self._select_court(page, court, RESULT_SEARCH.court_selector)
-                    await self._click_search(page, RESULT_SEARCH)
-                    items = await self._collect_result_pages(page, RESULT_SEARCH)
+                    await self._open_search_page(page, config, force=True)
+                    await self._select_court(page, court, config.court_selector)
+                    await self._click_search(page, config)
+                    items = await self._collect_result_pages(page, config)
                 except Exception as exc:
-                    print(f"  !! 결과 수집 실패: {court} - {exc}")
+                    print(f"  !! {config.label} 수집 실패: {court} - {exc}")
                     continue
                 if on_court:
                     on_court(court, items)
@@ -481,10 +537,10 @@ class CourtAuctionCrawler:
         # 이 행에서 새로 시작한 셀(fresh)인지 이월된 셀인지 구분해 물건 행을 찾는다.
         rows = await page.evaluate(
             """
-            ({ courtSelector, sourceLabel, tableMarker, statusField, columnOffset }) => {
+            ({ courtSelector, sourceLabel, tableMarker, statusField, columnOffset, extraField, trustCourt }) => {
               const clean = (value) => (value || '').replace(/\\s+/g, ' ').trim();
               const courtSelect = document.querySelector(courtSelector);
-              const court = courtSelect ? courtSelect.options[courtSelect.selectedIndex]?.textContent.trim() : '';
+              const court = trustCourt && courtSelect ? courtSelect.options[courtSelect.selectedIndex]?.textContent.trim() : '';
               const table = [...document.querySelectorAll('table')]
                 .find((candidate) => {
                   const text = clean(candidate.innerText);
@@ -560,6 +616,9 @@ class CourtAuctionCrawler:
                     [statusField]: detail[2] || '',
                     '상세URL': first.href || second.href || '',
                   });
+                  if (extraField) {
+                    items[items.length - 1][extraField] = first.texts[8 + columnOffset] || '';
+                  }
                   index += 1;
                 }
               }
@@ -572,6 +631,8 @@ class CourtAuctionCrawler:
                 "tableMarker": config.table_marker,
                 "statusField": config.status_field,
                 "columnOffset": config.column_offset,
+                "extraField": config.extra_field,
+                "trustCourt": config.trust_court_select,
             },
         )
         return [AuctionItem(row) for row in rows]
@@ -760,6 +821,13 @@ def collect_results_sync(
     on_court: Callable[[str, list[AuctionItem]], None] | None = None,
 ) -> list[AuctionItem]:
     return asyncio.run(CourtAuctionCrawler(options).collect_results(on_court))
+
+
+def collect_popularity_sync(
+    options: SearchOptions,
+    on_court: Callable[[str, list[AuctionItem]], None] | None = None,
+) -> list[AuctionItem]:
+    return asyncio.run(CourtAuctionCrawler(options).collect_popularity(on_court))
 
 
 def build_partitions(
