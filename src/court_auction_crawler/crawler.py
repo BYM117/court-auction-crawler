@@ -333,6 +333,12 @@ class CourtAuctionCrawler:
         items: list[AuctionItem] = []
         await self._select_largest_page_size(page)
         total_count = await self._read_total_count(page)
+        # 같은 '총 N건'인데 화면마다 세는 단위가 다르다. 물건상세검색(진행)은 물건
+        # 수라서 종료·경고 기준으로 쓸 수 있지만(옥션원 목록과 오차 0으로 확인),
+        # 매각예정물건(예정)은 일괄매각 필지가 따로 잡힌 목록행 수라 크게 부풀려진다
+        # (창원 09.29~30: 표시 157, 실제 80여 건). 예정 화면에서는 기준으로 쓰지 않고
+        # 페이저가 끝날 때까지 훑는다.
+        counts_items = config.mode == "current"
         pages_walked = 0
 
         for page_number in range(1, self.options.max_pages + 1):
@@ -350,16 +356,14 @@ class CourtAuctionCrawler:
                     if self.options.max_items and len(items) >= self.options.max_items:
                         return items
 
-            if total_count is not None and len(items) >= total_count:
+            if counts_items and total_count is not None and len(items) >= total_count:
                 break
             if not await self._go_next_page(page, page_number):
                 break
 
-        # 사이트의 '총 N건'은 목록행 수가 아니라 물건 수다. 행 수로 오해하고 페이지당
-        # 40행씩 더해 비교하면 총 건수를 실제보다 훨씬 빨리 넘겨 마지막 페이지들을
-        # 통째로 버린다(창원 08.26: 5페이지 중 4페이지만 훑어 129건 중 101건).
-        # 그래서 종료도 경고도 수집한 물건 수로 판정한다.
-        if total_count is not None and items:
+        if pages_walked >= self.options.max_pages:
+            print(f"  !! 페이지 상한({self.options.max_pages})에 걸려 뒷부분을 못 봤을 수 있음 (물건 {len(items)}건)")
+        elif counts_items and total_count is not None and items:
             shortfall = total_count - len(items)
             if shortfall > max(3, int(total_count * 0.05)):
                 print(
