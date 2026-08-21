@@ -705,7 +705,9 @@ def run_collect_cycle(
         print(f"!! 인기도 수집 건너뜀: {str(exc)[:150]}")
 
     try:
-        land = run_enrich_land_use(store, limit=500, quiet=True)
+        # 대상이 3.3만 건이라 500씩으로는 8일이 걸린다. 용도지역은 한 번 채우면
+        # 잘 바뀌지 않으므로 초기 백필을 빨리 끝내는 편이 낫다.
+        land = run_enrich_land_use(store, limit=3000, quiet=True)
         if not land.get("no_key"):
             print(f"토지이용계획: 확보 {land['ok']}개, 대상 {land['targets']}개")
     except Exception as exc:  # noqa: BLE001
