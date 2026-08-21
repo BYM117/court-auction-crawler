@@ -274,10 +274,28 @@ class CourtAuctionCrawler:
     ) -> list[AuctionItem]:
         """다수조회물건·다수관심물건에서 인기도 지표를 훑는다.
 
-        두 화면 모두 상위 물건만 보여주므로 전체 물건에 값이 붙지는 않는다."""
+        두 화면 모두 법원을 골라도 전국 상위 물건만 돌려준다. 법원마다 조회하면
+        같은 목록을 60번 받을 뿐이라(실측: 60회 순회 72건 vs 1회 95건) 한 번만 훑는다.
+        전체 물건에 값이 붙지는 않고 상위 수십 건에만 붙는다."""
+        _prefer_local_browser_cache()
         collected: list[AuctionItem] = []
-        for config in (POPULAR_VIEW_SEARCH, POPULAR_INTEREST_SEARCH):
-            collected.extend(await self._collect_by_court(config, on_court))
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=not self.options.headful)
+            page = await browser.new_page(viewport={"width": 1440, "height": 1000})
+            await page.goto(COURT_AUCTION_URL, wait_until="domcontentloaded")
+            for config in (POPULAR_VIEW_SEARCH, POPULAR_INTEREST_SEARCH):
+                print(f"{config.label} 수집 중 (전국)")
+                try:
+                    await self._open_search_page(page, config, force=True)
+                    await self._click_search(page, config)
+                    items = await self._collect_result_pages(page, config)
+                except Exception as exc:
+                    print(f"  !! {config.label} 수집 실패: {exc}")
+                    continue
+                if on_court:
+                    on_court("전국", items)
+                collected.extend(items)
+            await browser.close()
         return collected
 
     async def _collect_by_court(
