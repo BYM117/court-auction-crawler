@@ -23,6 +23,10 @@ COURT_POPULAR_INTEREST_URL = "https://www.courtauction.go.kr/pgj/index.on?w2xPat
 
 # 법원경매 사이트는 WebSquare SPA라 백그라운드 요청이 끊이지 않아 networkidle이
 # 사실상 오지 않는다. 대신 결과 영역의 내용 토큰이 바뀌는 것을 직접 기다린다.
+# 이만큼 연속으로 0건이 나오면 목록이 정말 비었다기보다 창이 망가진 쪽을 의심한다.
+# 작은 지원은 실제로 0건인 곳이 드물게 있어 1~2로 두면 헛되이 창을 다시 띄운다.
+EMPTY_STREAK_LIMIT = 3
+
 RESULTS_TOKEN_JS = """
 () => {
   const table = [...document.querySelectorAll('table')]
@@ -177,12 +181,37 @@ class CourtAuctionCrawler:
 
             items: list[AuctionItem] = []
             seen: set[tuple[tuple[str, str], ...]] = set()
+            consecutive_empty = 0
             for index, (config, partition) in enumerate(collection_plan, start=1):
                 print(f"[{index}/{len(collection_plan)}] {config.label} {partition.label()} 수집 중")
+                partition_items: list[AuctionItem] = []
+                failed = False
                 try:
                     partition_items = await self._collect_partition(page, partition, config)
                 except Exception as exc:
                     print(f"  !! 구간 실패: {config.label} {partition.label()} - {exc}")
+                    failed = True
+
+                # 페이지가 한 번 망가지면 이후 구간이 전부 조용히 0건이 된다. 예외가
+                # 나지 않아 '구간 실패'로도 안 잡히므로 그대로 두면 사이클 절반을
+                # 통째로 잃는다(실측: 진행 60구간 중 뒤쪽 31개가 연속 0건, 7,600건 손실).
+                # 연속 0건을 세다가 임계치에 닿으면 창을 새로 띄우고 그 구간을 다시 친다.
+                if partition_items:
+                    consecutive_empty = 0
+                else:
+                    consecutive_empty += 1
+                    if consecutive_empty >= EMPTY_STREAK_LIMIT:
+                        print(f"  !! 연속 {consecutive_empty}구간 0건 — 창을 새로 띄우고 재시도")
+                        page = await self._restart_page(browser, page)
+                        consecutive_empty = 0
+                        try:
+                            partition_items = await self._collect_partition(page, partition, config)
+                            failed = False
+                        except Exception as exc:
+                            print(f"  !! 재시도 실패: {config.label} {partition.label()} - {exc}")
+                            failed = True
+
+                if failed:
                     continue
                 if on_partition:
                     on_partition(partition, partition_items)
@@ -199,6 +228,16 @@ class CourtAuctionCrawler:
                 await self._collect_details(browser, items)
             await browser.close()
             return items
+
+    async def _restart_page(self, browser: Browser, page: Page) -> Page:
+        """망가진 창을 버리고 새 창으로 갈아탄다."""
+        try:
+            await page.close()
+        except Exception:  # noqa: BLE001 - 이미 죽은 창이면 그대로 버린다
+            pass
+        fresh = await browser.new_page(viewport={"width": 1440, "height": 1000})
+        await fresh.goto(COURT_AUCTION_URL, wait_until="domcontentloaded")
+        return fresh
 
     async def _try_auto_search(self, page: Page) -> None:
         await self._open_search_page(page, CURRENT_SEARCH)
