@@ -264,14 +264,42 @@ def _extract_building_hint(address: str) -> str:
     return ""
 
 
+# 행정구역 개편으로 광주광역시와 전라남도가 전남광주통합특별시로 합쳐졌다.
+# 법원경매정보는 옛 이름을 그대로 주고 지도 API는 새 이름만 받아, 이 두 지역
+# 지오코딩이 통째로 실패했다(광주 44%, 전남 25.5%가 좌표 없음).
+# 옛 이름도 남겨 두 이름을 모두 시도한다.
+MERGED_SIDO = (
+    ("광주광역시", "전남광주통합특별시"),
+    ("전라남도", "전남광주통합특별시"),
+    ("전남 ", "전남광주통합특별시 "),
+)
+
+
+def apply_merged_sido(address: str) -> str:
+    """옛 시도명으로 시작하는 주소를 통합 시도명으로 바꾼다. 해당 없으면 그대로."""
+    text = str(address or "")
+    for old_name, new_name in MERGED_SIDO:
+        if text.startswith(old_name):
+            return new_name + text[len(old_name):]
+    return text
+
+
 def _candidate_queries(address: str) -> list[str]:
     normalized = normalize_auction_address(address)
     candidates = [normalized]
+    # 통합 시도명 후보를 옛 이름보다 앞에 둔다. 후보 수에 상한이 있어 뒤에 두면
+    # 정작 유일하게 통하는 이름이 잘려나간다.
+    merged = apply_merged_sido(normalized)
+    if merged != normalized:
+        candidates.insert(0, merged)
     without_paren = PAREN_RE.sub(" ", normalized)
     without_paren = re.sub(r"\s+", " ", without_paren).strip()
     candidates.append(without_paren)
+    merged_wp = apply_merged_sido(without_paren)
+    if merged_wp != without_paren:
+        candidates.append(merged_wp)
 
-    for value in (normalized, without_paren):
+    for value in (merged, merged_wp, normalized, without_paren):
         road_core = _extract_road_core(value)
         if road_core:
             candidates.append(road_core)
