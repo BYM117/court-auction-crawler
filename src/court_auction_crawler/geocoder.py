@@ -107,7 +107,9 @@ def geocode_address(address: str) -> GeocodeResult | None:
             point = item.get("point") if isinstance(item, dict) else None
             if not point or not point.get("x") or not point.get("y"):
                 continue
-            if not _same_region(address, item):
+            # 원본이 아니라 실제로 물어본 쿼리와 비교한다. 시도·시군구를 우리가
+            # 일부러 통합·개명한 경우 원본과 대면 늘 불일치가 되어 버려진다.
+            if not _same_region(query, item):
                 continue
             return GeocodeResult(
                 lat=float(point["y"]),
@@ -123,7 +125,7 @@ def geocode_address(address: str) -> GeocodeResult | None:
     # 매칭 엔진이 달라 회수율이 올라가고, 법정동코드로 PNU도 조립할 수 있다.
     for query in queries:
         for category in ("PARCEL", "ROAD"):
-            result = _try_getcoord(key, query, category, address)
+            result = _try_getcoord(key, query, category, query)
             if result:
                 return result
 
@@ -277,6 +279,27 @@ MERGED_SIDO = (
 )
 
 
+# 행정구역 개편으로 이름이 바뀌거나 갈라져 나온 시군구. 법원경매정보는 옛 이름을
+# 그대로 준다. 같은 '서구'·'남구'가 여러 시도에 있으므로 반드시 시도와 짝지어 판단한다.
+# 인천 서구는 일부만 검단구로 갈라져 나가서 옛 이름도 그대로 시도해야 한다.
+RENAMED_SIGUNGU = {
+    ("인천", "남구"): "미추홀구",
+    ("인천", "서구"): "검단구",
+    ("인천", "중구"): "영종구",
+}
+
+
+def apply_renamed_sigungu(address: str) -> str:
+    """옛 시군구명을 새 이름으로 바꾼다. 해당 없으면 빈 문자열."""
+    parts = str(address or "").split()
+    if len(parts) < 3:
+        return ""
+    renamed = RENAMED_SIGUNGU.get((normalize_sido(parts[0]), parts[1]))
+    if not renamed:
+        return ""
+    return " ".join([parts[0], renamed, *parts[2:]])
+
+
 def apply_merged_sido(address: str) -> str:
     """옛 시도명으로 시작하는 주소를 통합 시도명으로 바꾼다. 해당 없으면 그대로."""
     text = str(address or "")
@@ -300,6 +323,11 @@ def _candidate_queries(address: str) -> list[str]:
     merged_wp = apply_merged_sido(without_paren)
     if merged_wp != without_paren:
         candidates.append(merged_wp)
+    # 옛 시군구명은 원본 뒤에 둔다. 갈라져 나간 경우 옛 이름이 여전히 맞는 물건이 있다.
+    for value in (normalized, without_paren):
+        renamed = apply_renamed_sigungu(value)
+        if renamed:
+            candidates.append(renamed)
 
     for value in (merged, merged_wp, normalized, without_paren):
         road_core = _extract_road_core(value)
