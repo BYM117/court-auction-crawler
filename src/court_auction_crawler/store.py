@@ -241,6 +241,12 @@ class AuctionStore:
                 conn.execute("ALTER TABLE auction_items ADD COLUMN last_changed_at TEXT")
             if "next_check_at" not in columns:
                 conn.execute("ALTER TABLE auction_items ADD COLUMN next_check_at TEXT")
+            for sold_col, sold_ddl in (
+                ("sold_amount", "INTEGER"),
+                ("sold_date", "TEXT NOT NULL DEFAULT ''"),
+            ):
+                if sold_col not in columns:
+                    conn.execute(f"ALTER TABLE auction_items ADD COLUMN {sold_col} {sold_ddl}")
             for land_col, land_ddl in (
                 ("land_use_detail", "TEXT NOT NULL DEFAULT ''"),
                 ("land_use_status", "TEXT NOT NULL DEFAULT ''"),
@@ -652,6 +658,7 @@ class AuctionStore:
         sale_date_from: str = "",
         sale_date_to: str = "",
         active: bool | None = None,
+        sold_since: str = "",
         require_coordinates: bool = False,
         sw_lat: float | None = None,
         sw_lng: float | None = None,
@@ -689,6 +696,11 @@ class AuctionStore:
         if active is not None:
             clauses.append("is_active = ?")
             params.append(1 if active else 0)
+        if sold_since:
+            # 낙찰된 물건은 목록에서 사라져 비활성이 되지만, 얼마에 팔렸는지가
+            # 시세 판단에 가장 쓸모 있는 정보다. 최근 낙찰분은 따로 뽑아 쓴다.
+            clauses.append("sold_amount IS NOT NULL AND COALESCE(sold_date, '') >= ?")
+            params.append(sold_since)
         if require_coordinates:
             clauses.append("lat IS NOT NULL AND lng IS NOT NULL")
         if None not in (sw_lat, sw_lng, ne_lat, ne_lng):
@@ -741,7 +753,8 @@ class AuctionStore:
                        (SELECT p.view_count FROM auction_popularity p
                          WHERE p.item_key = auction_items.item_key) AS view_count,
                        (SELECT p.interest_count FROM auction_popularity p
-                         WHERE p.item_key = auction_items.item_key) AS interest_count
+                         WHERE p.item_key = auction_items.item_key) AS interest_count,
+                       sold_amount, sold_date
                   FROM auction_items
                   {where}
                  ORDER BY {order_by}
@@ -1578,6 +1591,7 @@ class AuctionStore:
         *,
         past_grace_days: int = 3,
         unseen_no_date_days: int = 21,
+        unseen_future_days: int = 7,
         now: str | None = None,
     ) -> dict[str, int]:
         """낙찰·취하된 물건은 상태 변경 없이 검색결과에서 사라지므로 상태 텍스트로는
@@ -1588,13 +1602,19 @@ class AuctionStore:
         # sale_date는 'YYYY.MM.DD' 텍스트라 '.'→'-'로 바꾸면 ISO 문자열 비교=날짜 비교가 된다.
         grace_cutoff = (now_dt.date() - timedelta(days=past_grace_days)).isoformat()
         unseen_cutoff = (now_dt - timedelta(days=unseen_no_date_days)).isoformat(timespec="seconds")
+        # 취하·기일변경된 물건은 기일이 오기도 전에 목록에서 사라진다. 기일이 지나야
+        # 정리하는 규칙만으로는 없는 물건을 최대 2~3주 들고 있게 된다(실측: 수원 08.25
+        # 미목격 59건이 법원 사이트에 전부 없었다). 수집이 하루 4~5회 도니 7일이면
+        # 30회 가까이 연속 미목격이라 일시적 수집 실패와 헷갈릴 여지가 없다.
+        unseen_future_cutoff = (now_dt - timedelta(days=unseen_future_days)).isoformat(timespec="seconds")
         next_check = (now_dt + timedelta(days=7)).isoformat(timespec="seconds")
-        # 기일이 유예기간 넘게 지났고 새 기일이 없거나, 기일 없는 물건이 오래 미목격이면 종결.
+        # 기일이 유예기간 넘게 지났거나, 기일이 없거나 아직 남았는데 오래 미목격이면 종결.
         expired_clause = (
             "is_active = 1 AND ("
             "  (COALESCE(sale_date, '') != '' "
             "   AND REPLACE(SUBSTR(sale_date, 1, 10), '.', '-') < ?)"
             "  OR (COALESCE(sale_date, '') = '' AND COALESCE(last_seen_at, '') < ?)"
+            "  OR (COALESCE(sale_date, '') != '' AND COALESCE(last_seen_at, '') < ?)"
             ")"
         )
         with self.connect() as conn:
@@ -1610,7 +1630,7 @@ class AuctionStore:
                   FROM auction_items
                  WHERE {expired_clause}
                 """,
-                (now_text, grace_cutoff, unseen_cutoff),
+                (now_text, grace_cutoff, unseen_cutoff, unseen_future_cutoff),
             )
             cursor = conn.execute(
                 f"""
@@ -1618,7 +1638,7 @@ class AuctionStore:
                    SET is_active = 0, crawl_priority = -100, next_check_at = ?
                  WHERE {expired_clause}
                 """,
-                (next_check, grace_cutoff, unseen_cutoff),
+                (next_check, grace_cutoff, unseen_cutoff, unseen_future_cutoff),
             )
             deactivated = cursor.rowcount
         return {"checked": checked, "deactivated": deactivated}
@@ -1671,6 +1691,28 @@ class AuctionStore:
                     collected_at = excluded.collected_at
                 """,
                 prepared,
+            )
+            # 낙찰은 목록에서 조용히 사라지는 것으로만 드러나 status가 '유찰 N회'에
+            # 머문다. 낙찰가를 받은 김에 물건 자체에도 새겨 둬야 목록에서 바로 보인다.
+            conn.execute(
+                """
+                UPDATE auction_items
+                   SET sold_amount = (
+                           SELECT r.sale_amount FROM auction_sale_results r
+                            WHERE r.item_key = auction_items.item_key
+                              AND r.sale_amount IS NOT NULL
+                            ORDER BY r.sale_date DESC LIMIT 1),
+                       sold_date = COALESCE((
+                           SELECT r.sale_date FROM auction_sale_results r
+                            WHERE r.item_key = auction_items.item_key
+                              AND r.sale_amount IS NOT NULL
+                            ORDER BY r.sale_date DESC LIMIT 1), ''),
+                       updated_at = ?
+                 WHERE item_key IN (
+                       SELECT r.item_key FROM auction_sale_results r
+                        WHERE r.sale_amount IS NOT NULL AND r.collected_at = ?)
+                """,
+                (now, now),
             )
         return {
             "received": len(rows),

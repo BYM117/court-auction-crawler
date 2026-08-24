@@ -197,6 +197,18 @@ def build_official_price(item: dict[str, Any]) -> dict[str, Any] | None:
     }
 
 
+def build_sold(item: dict[str, Any], appraisal: int | None) -> dict[str, Any] | None:
+    """낙찰 결과. 낙찰가율은 감정가 대비다. 아직 안 팔렸으면 None."""
+    amount = item.get("sold_amount")
+    if not amount:
+        return None
+    return {
+        "amount": int(amount),
+        "date": normalize_date_text(item.get("sold_date", "")),
+        "rate": round(int(amount) / appraisal, 4) if appraisal else None,
+    }
+
+
 def build_sale_results(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """매각결과검색에서 받은 기일별 결과. 낙찰가율은 감정가 대비다."""
     results = []
@@ -256,6 +268,9 @@ def public_auction_enrichment(item: dict[str, Any]) -> dict[str, Any]:
             "is_active": active,
             "days_until_sale": days_until(item.get("sale_date", "")),
             "special_rights": flags,
+            # 낙찰되면 목록에서 조용히 사라질 뿐 status는 '유찰 N회'에 머문다.
+            # 낙찰가를 여기 실어야 목록에서 바로 '얼마에 팔렸는지'가 보인다.
+            "sold": build_sold(item, appraisal),
             # 법원 사이트의 다수조회·다수관심 화면에서 받은 인기도. 상위 물건에만 값이 있다.
             "popularity": {
                 "view_count": item.get("view_count") or (item.get("popularity") or {}).get("view_count"),

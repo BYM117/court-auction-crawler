@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
+from datetime import date, timedelta
 import gzip
 import hashlib
 import json
@@ -225,12 +226,14 @@ class PushSummary:
         }
 
 
-def build_snapshot(store: AuctionStore) -> dict[str, Any]:
-    """지도·목록용 요약. 활성이고 좌표가 있는 물건만 담는다."""
+SNAPSHOT_SOLD_MONTHS = 6
+
+
+def _snapshot_page(store: AuctionStore, **filters: Any) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     offset = 0
     while True:
-        page = store.list_items(active=True, require_coordinates=True, limit=500, offset=offset)
+        page = store.list_items(require_coordinates=True, limit=500, offset=offset, **filters)
         rows = page["items"]
         if not rows:
             break
@@ -238,6 +241,21 @@ def build_snapshot(store: AuctionStore) -> dict[str, Any]:
         offset += len(rows)
         if offset >= page["total"]:
             break
+    return items
+
+
+def build_snapshot(store: AuctionStore) -> dict[str, Any]:
+    """지도·목록용 요약. 좌표가 있는 활성 물건과, 최근 낙찰된 물건을 담는다.
+
+    낙찰되면 목록에서 사라져 비활성이 되지만 '얼마에 팔렸는지'가 시세 판단에
+    가장 쓸모 있는 정보라 최근 것은 남겨 둔다."""
+    cutoff = (date.today() - timedelta(days=30 * SNAPSHOT_SOLD_MONTHS)).strftime("%Y.%m.%d")
+    items = _snapshot_page(store, active=True)
+    seen = {item["id"] for item in items}
+    for item in _snapshot_page(store, sold_since=cutoff):
+        if item["id"] not in seen:
+            seen.add(item["id"])
+            items.append(item)
     return {"generated_at": utc_now(), "total": len(items), "items": items}
 
 
