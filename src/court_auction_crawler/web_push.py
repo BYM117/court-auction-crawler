@@ -228,18 +228,7 @@ class PushSummary:
 
 
 def _snapshot_page(store: AuctionStore, **filters: Any) -> list[dict[str, Any]]:
-    items: list[dict[str, Any]] = []
-    offset = 0
-    while True:
-        page = store.list_items(require_coordinates=True, limit=500, offset=offset, **filters)
-        rows = page["items"]
-        if not rows:
-            break
-        items.extend(public_auction_summary(row) for row in rows)
-        offset += len(rows)
-        if offset >= page["total"]:
-            break
-    return items
+    return [public_auction_summary(row) for row in store.iter_public_rows(**filters)]
 
 
 def build_snapshot(store: AuctionStore) -> dict[str, Any]:

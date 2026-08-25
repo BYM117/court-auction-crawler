@@ -18,6 +18,38 @@ from .utils import clean_text, parse_date, parse_money, parse_sale_result
 SCHEMA_VERSION = 4
 
 
+ITEM_LIST_SELECT = """
+                SELECT item_key, source, case_no, item_no, court, address, category, appraisal,
+                       minimum_bid, sale_date, status, detail_url, lat, lng, pnu,
+                       coordinate_source, coordinate_quality, normalized_address,
+                       geocode_query, geocoded_at,
+                       official_price, official_price_type, official_price_year,
+                       official_price_detail, official_price_status, official_price_at,
+                       first_seen_at,
+                       last_seen_at, last_changed_at, next_check_at, is_active,
+                       crawl_priority, detail_status, detail_collected_at,
+                       detail_checked_at, detail_next_retry_at, detail_fail_count,
+                       updated_at,
+                       -- 비고에 특수권리(유치권·법정지상권·지분매각 등)가 문장으로 들어
+                       -- 있어 목록에서도 태그로 뽑아 쓴다. 평균 400바이트라 부담이 없다.
+                       raw_json,
+                       -- 목록 썸네일. 사진 전체를 실으면 스냅샷이 몇 배로 불어나므로
+                       -- 대표 한 장의 해시·타입만 싣고 웹이 객체 이름을 만들게 한다.
+                       (SELECT a.sha256 FROM auction_assets a
+                         WHERE a.item_key = auction_items.item_key AND a.kind = 'photo'
+                         ORDER BY a.id LIMIT 1) AS thumb_sha256,
+                       (SELECT a.content_type FROM auction_assets a
+                         WHERE a.item_key = auction_items.item_key AND a.kind = 'photo'
+                         ORDER BY a.id LIMIT 1) AS thumb_content_type,
+                       (SELECT p.view_count FROM auction_popularity p
+                         WHERE p.item_key = auction_items.item_key) AS view_count,
+                       (SELECT p.interest_count FROM auction_popularity p
+                         WHERE p.item_key = auction_items.item_key) AS interest_count,
+                       sold_amount, sold_date
+                  FROM auction_items
+                """
+
+
 CASE_KEYS = ("사건번호", "사건", "case_no")
 ITEM_KEYS = ("물건번호", "물건", "item_no")
 ADDRESS_KEYS = ("소재지", "주소", "address")
@@ -727,35 +759,7 @@ class AuctionStore:
         with self.connect() as conn:
             total = conn.execute(f"SELECT COUNT(*) AS count FROM auction_items {where}", params).fetchone()["count"]
             rows = conn.execute(
-                f"""
-                SELECT item_key, source, case_no, item_no, court, address, category, appraisal,
-                       minimum_bid, sale_date, status, detail_url, lat, lng, pnu,
-                       coordinate_source, coordinate_quality, normalized_address,
-                       geocode_query, geocoded_at,
-                       official_price, official_price_type, official_price_year,
-                       official_price_detail, official_price_status, official_price_at,
-                       first_seen_at,
-                       last_seen_at, last_changed_at, next_check_at, is_active,
-                       crawl_priority, detail_status, detail_collected_at,
-                       detail_checked_at, detail_next_retry_at, detail_fail_count,
-                       updated_at,
-                       -- 비고에 특수권리(유치권·법정지상권·지분매각 등)가 문장으로 들어
-                       -- 있어 목록에서도 태그로 뽑아 쓴다. 평균 400바이트라 부담이 없다.
-                       raw_json,
-                       -- 목록 썸네일. 사진 전체를 실으면 스냅샷이 몇 배로 불어나므로
-                       -- 대표 한 장의 해시·타입만 싣고 웹이 객체 이름을 만들게 한다.
-                       (SELECT a.sha256 FROM auction_assets a
-                         WHERE a.item_key = auction_items.item_key AND a.kind = 'photo'
-                         ORDER BY a.id LIMIT 1) AS thumb_sha256,
-                       (SELECT a.content_type FROM auction_assets a
-                         WHERE a.item_key = auction_items.item_key AND a.kind = 'photo'
-                         ORDER BY a.id LIMIT 1) AS thumb_content_type,
-                       (SELECT p.view_count FROM auction_popularity p
-                         WHERE p.item_key = auction_items.item_key) AS view_count,
-                       (SELECT p.interest_count FROM auction_popularity p
-                         WHERE p.item_key = auction_items.item_key) AS interest_count,
-                       sold_amount, sold_date
-                  FROM auction_items
+                f"""{ITEM_LIST_SELECT}
                   {where}
                  ORDER BY {order_by}
                  LIMIT ? OFFSET ?
@@ -769,6 +773,29 @@ class AuctionStore:
             "sort": sort,
             "items": [dict(row) for row in rows],
         }
+
+    def iter_public_rows(
+        self, *, active: bool | None = None, sold_since: str = ""
+    ) -> Iterator[dict[str, Any]]:
+        """스냅샷용 전량 조회. 페이징 없이 커서로 흘려보낸다.
+
+        list_items로 500개씩 끊어 읽으면 페이지마다 COUNT(*)를 다시 돌아 3만 건에
+        13분이 걸렸다(COUNT 한 번이 11초 × 62페이지). 스냅샷은 전체를 한 번에
+        쓰므로 페이지 수도 총 건수도 필요 없다."""
+        clauses: list[str] = []
+        params: list[Any] = []
+        if active is not None:
+            clauses.append("is_active = ?")
+            params.append(1 if active else 0)
+        if sold_since:
+            clauses.append("sold_amount IS NOT NULL AND COALESCE(sold_date, '') >= ?")
+            params.append(sold_since)
+        clauses.append("lat IS NOT NULL AND lng IS NOT NULL")
+        where = "WHERE " + " AND ".join(f"({clause})" for clause in clauses)
+        with self.connect() as conn:
+            for row in conn.execute(f"""{ITEM_LIST_SELECT}
+                  {where}""", params):
+                yield dict(row)
 
     def list_missing_coordinates(
         self,
