@@ -1707,6 +1707,11 @@ class AuctionStore:
                             WHERE r.item_key = auction_items.item_key
                               AND r.sale_amount IS NOT NULL
                             ORDER BY r.sale_date DESC LIMIT 1), ''),
+                       -- 낙찰이 확인되면 그 자리에서 진행 목록에서 내린다. 기일이
+                       -- 지나기를 기다리면 이미 팔린 물건이 입찰 가능한 것처럼 남는다.
+                       -- 대금미납·매각불허가로 재매각되면 목록에 다시 나타나 되살아난다.
+                       is_active = 0,
+                       crawl_priority = -100,
                        updated_at = ?
                  WHERE item_key IN (
                        SELECT r.item_key FROM auction_sale_results r

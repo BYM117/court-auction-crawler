@@ -30,6 +30,7 @@ from .enrichment import public_auction_detail, public_auction_summary
 from .store import AuctionStore
 
 SNAPSHOT_KEY = "v1/snapshot.json.gz"
+SOLD_SNAPSHOT_KEY = "v1/sold.json.gz"
 ITEM_KEY_TEMPLATE = "v1/items/{digest}.json"
 ASSET_KEY_TEMPLATE = "v1/assets/{digest}{suffix}"
 
@@ -226,9 +227,6 @@ class PushSummary:
         }
 
 
-SNAPSHOT_SOLD_MONTHS = 6
-
-
 def _snapshot_page(store: AuctionStore, **filters: Any) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     offset = 0
@@ -245,31 +243,42 @@ def _snapshot_page(store: AuctionStore, **filters: Any) -> list[dict[str, Any]]:
 
 
 def build_snapshot(store: AuctionStore) -> dict[str, Any]:
-    """지도·목록용 요약. 좌표가 있는 활성 물건과, 최근 낙찰된 물건을 담는다.
+    """지도·목록용 요약. 지금 입찰할 수 있는 물건만 담는다.
 
-    낙찰되면 목록에서 사라져 비활성이 되지만 '얼마에 팔렸는지'가 시세 판단에
-    가장 쓸모 있는 정보라 최근 것은 남겨 둔다."""
-    cutoff = (date.today() - timedelta(days=30 * SNAPSHOT_SOLD_MONTHS)).strftime("%Y.%m.%d")
-    items = _snapshot_page(store, active=True)
-    seen = {item["id"] for item in items}
-    for item in _snapshot_page(store, sold_since=cutoff):
-        if item["id"] not in seen:
-            seen.add(item["id"])
-            items.append(item)
+    낙찰된 물건은 여기 섞지 않는다. 옥션원처럼 '진행 물건'과 '낙찰 물건'을
+    나눠 봐야 목록이 끝난 물건으로 덮이지 않는다. 낙찰분은 sold 스냅샷에 있다."""
+    return {"generated_at": utc_now(), "total": 0, "items": []} | _wrap(_snapshot_page(store, active=True))
+
+
+def build_sold_snapshot(store: AuctionStore) -> dict[str, Any]:
+    """낙찰 물건 전용 목록. 기간을 자르지 않는다.
+
+    한 번 받아온 낙찰가는 시세 판단의 근거라 오래될수록 오히려 값지다.
+    진행 목록과 섞이지 않으므로 쌓여도 목록을 어지럽히지 않는다."""
+    return _wrap(_snapshot_page(store, sold_since="1900.01.01"))
+
+
+def _wrap(items: list[dict[str, Any]]) -> dict[str, Any]:
     return {"generated_at": utc_now(), "total": len(items), "items": items}
 
 
 def push_snapshot(store: AuctionStore, uploader: Uploader, *, dry_run: bool = False) -> tuple[bool, int]:
-    payload = build_snapshot(store)
-    digest = payload_digest(payload)
-    body = gzip.compress(
-        json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-    )
-    if dry_run:
-        return True, len(body)
-    uploader.put(SNAPSHOT_KEY, body, "application/gzip")
-    store.mark_pushed("snapshot", SNAPSHOT_KEY, hash_value=digest, remote_key=SNAPSHOT_KEY, size=len(body))
-    return True, len(body)
+    """진행 물건 스냅샷과 낙찰 물건 스냅샷을 함께 올린다."""
+    total = 0
+    for key, payload in (
+        (SNAPSHOT_KEY, build_snapshot(store)),
+        (SOLD_SNAPSHOT_KEY, build_sold_snapshot(store)),
+    ):
+        digest = payload_digest(payload)
+        body = gzip.compress(
+            json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        )
+        total += len(body)
+        if dry_run:
+            continue
+        uploader.put(key, body, "application/gzip")
+        store.mark_pushed("snapshot", key, hash_value=digest, remote_key=key, size=len(body))
+    return True, total
 
 
 def push_items(
