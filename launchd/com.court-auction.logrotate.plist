@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.court-auction.logrotate</string>
+  <!-- 문서 폴더는 TCC 보호 대상이라 launchd가 직접 chdir을 못 한다.
+       전체 디스크 접근이 부여된 zsh 안에서 cd를 수행한다. -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/zsh</string>
+    <string>-lc</string>
+    <string>cd "/Users/bymsub/Documents/경매물건 크롤링" &amp;&amp; exec /bin/zsh scripts/rotate_logs.sh</string>
+  </array>
+  <!-- 매일 00:05. 맥이 자고 있었으면 깨어난 직후에 한 번 돈다. -->
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>0</integer>
+    <key>Minute</key>
+    <integer>5</integer>
+  </dict>
+  <!-- 한 번 돌고 끝나는 작업이라 KeepAlive/RunAtLoad를 쓰지 않는다.
+       수집기와 달리 계속 살아 있을 이유가 없다. -->
+  <key>RunAtLoad</key>
+  <false/>
+  <key>StandardOutPath</key>
+  <string>/Users/bymsub/Library/Logs/court-auction/logrotate.launchd.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/bymsub/Library/Logs/court-auction/logrotate.launchd.err.log</string>
+</dict>
+</plist>

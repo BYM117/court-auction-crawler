@@ -38,13 +38,14 @@ payload 모양을 바꾸면 웹이 깨질 수 있다. 필드를 **더하는 것*
 
 ## 자동 실행
 
-launchd가 세 개를 띄운다. `launchctl kickstart -k gui/$(id -u)/com.court-auction.<이름>`으로 재시작한다.
+launchd가 네 개를 띄운다. `launchctl kickstart -k gui/$(id -u)/com.court-auction.<이름>`으로 재시작한다.
 
 | | 하는 일 | 주기 |
 |---|---|---|
 | `com.court-auction.collect` | 수집 사이클 전체 | 3시간마다 |
 | `com.court-auction.collect-details` | 상세·사진·문서 | 쉬지 않고 |
 | `com.court-auction.server` | 로컬 대시보드 | 상시 |
+| `com.court-auction.logrotate` | 로그를 날짜별로 분리 | 매일 00:05 |
 
 수집 사이클 한 바퀴 순서다.
 
@@ -83,6 +84,17 @@ grep -E "물건 수집 완료|매각결과|인기도|토지이용|생명주기|�
 
 # 데몬 상태
 launchctl list | grep court-auction
+```
+
+로그는 매일 00:05에 잘려 `logs/archive/<이름>-<날짜>.log`로 옮겨진다. **아무것도 지우지 않는다.**
+어제 이전 것을 보려면 `logs/` 대신 `logs/archive/`를 뒤진다.
+
+```bash
+# 오늘 것만
+tail -f logs/collect-details.log
+
+# 지난 기록까지 통째로
+grep "웹 푸시" logs/archive/collect-all-*.log logs/collect-all.log
 ```
 
 숫자를 볼 때는 **활성 / 활성+미래기일 / 활성+좌표** 를 구분한다. 웹 목록에 뜨는 수는 마지막 것이다.
