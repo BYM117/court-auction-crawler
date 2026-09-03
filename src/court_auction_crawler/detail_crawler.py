@@ -33,7 +33,9 @@ SCHEDULE_TAB_SELECTOR = "#mf_wfm_mainFrame_tac_srchRsltDvs_tab_tabs2_tabHTML"
 FILING_TAB_SELECTOR = "#mf_wfm_mainFrame_tac_srchRsltDvs_tab_tabs3_tabHTML"
 ITEM_DETAIL_BUTTON_SELECTOR = "input[value='물건상세조회']"
 CASE_DETAIL_BUTTON_SELECTOR = "input[value='사건상세조회']"
-CASE_NO_RE = re.compile(r"(?P<year>\d{4})타경(?P<number>\d+)")
+# number 가 뒤 사건의 연도를 삼키면 법원 검색창에 없는 번호를 넣게 된다.
+# store.CASE_NO_RE 와 같은 이유로 경계를 둔다.
+CASE_NO_RE = re.compile(r"(?P<year>\d{4})타경(?P<number>\d+?)(?=\d{4}타경|\D|$)")
 DATA_URI_RE = re.compile(r"^data:(?P<mime>[^;,]+)(?:;charset=[^;,]+)?;base64,(?P<data>.+)$", re.S)
 DOCUMENT_TYPES = {
     "매각물건명세서": 7,

@@ -77,6 +77,31 @@ class ItemKeyTests(unittest.TestCase):
         )
         self.assertEqual(key, "auction:서울중앙지방법원:2020타경107804:1")
 
+    def test_merged_case_without_space_does_not_swallow_next_year(self):
+        """사이트가 중복사건을 공백 없이 붙여 줄 때 뒤 사건의 연도를 먹으면 안 된다.
+
+        '2026타경100160' + '2026타경100346' 이 붙어 오는데 숫자를 끝까지 먹으면
+        '2026타경1001602026' 이 되고, 이 번호로는 법원에서 사건을 못 찾아 상세
+        수집이 영구 실패한다(실측 59건, 그 중 35건이 사진 0장으로 웹에 노출됐다)."""
+        self.assertEqual(
+            representative_case_no("서울중앙지방법원2026타경1001602026타경100346(중복)"),
+            "2026타경100160",
+        )
+        # 짧은 번호도 경계를 지킨다.
+        self.assertEqual(
+            representative_case_no("강릉지원2026타경122026타경50309(중복)"),
+            "2026타경12",
+        )
+        # 공백이 있는 기존 형태는 그대로 동작한다.
+        self.assertEqual(
+            representative_case_no("평택지원 2026타경50300 2026타경51416"),
+            "2026타경50300",
+        )
+        self.assertEqual(
+            build_item_key({"사건번호": "평택지원2026타경503002026타경51416(중복)", "물건번호": "1"}),
+            "auction:평택지원:2026타경50300:1",
+        )
+
     def test_extract_common_fields_infers_court_from_case_number(self):
         fields = extract_common_fields({"사건번호": "서울중앙지방법원 2023타경114490", "물건번호": "2"})
 
