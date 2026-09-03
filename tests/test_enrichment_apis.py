@@ -10,6 +10,8 @@ from court_auction_crawler.building_registry import (
     pnu_parts,
 )
 from court_auction_crawler.common import RateLimitError, is_rate_limited
+from court_auction_crawler.land_use import pick_primary_zone
+from court_auction_crawler.official_price import _pick_apart_unit
 from court_auction_crawler import transactions as tx_mod
 from court_auction_crawler.transactions import (
     _building_name,
@@ -201,6 +203,65 @@ class TransactionCacheTests(unittest.TestCase):
         finally:
             tx_mod._request_rtms = original
         self.assertEqual(len(calls), 2)
+
+
+class LandUseZoneTests(unittest.TestCase):
+    """용도지역 대표값 고르기.
+
+    틀려도 에러가 안 난다. 그냥 쓸모없는 값이 화면에 뜬다."""
+
+    def test_specific_zone_wins_over_broad_category(self):
+        # '도시지역'은 틀린 말은 아니지만 너무 뭉뚱그려서 아무 정보가 안 된다.
+        self.assertEqual(
+            pick_primary_zone(["도시지역", "제2종일반주거지역", "지구단위계획구역"]),
+            "제2종일반주거지역",
+        )
+
+    def test_specific_zone_wins_even_when_listed_last(self):
+        # 순서에 기대면 안 된다. 사이트가 순서를 바꿔 줘도 같은 답이 나와야 한다.
+        self.assertEqual(
+            pick_primary_zone(["도시지역", "지구단위계획구역", "일반상업지역"]),
+            "일반상업지역",
+        )
+
+    def test_falls_back_to_first_when_nothing_specific(self):
+        # 구체적인 게 하나도 없으면 빈칸보다 뭐라도 보여주는 편이 낫다.
+        self.assertEqual(pick_primary_zone(["도시지역", "지구단위계획구역"]), "도시지역")
+
+    def test_empty_list_gives_empty_string(self):
+        self.assertEqual(pick_primary_zone([]), "")
+
+
+class OfficialPriceUnitTests(unittest.TestCase):
+    """공시가격 붙일 호수 고르기.
+
+    잘못 고르면 옆집 공시가격이 이 집 것으로 조용히 표시된다."""
+
+    ROWS = [
+        {"dongNm": "101동", "hoNm": "201호", "pblntfPc": "300000000"},
+        {"dongNm": "102동", "hoNm": "201호", "pblntfPc": "500000000"},
+    ]
+
+    def test_picks_the_matching_dong(self):
+        row = _pick_apart_unit(self.ROWS, "101동", "201호")
+        self.assertEqual(row["pblntfPc"], "300000000")
+
+    def test_matches_ignoring_non_digits(self):
+        # 사이트는 '제101동'·'101'·'101동'을 섞어 준다. 숫자만 보고 맞춘다.
+        row = _pick_apart_unit(self.ROWS, "제101동", "201")
+        self.assertEqual(row["pblntfPc"], "300000000")
+
+    def test_refuses_to_guess_when_dong_unknown_and_prices_differ(self):
+        # 여기서 아무거나 고르면 옆집 가격이 붙는다. 모르면 비워두는 게 맞다.
+        self.assertIsNone(_pick_apart_unit(self.ROWS, "", "201호"))
+
+    def test_accepts_when_dong_unknown_but_prices_agree(self):
+        rows = [dict(r, pblntfPc="300000000") for r in self.ROWS]
+        row = _pick_apart_unit(rows, "", "201호")
+        self.assertEqual(row["pblntfPc"], "300000000")
+
+    def test_no_ho_means_no_match(self):
+        self.assertIsNone(_pick_apart_unit(self.ROWS, "101동", ""))
 
 
 if __name__ == "__main__":
