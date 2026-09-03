@@ -12,7 +12,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date
 import re
-import ssl
 from typing import Any
 from urllib.error import URLError, HTTPError
 from urllib.parse import urlencode
@@ -20,7 +19,7 @@ from urllib.request import Request, urlopen
 import xml.etree.ElementTree as ET
 
 from .common import RateLimitError, is_rate_limited
-from .geocoder import env_value
+from .geocoder import env_value, ssl_context
 
 BASE_URL = "https://apis.data.go.kr/1613000"
 
@@ -160,7 +159,7 @@ def _request_rtms(key, operation, lawd, ymd) -> list[dict[str, Any]] | None:
     request = Request(url, headers={"User-Agent": "court-auction-crawler/0.1"})
     timeout = float(env_value("PUBLIC_DATA_TIMEOUT") or "8")
     try:
-        with urlopen(request, timeout=timeout, context=_ssl_context()) as response:
+        with urlopen(request, timeout=timeout, context=ssl_context()) as response:
             body = response.read().decode("utf-8", "replace")
     except HTTPError as exc:
         if exc.code == 429:  # 일일 트래픽 한도 초과는 429로 온다
@@ -247,14 +246,3 @@ def _numf(value: Any) -> float:
 def _text(value: Any) -> str:
     text = str(value or "").strip()
     return "" if text.lower() == "none" else text
-
-
-def _ssl_context() -> ssl.SSLContext | None:
-    if env_value("GEOCODER_INSECURE_SSL") == "1":
-        return ssl._create_unverified_context()
-    try:
-        import certifi
-
-        return ssl.create_default_context(cafile=certifi.where())
-    except ImportError:
-        return None

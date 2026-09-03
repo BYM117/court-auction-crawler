@@ -12,14 +12,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import json
-import ssl
 from typing import Any
 from urllib.error import URLError, HTTPError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 from .common import RateLimitError, is_rate_limited
-from .geocoder import env_value
+from .geocoder import env_value, ssl_context
 
 BASE_URL = "https://apis.data.go.kr/1613000/BldRgstHubService"
 
@@ -132,7 +131,7 @@ def _request_bld(
     request = Request(url, headers={"User-Agent": "court-auction-crawler/0.1"})
     timeout = float(env_value("PUBLIC_DATA_TIMEOUT") or "8")
     try:
-        with urlopen(request, timeout=timeout, context=_ssl_context()) as response:
+        with urlopen(request, timeout=timeout, context=ssl_context()) as response:
             raw = response.read().decode("utf-8")
     except HTTPError as exc:
         if exc.code == 429:  # 일일 트래픽 한도 초과는 429로 온다
@@ -154,17 +153,6 @@ def _request_bld(
     if item is None:
         return []
     return item if isinstance(item, list) else [item]
-
-
-def _ssl_context() -> ssl.SSLContext | None:
-    if env_value("GEOCODER_INSECURE_SSL") == "1":
-        return ssl._create_unverified_context()
-    try:
-        import certifi
-
-        return ssl.create_default_context(cafile=certifi.where())
-    except ImportError:
-        return None
 
 
 def _num(value: Any) -> float:

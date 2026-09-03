@@ -10,7 +10,7 @@ import re
 import sqlite3
 from typing import Any, Iterator
 
-from .common import TERMINAL_STATUS_KEYWORDS, utc_now
+from .common import CASE_NO_RE, TERMINAL_STATUS_KEYWORDS, utc_now
 from .models import AuctionItem, SyncSummary
 from .utils import clean_text, parse_date, parse_money, parse_sale_result
 
@@ -75,11 +75,6 @@ LIST_HASH_KEYS = (
     "소재지",
     "용도",
 )
-# 중복사건은 '2026타경100160 2026타경100346(중복)'처럼 여러 개가 붙어 오는데,
-# 사이트가 공백 없이 줄 때가 있다. \d+ 를 그냥 두면 뒤 사건의 연도까지 삼켜
-# '2026타경1001602026' 같은 없는 번호가 만들어진다(실측 59건). 뒤에 또
-# '연도+타경'이 이어지면 거기서 멈추게 한다.
-CASE_NO_RE = re.compile(r"\d{4}타경\d+?(?=\d{4}타경|\D|$)")
 PARCEL_LIST_KEY = "소재지목록"
 REGION_ALIASES = {
     "서울": ("서울", "서울특별시"),

@@ -53,6 +53,33 @@ class BuildingRegistryTests(unittest.TestCase):
         self.assertEqual(_num("없음"), 0.0)
 
 
+class SharedHelperTests(unittest.TestCase):
+    def test_api_modules_share_one_ssl_context(self):
+        """정부 API 모듈이 ssl_context 사본을 다시 만들면 이 테스트가 깨진다.
+
+        전에는 다섯 곳에 복붙돼 있었고 land_use 판본에만 GEOCODER_INSECURE_SSL
+        탈출구가 빠져 있었다. 스위치를 켜도 토지이용계획만 조용히 계속 실패한다."""
+        from court_auction_crawler import (
+            building_registry,
+            geocoder,
+            land_use,
+            official_price,
+            transactions,
+        )
+
+        for module in (building_registry, land_use, official_price, transactions):
+            self.assertIs(module.ssl_context, geocoder.ssl_context, module.__name__)
+
+    def test_case_no_re_has_one_definition(self):
+        """store 와 detail_crawler 가 사건번호 규칙을 각자 갖고 있으면 깨진다.
+
+        따로 두면 한쪽만 고쳐 버그가 반만 낫는다(실제로 그랬다)."""
+        from court_auction_crawler import common, detail_crawler, store
+
+        self.assertIs(store.CASE_NO_RE, common.CASE_NO_RE)
+        self.assertIs(detail_crawler.CASE_NO_RE, common.CASE_NO_RE)
+
+
 class RateLimitTests(unittest.TestCase):
     def test_is_rate_limited_detects_known_signatures(self):
         self.assertTrue(is_rate_limited("...LIMITED_NUMBER_OF_SERVICE_REQUESTS_EXCEEDS_ERROR..."))

@@ -425,11 +425,16 @@ def _request_vworld(base_url: str, params: dict[str, str]) -> dict[str, Any]:
     url = f"{base_url}?{urlencode(params)}"
     request = Request(url, headers={"User-Agent": "court-auction-crawler/0.1"})
     timeout = float(env_value("GEOCODER_TIMEOUT") or "3")
-    with urlopen(request, timeout=timeout, context=_ssl_context()) as response:
+    with urlopen(request, timeout=timeout, context=ssl_context()) as response:
         return json.loads(response.read().decode("utf-8"))
 
 
-def _ssl_context() -> ssl.SSLContext | None:
+def ssl_context() -> ssl.SSLContext | None:
+    """정부 API를 부르는 모듈들이 함께 쓴다.
+
+    building_registry·land_use·official_price·transactions 에 각각 복사돼 있었는데
+    land_use 판본에만 GEOCODER_INSECURE_SSL 탈출구가 빠져 있었다. 한 곳으로 모은다.
+    """
     if env_value("GEOCODER_INSECURE_SSL") == "1":
         return ssl._create_unverified_context()
     try:

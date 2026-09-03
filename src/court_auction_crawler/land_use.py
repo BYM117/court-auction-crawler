@@ -11,12 +11,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import json
-import ssl
 from typing import Any
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-from .geocoder import env_value
+from .geocoder import env_value, ssl_context
 
 BASE_URL = "https://api.vworld.kr/ned/data/getLandUseAttr"
 
@@ -117,14 +116,5 @@ def _request(key: str, pnu: str) -> dict[str, Any]:
         params["domain"] = domain
     request = Request(f"{BASE_URL}?{urlencode(params)}", headers={"User-Agent": "court-auction-crawler/0.1"})
     timeout = float(env_value("LAND_USE_TIMEOUT") or "10")
-    with urlopen(request, timeout=timeout, context=_ssl_context()) as response:
+    with urlopen(request, timeout=timeout, context=ssl_context()) as response:
         return json.loads(response.read().decode("utf-8"))
-
-
-def _ssl_context() -> ssl.SSLContext | None:
-    try:
-        import certifi
-
-        return ssl.create_default_context(cafile=certifi.where())
-    except ImportError:
-        return None
