@@ -12,6 +12,7 @@ from pathlib import Path
 import re
 import time
 from typing import Any
+from urllib.parse import unquote
 
 from playwright.async_api import Page, TimeoutError as PlaywrightTimeoutError, async_playwright
 
@@ -33,6 +34,9 @@ SCHEDULE_TAB_SELECTOR = "#mf_wfm_mainFrame_tac_srchRsltDvs_tab_tabs2_tabHTML"
 FILING_TAB_SELECTOR = "#mf_wfm_mainFrame_tac_srchRsltDvs_tab_tabs3_tabHTML"
 ITEM_DETAIL_BUTTON_SELECTOR = "input[value='물건상세조회']"
 CASE_DETAIL_BUTTON_SELECTOR = "input[value='사건상세조회']"
+# 사이트가 '그런 사건 없다'고 할 때 띄우는 문구. 화면 중간에 나오므로 본문 끝만
+# 잘라 보면 안 보인다. 이 문구가 곧 진실은 아니다 — 판단은 case_search_error 참고.
+NO_SUCH_CASE_MARKER = "잘못된 번호"
 DATA_URI_RE = re.compile(r"^data:(?P<mime>[^;,]+)(?:;charset=[^;,]+)?;base64,(?P<data>.+)$", re.S)
 DOCUMENT_TYPES = {
     "매각물건명세서": 7,
@@ -166,6 +170,63 @@ class HealthGovernor:
 def is_benign_case_error(exc: Exception) -> bool:
     """사이트가 정상 응답한 실패(사건 없음·형식 오류 등)는 차단 징후가 아니다."""
     return isinstance(exc, (LookupError, ValueError, KeyError))
+
+
+async def site_message(page: Page) -> str:
+    """오류 화면이 실제로 뭐라고 하는지 읽는다.
+
+    WebSquare는 안내·오류 문구를 processMsg.html?param=<EUC-KR 퍼센트인코딩>
+    iframe으로 띄운다. 본문이 iframe 안이라 inner_text에는 '오류'라는 제목만
+    잡히고 정작 사유가 안 남는다. src에서 직접 뽑아 붙인다.
+
+    로딩 표시('조회중입니다.')는 정상 화면에도 늘 숨어 있으므로 보이는 것만
+    읽는다. 숨은 것까지 세면 매번 로딩 문구가 사유인 양 남는다."""
+    try:
+        sources = await page.evaluate(
+            """() => [...document.querySelectorAll('iframe')]
+                 .filter((frame) => frame.offsetParent || frame.getClientRects().length)
+                 .map((frame) => frame.src || '')
+                 .filter((src) => src.includes('processMsg'))"""
+        )
+    except Exception:
+        return ""
+    messages = []
+    for src in sources:
+        match = re.search(r"[?&]param=([^&]*)", src)
+        if match:
+            decoded = unquote(match.group(1), encoding="euc-kr", errors="replace").strip()
+            if decoded and decoded not in messages:
+                messages.append(decoded)
+    return " / ".join(messages)
+
+
+def case_search_error(
+    court: str,
+    case_no: str,
+    text: str,
+    message: str,
+    *,
+    collected_before: bool,
+) -> Exception:
+    """결과 0건 화면을 '없는 사건'과 '거절당한 것'으로 가른다.
+
+    사이트는 NO_SUCH_CASE_MARKER 문구로 '그런 사건 없다'고 답하는데, 이 말을
+    곧이곧대로 믿으면 안 된다. 세션이 상하면 멀쩡한 사건에도 같은 문구로
+    둘러대며 문전박대한다(실측: 그 문구로 실패한 사건의 59%가 같은 날 같은
+    데몬의 다른 시도에서 성공했고, 새 브라우저에서는 6개 중 5개가 즉시 조회됐다).
+
+    그래서 한 번이라도 상세를 받아둔 사건이면 '없다'는 말은 거짓이다. 그때는
+    인프라 장애로 올려 거버너가 감속·브라우저 재시작까지 가게 한다. 양성으로
+    남기는 것은 애초에 받아본 적 없는 사건뿐 — 취하·이관으로 목록에만 남았다가
+    사라지는 경우가 여기 해당한다."""
+    if NO_SUCH_CASE_MARKER in text and not collected_before:
+        return LookupError(f"사건 검색 결과 없음: {court} {case_no}")
+    reason = (
+        "받아둔 적 있는 사건을 '없다'고 함(세션 거절)"
+        if NO_SUCH_CASE_MARKER in text
+        else f"[{message or '메시지 못 읽음'}] {text[-120:]}"
+    )
+    return RuntimeError(f"사건검색 거절: {court} {case_no} {reason}")
 
 
 @dataclass(slots=True)
@@ -351,7 +412,13 @@ class CourtAuctionDetailCrawler:
         button_count = await buttons.count()
         if button_count == 0:
             text = await page.locator("main, body").first.inner_text(timeout=5_000)
-            raise LookupError(f"사건 검색 결과 없음: {text[-200:]}")
+            raise case_search_error(
+                court,
+                case_no,
+                text,
+                await site_message(page),
+                collected_before=any(row.get("detail_collected_at") for row in targets),
+            )
 
         # 활성/비활성을 함께 스냅샷해서, 종결·취하로 버튼이 영구 비활성인 물건을
         # 실패(재시도 대상)가 아니라 unavailable(수집 불가)로 구분한다.

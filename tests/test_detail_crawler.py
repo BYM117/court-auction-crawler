@@ -8,12 +8,14 @@ from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 from court_auction_crawler.detail_crawler import (
     CourtAuctionDetailCrawler,
     HealthGovernor,
+    case_search_error,
     collect_details_sync,
     document_next_retry,
     find_document_title,
     find_table_value,
     is_benign_case_error,
     safe_path_part,
+    site_message,
     sniff_image_mime,
 )
 from court_auction_crawler.store import AuctionStore
@@ -259,3 +261,63 @@ class DetailCrawlerHelperTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FakeMessagePage:
+    """processMsg iframe만 흉내 내는 최소 페이지."""
+
+    def __init__(self, sources: list[str]) -> None:
+        self._sources = sources
+
+    async def evaluate(self, _script: str) -> list[str]:
+        return [src for src in self._sources if "processMsg" in src]
+
+
+class CaseSearchErrorTests(unittest.IsolatedAsyncioTestCase):
+    # 실측: 없는 사건은 이 문구가 뜨고, 오류 화면은 '오류'로 끝난다.
+    NO_CASE_TEXT = "검색조건\n해당 사건번호는 잘못된 번호입니다. 다시 한번 확인해 보시기 바랍니다.\n유의사항"
+    ERROR_TEXT = "법원은 책임을 지지 않습니다.\nCOPYRIGHT\n맨 위로가기\n오류"
+
+    def test_never_collected_case_stays_benign(self):
+        error = case_search_error(
+            "강릉지원", "2025타경1", self.NO_CASE_TEXT, "", collected_before=False
+        )
+        self.assertIsInstance(error, LookupError)
+        self.assertTrue(is_benign_case_error(error))
+
+    def test_collected_case_called_missing_is_a_refusal(self):
+        # 받아둔 적 있는 사건을 '없다'고 하면 거짓말이다. 양성으로 넘기면
+        # record_healthy가 불려 거버너가 상한 세션을 영영 못 알아챈다.
+        error = case_search_error(
+            "강릉지원", "2025타경1", self.NO_CASE_TEXT, "", collected_before=True
+        )
+        self.assertFalse(is_benign_case_error(error))
+        self.assertIn("세션 거절", str(error))
+
+    def test_error_screen_counts_as_infrastructure_failure(self):
+        error = case_search_error(
+            "강릉지원", "2025타경1", self.ERROR_TEXT, "조회중입니다.", collected_before=False
+        )
+        self.assertNotIsInstance(error, LookupError)
+        self.assertFalse(is_benign_case_error(error))
+        self.assertIn("조회중입니다.", str(error))
+
+    def test_error_screen_without_readable_message_still_escalates(self):
+        error = case_search_error(
+            "강릉지원", "2025타경1", self.ERROR_TEXT, "", collected_before=False
+        )
+        self.assertFalse(is_benign_case_error(error))
+        self.assertIn("메시지 못 읽음", str(error))
+
+    async def test_site_message_decodes_euc_kr_param(self):
+        page = FakeMessagePage(
+            [
+                "https://www.courtauction.go.kr/pgj/websquare/message/processMsg.html"
+                "?param=%c1%b6%c8%b8%c1%df%c0%d4%b4%cf%b4%d9.&postfix=17888340751455083",
+                "https://example.com/other.html",
+            ]
+        )
+        self.assertEqual(await site_message(page), "조회중입니다.")
+
+    async def test_site_message_is_empty_when_no_message_frame(self):
+        self.assertEqual(await site_message(FakeMessagePage([])), "")
