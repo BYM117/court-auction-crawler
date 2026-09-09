@@ -179,6 +179,27 @@ def public_auction_summary(item: dict[str, Any]) -> dict[str, Any]:
     return summary
 
 
+BUILDING_SUMMARY_FIELDS = ("main_purpose", "use_apr_day", "hhld_cnt", "grnd_flr_cnt")
+
+
+def build_registry_summary(item: dict[str, Any]) -> dict[str, Any]:
+    """목록에도 싣는 공공 부가정보 최소 필드(건축물대장 주용도, 용도지역).
+
+    법원 '용도'가 그룹 라벨로만 오는 물건은 주용도가 유일한 단서고, 토지는 용도지역이
+    그렇다. 상세만 갖고 있으면 지도 한 화면에 수천 건을 그리는 쪽이 물건마다 상세를
+    부를 수밖에 없다. 목록 조회는 SQL에서 뽑은 평평한 별칭으로, 상세 조회는 이미
+    풀어둔 딕셔너리로 값이 들어온다. 어느 쪽이든 같은 모양으로 낸다."""
+    building = item.get("building") if isinstance(item.get("building"), dict) else {}
+    land_use = item.get("land_use") if isinstance(item.get("land_use"), dict) else {}
+    return {
+        "building": {
+            field: building.get(field) or item.get(f"building_{field}") or None
+            for field in BUILDING_SUMMARY_FIELDS
+        },
+        "land_use": {"zone": land_use.get("zone") or item.get("land_use_zone") or None},
+    }
+
+
 def build_official_price(item: dict[str, Any]) -> dict[str, Any] | None:
     """사전 계산해 DB에 저장한 공시기준가를 공개 스키마로 내보낸다. 없으면 None."""
     value = parse_optional_float(item.get("official_price"))
@@ -291,6 +312,7 @@ def public_auction_enrichment(item: dict[str, Any]) -> dict[str, Any]:
             },
             "share": parse_share_info(address_info),
             "registry_search_hint": build_registry_search_hint(address_info, item.get("category", "")),
+            **build_registry_summary(item),
         },
         "price": {
             "appraisal": appraisal,
@@ -476,7 +498,11 @@ def build_registry_search_hint(address_info: dict[str, Any], category: str) -> d
 
 
 def infer_property_type(category: str, address: str) -> str:
-    text = f"{category} {address}"
+    category = str(category or "").strip()
+    # 법원 '용도'에는 개별 용도('아파트')와 검색 그룹 라벨('상가,오피스텔,근린시설')이
+    # 섞여 온다. 쉼표가 있으면 '이 셋 중 하나'라는 뜻이지 특정 용도가 아니다. 통째로
+    # 부분 문자열로 훑으면 활성 4천 건이 전부 '오피스텔'이 된다. 라벨은 단정하지 않는다.
+    text = address if "," in category else f"{category} {address}"
     if "오피스텔" in text:
         return "오피스텔"
     if "아파트" in text:
@@ -489,7 +515,7 @@ def infer_property_type(category: str, address: str) -> str:
         return "토지"
     if any(word in text for word in ("단독주택", "주택")):
         return "단독주택"
-    return str(category or "").strip() or "기타"
+    return category or "기타"
 
 
 def infer_registry_realty_type(category: str, detail: str) -> str:

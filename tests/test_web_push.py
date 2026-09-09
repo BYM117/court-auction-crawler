@@ -148,6 +148,29 @@ class PushPipelineTests(unittest.TestCase):
         self.assertEqual(payload["total"], 1)
         self.assertEqual(payload["items"][0]["id"], self.item_key)
 
+    def test_snapshot_carries_building_purpose_and_land_use_zone(self):
+        # 지도는 뷰포트마다 수천 건을 그려서 물건별 상세를 부를 수 없다. 이 값들이
+        # 목록에서 빠지면 법원이 '상가,오피스텔,근린시설'로만 공개한 물건의 용도를
+        # 가릴 방법이 사라진다. DB에는 있는데 목록 SELECT에서만 빠지기 쉬운 자리다.
+        self.store.update_coordinates(self.item_key, lat=37.5, lng=127.0, pnu="1114010300")
+        self.store.update_building(
+            self.item_key,
+            detail={"main_purpose": "업무시설", "hhld_cnt": 0, "grnd_flr_cnt": 15, "use_apr_day": "20051130"},
+            status="ok",
+        )
+        self.store.update_land_use(self.item_key, detail={"zone": "일반상업지역"}, status="ok")
+
+        push_once(self.store, self.uploader, skip_assets=True)
+        payload = json.loads(gzip.decompress((self.dest / SNAPSHOT_KEY).read_bytes()).decode("utf-8"))
+        prop = payload["items"][0]["property"]
+
+        self.assertEqual(prop["building"]["main_purpose"], "업무시설")
+        self.assertEqual(prop["building"]["grnd_flr_cnt"], 15)
+        self.assertEqual(prop["building"]["use_apr_day"], "20051130")
+        self.assertEqual(prop["land_use"]["zone"], "일반상업지역")
+        # 대장에 없는 값은 0이 아니라 '모름'으로 나가야 한다.
+        self.assertIsNone(prop["building"]["hhld_cnt"])
+
     def test_photo_is_uploaded_once_and_skipped_afterwards(self):
         photo = self.root / "photo.png"
         photo.write_bytes(b"\x89PNG fake")

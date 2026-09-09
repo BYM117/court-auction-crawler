@@ -45,6 +45,15 @@ ITEM_LIST_SELECT = """
                          WHERE p.item_key = auction_items.item_key) AS view_count,
                        (SELECT p.interest_count FROM auction_popularity p
                          WHERE p.item_key = auction_items.item_key) AS interest_count,
+                       -- 법원 '용도'는 '상가,오피스텔,근린시설' 같은 검색 그룹 라벨로만
+                       -- 오는 물건이 활성 4천 건이라, 목록에서 용도를 가릴 단서는 건축물대장
+                       -- 주용도뿐이다. 대장·토지이용계획 전체를 실으면 스냅샷이 14MB 불어나므로
+                       -- 쓰는 값만 뽑는다. 조회 전(''), 조회했으나 없음('{}') 모두 NULL이 된다.
+                       json_extract(NULLIF(building_detail, ''), '$.main_purpose') AS building_main_purpose,
+                       json_extract(NULLIF(building_detail, ''), '$.use_apr_day') AS building_use_apr_day,
+                       json_extract(NULLIF(building_detail, ''), '$.hhld_cnt') AS building_hhld_cnt,
+                       json_extract(NULLIF(building_detail, ''), '$.grnd_flr_cnt') AS building_grnd_flr_cnt,
+                       json_extract(NULLIF(land_use_detail, ''), '$.zone') AS land_use_zone,
                        sold_amount, sold_date
                   FROM auction_items
                 """

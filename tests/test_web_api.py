@@ -19,6 +19,7 @@ from court_auction_crawler.web import (
     public_auction_detail,
     safe_external_url,
 )
+from court_auction_crawler.enrichment import public_auction_summary
 
 
 class WebApiTests(unittest.TestCase):
@@ -117,6 +118,14 @@ class WebApiTests(unittest.TestCase):
         self.assertEqual(payload["address"], "서울특별시 중구 세종대로 110 101동 201호 [집합건물 철근콘크리트구조 59.87㎡]")
         self.assertEqual(payload["case"]["case_no"], "2026타경100")
         self.assertEqual(payload["property"]["type_guess"], "아파트")
+        # 검색 그룹 라벨('이 셋 중 하나')은 용도가 아니다. 부분 문자열로 훑으면
+        # 활성 4천 건이 통째로 '오피스텔'이 된다.
+        self.assertEqual(
+            public_auction_summary({"category": "상가,오피스텔,근린시설", "address": "서울특별시 중구 세종대로 110"})[
+                "property"
+            ]["type_guess"],
+            "상가,오피스텔,근린시설",
+        )
         self.assertEqual(payload["property"]["registry_search_hint"]["realty_type_guess"], "집합건물")
         self.assertEqual(payload["property"]["registry_search_hint"]["dong"], "101동")
         self.assertEqual(payload["property"]["registry_search_hint"]["ho"], "201호")
