@@ -734,7 +734,10 @@ def run_collect_cycle(
         # 건축물대장·실거래가(공공데이터포털)도 같은 PNU로 이어서 채운다.
         buildings = run_enrich_buildings(store, limit=price_limit, quiet=True)
         if not buildings.get("no_key"):
-            print(f"건축물대장: 확보 {buildings['ok']}개, 대상 {buildings['targets']}개")
+            print(
+                f"건축물대장: 확보 {buildings['ok']}개, 대상 {buildings['targets']}개"
+                f", 조회 {buildings['queries']}회"
+            )
         deals = run_enrich_transactions(store, limit=max(price_limit // 3, 50), quiet=True)
         if not deals.get("no_key"):
             print(f"실거래가: 확보 {deals['ok']}개, 대상 {deals['targets']}개")
@@ -1179,15 +1182,21 @@ def run_enrich_buildings(
 ) -> dict[str, Any]:
     """PNU는 있으나 건축물대장을 아직 못 채운 물건을 채운다(공공데이터포털)."""
     if not env_value("PUBLIC_DATA_SERVICE_KEY"):
-        return {"no_key": True, "targets": 0, "ok": 0}
+        return {"no_key": True, "targets": 0, "queries": 0, "ok": 0}
     active = None if include_inactive else True
     rows = store.list_missing_enrichment(
         "building", limit=limit, active=active, retry_failed_after_days=retry_days
     )
     counts: dict[str, int] = {}
+    asked: set[str] = set()
     for index, row in enumerate(rows, start=1):
+        pnu = str(row.get("pnu") or "")
+        # 대장은 필지 단위다. 답은 그 필지 물건 전부에 한 번에 적히므로 다시 물을 이유가 없다.
+        if pnu in asked:
+            continue
+        asked.add(pnu)
         try:
-            reg = fetch_building_registry(str(row.get("pnu") or ""), row.get("category", ""))
+            reg = fetch_building_registry(pnu, row.get("category", ""))
         except RateLimitError:  # 한도 초과 → 이 물건은 건드리지 말고 즉시 중단(다음 실행 재개)
             print("건축물대장 일일 한도 초과 — 백필 중단(내일 이어서).")
             counts["rate_limited"] = 1
@@ -1195,18 +1204,26 @@ def run_enrich_buildings(
         except Exception as error:  # noqa: BLE001 - 조회 실패는 status로만
             if not quiet:
                 print(f"  건축물대장 오류: {row['item_key']} {error}")
-            store.update_building(row["item_key"], detail=None, status="error")
+            store.update_building(row["item_key"], detail=None, status="error", pnu=pnu)
             counts["error"] = counts.get("error", 0) + 1
             continue
+        # 확보/누락 수는 조회 횟수가 아니라 실제로 채워진 물건 수로 센다.
         if reg is None:
-            store.update_building(row["item_key"], detail=None, status="miss")
-            counts["miss"] = counts.get("miss", 0) + 1
+            filled = store.update_building(row["item_key"], detail=None, status="miss", pnu=pnu)
+            counts["miss"] = counts.get("miss", 0) + filled
         else:
-            store.update_building(row["item_key"], detail=asdict(reg), status="ok")
-            counts["ok"] = counts.get("ok", 0) + 1
+            filled = store.update_building(row["item_key"], detail=asdict(reg), status="ok", pnu=pnu)
+            counts["ok"] = counts.get("ok", 0) + filled
         if not quiet and index % 50 == 0:
             print(f"  진행 {index}/{len(rows)} · 확보 {counts.get('ok', 0)}")
-    return {"no_key": False, "targets": len(rows), "ok": counts.get("ok", 0), "counts": counts}
+    return {
+        "no_key": False,
+        "targets": len(rows),
+        # 조회 횟수(필지 수)와 채운 물건 수는 다르다. 둘이 벌어질수록 중복이 걸러진 것.
+        "queries": len(asked),
+        "ok": counts.get("ok", 0),
+        "counts": counts,
+    }
 
 
 def run_enrich_land_use(

@@ -59,6 +59,11 @@ ITEM_LIST_SELECT = """
                 """
 
 
+# 건축물대장이 있을 수 없는 지목. 법원 '용도' 값 그대로다. '대지'는 성공률 21%라 뺀다.
+LAND_ONLY_CATEGORIES = ("전답", "임야", "대지,임야,전답")
+LAND_ONLY_RETRY_DAYS = 365
+
+
 CASE_KEYS = ("사건번호", "사건", "case_no")
 ITEM_KEYS = ("물건번호", "물건", "item_no")
 ADDRESS_KEYS = ("소재지", "주소", "address")
@@ -1288,18 +1293,33 @@ class AuctionStore:
             return [dict(row) for row in rows]
 
     def update_building(
-        self, item_key: str, *, detail: dict[str, Any] | None, status: str
-    ) -> None:
-        """건축물대장 조회 결과를 저장한다(없으면 detail=None, status로만)."""
+        self, item_key: str, *, detail: dict[str, Any] | None, status: str, pnu: str = ""
+    ) -> int:
+        """건축물대장 조회 결과를 저장한다(없으면 detail=None, status로만). 적은 물건 수를 돌려준다.
+
+        대장은 필지 단위라 같은 PNU의 물건은 답이 똑같다. pnu를 주면 그 필지의 활성
+        물건 전부에 한 번에 적는다 — 일괄매각 아파트는 한 필지에 물건이 106개까지
+        붙어 있어, 물건마다 물어보면 같은 답을 106번 받아온다(실측: 확보한 21,646건이
+        실제로는 13,350필지)."""
+        # 이미 채운 물건은 건드리지 않는다. 덮어써 봐야 값은 같은데 updated_at만 밀려
+        # 한 필지에 물건이 106개면 106건이 통째로 R2 재업로드 후보가 된다.
+        # 활성 여부는 보지 않는다. 물어본 필지의 답은 그 필지 물건 전부에 적어야
+        # 다음 실행에서 다시 묻지 않는다(낙찰된 물건도 같은 건물이라 답이 같다).
+        target, values = (
+            ("pnu = ? AND building_status != 'ok'", (pnu,))
+            if pnu
+            else ("item_key = ?", (item_key,))
+        )
         with self.connect() as conn:
-            conn.execute(
-                """
+            cursor = conn.execute(
+                f"""
                 UPDATE auction_items
                    SET building_detail = ?, building_status = ?, building_at = ?, updated_at = ?
-                 WHERE item_key = ?
+                 WHERE {target}
                 """,
-                (json.dumps(detail or {}, ensure_ascii=False), status, utc_now(), utc_now(), item_key),
+                (json.dumps(detail or {}, ensure_ascii=False), status, utc_now(), utc_now(), *values),
             )
+            return cursor.rowcount
 
     def update_transactions(
         self, item_key: str, *, detail: dict[str, Any] | None, status: str
@@ -1352,9 +1372,19 @@ class AuctionStore:
             f" OR ({status_col} IN ('miss','error','unregistered')"
             f"     AND ({at_col} IS NULL OR {at_col} <= ?)))"
         )
-        params.append(
-            (datetime.now(timezone.utc) - timedelta(days=retry_failed_after_days)).isoformat()
-        )
+        now = datetime.now(timezone.utc)
+        params.append((now - timedelta(days=retry_failed_after_days)).isoformat())
+        if field == "building":
+            # 밭과 산에는 건축물대장이 있을 수 없다. 실측 성공률이 전답 1.7%·임야 4.8%인데
+            # miss 7,159건을 30일마다 되물으면 하루 한도만 태운다. 첫 조회(status='')는
+            # 그대로 하고, 없다고 확인된 뒤의 재시도만 늦춘다. 0%는 아니라서 막지는 않는다.
+            placeholders = ",".join("?" * len(LAND_ONLY_CATEGORIES))
+            clauses.append(
+                f"(category NOT IN ({placeholders})"
+                f" OR {status_col} = '' OR {at_col} IS NULL OR {at_col} <= ?)"
+            )
+            params.extend(LAND_ONLY_CATEGORIES)
+            params.append((now - timedelta(days=LAND_ONLY_RETRY_DAYS)).isoformat())
         where = " AND ".join(clauses)
         params.append(limit)
         with self.connect() as conn:
