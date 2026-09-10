@@ -6,10 +6,13 @@ from pathlib import Path
 
 from court_auction_crawler.common import index_problems
 from court_auction_crawler.models import AuctionItem
+from datetime import datetime, timedelta, timezone
+
 from court_auction_crawler.store import (
     SCHEMA_VERSION,
     AuctionStore,
     build_item_key,
+    detail_retry_at,
     infer_court_from_case,
     extract_common_fields,
     is_valid_auction_item,
@@ -747,3 +750,29 @@ class IndexProblemClassificationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DetailRetryScheduleTests(unittest.TestCase):
+    """백오프가 기일을 넘겨 잡히면 그 물건은 팔릴 때까지 다시 안 가본다."""
+
+    NOW = datetime(2026, 9, 10, 3, 0, tzinfo=timezone.utc)
+
+    def at(self, hours, sale_date):
+        return datetime.fromisoformat(detail_retry_at(self.NOW, hours, sale_date))
+
+    def test_backoff_is_pulled_in_before_the_sale_date(self):
+        # 기일이 5일 뒤인데 백오프는 7일 -> 기일 전에 봐야 한다.
+        self.assertLess(self.at(24 * 7, "2026.09.15"), self.NOW + timedelta(days=5))
+
+    def test_short_backoff_is_left_alone(self):
+        # 기일이 멀면 백오프 그대로. 괜히 앞당겨 사이트를 더 두드릴 이유가 없다.
+        self.assertEqual(self.at(4, "2026.10.30"), self.NOW + timedelta(hours=4))
+
+    def test_never_schedules_in_the_past(self):
+        # 기일이 내일이어도 과거로 잡으면 무한 재시도가 된다.
+        self.assertGreater(self.at(24 * 7, "2026.09.11"), self.NOW)
+
+    def test_past_or_unreadable_sale_date_keeps_the_backoff(self):
+        for sale_date in ("2026.09.01", "", "미정"):
+            with self.subTest(sale_date=sale_date):
+                self.assertEqual(self.at(48, sale_date), self.NOW + timedelta(hours=48))

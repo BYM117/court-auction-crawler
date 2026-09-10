@@ -37,6 +37,10 @@ CASE_DETAIL_BUTTON_SELECTOR = "input[value='사건상세조회']"
 # 사이트가 '그런 사건 없다'고 할 때 띄우는 문구. 화면 중간에 나오므로 본문 끝만
 # 잘라 보면 안 보인다. 이 문구가 곧 진실은 아니다 — 판단은 case_search_error 참고.
 NO_SUCH_CASE_MARKER = "잘못된 번호"
+# 사건 화면이 다 그려졌다는 표시. 이 화면은 통째로 한 번에 그려진다(실측: 물건이
+# 있는 사건은 물건상세조회 버튼까지 0.25초에 같이 뜨고, 없는 사건은 20초를 봐도
+# 안 뜬다). 그래서 이 문구가 있으면 '덜 그려진 것'이 아니라 다 그려진 것이다.
+CASE_RENDERED_MARKER = "사건기본내역"
 DATA_URI_RE = re.compile(r"^data:(?P<mime>[^;,]+)(?:;charset=[^;,]+)?;base64,(?P<data>.+)$", re.S)
 DOCUMENT_TYPES = {
     "매각물건명세서": 7,
@@ -208,25 +212,38 @@ def case_search_error(
     *,
     collected_before: bool,
 ) -> Exception:
-    """결과 0건 화면을 '없는 사건'과 '거절당한 것'으로 가른다.
+    """물건상세조회 버튼이 0개인 화면을 세 갈래로 가른다.
 
-    사이트는 NO_SUCH_CASE_MARKER 문구로 '그런 사건 없다'고 답하는데, 이 말을
-    곧이곧대로 믿으면 안 된다. 세션이 상하면 멀쩡한 사건에도 같은 문구로
-    둘러대며 문전박대한다(실측: 그 문구로 실패한 사건의 59%가 같은 날 같은
-    데몬의 다른 시도에서 성공했고, 새 브라우저에서는 6개 중 5개가 즉시 조회됐다).
+    1. '잘못된 번호'인데 받아둔 적 있는 사건 -> 거짓말이다. 세션이 상하면
+       사이트가 멀쩡한 사건에도 같은 문구로 둘러댄다(실측: 그 문구로 실패한
+       사건의 59%가 같은 날 같은 데몬의 다른 시도에서 성공했다). 인프라 장애.
+    2. '잘못된 번호'인데 받아본 적 없는 사건 -> 정말 없는 사건. 양성.
+    3. 사건 화면은 멀쩡한데 물건 버튼만 없음 -> 지금 내줄 물건이 없는 것이다.
+       실측으로 되는 사건과 안 되는 사건을 나란히 열어보면, 안 되는 쪽은
+       물건상세조회·매각기일공고·매각물건명세서가 통째로 빠져 있다. 장애가
+       아니므로 양성. 전체 실패의 절반쯤이 여기다.
 
-    그래서 한 번이라도 상세를 받아둔 사건이면 '없다'는 말은 거짓이다. 그때는
-    인프라 장애로 올려 거버너가 감속·브라우저 재시작까지 가게 한다. 양성으로
-    남기는 것은 애초에 받아본 적 없는 사건뿐 — 취하·이관으로 목록에만 남았다가
-    사라지는 경우가 여기 해당한다."""
-    if NO_SUCH_CASE_MARKER in text and not collected_before:
+    그 밖(사건 화면조차 안 뜸)은 인프라 장애로 올린다.
+
+    양성이라고 물건을 버리는 것은 아니다. 재시도로 남고, 백오프는 기일을 넘지
+    못하게 잘린다(store.mark_detail_failure). 3번 판단이 틀렸더라도 기일 전에
+    반드시 한 번은 더 확인한다."""
+    if NO_SUCH_CASE_MARKER in text:
+        if collected_before:
+            return RuntimeError(
+                f"사건검색 거절: {court} {case_no} 받아둔 적 있는 사건을 '없다'고 함(세션 거절)"
+            )
         return LookupError(f"사건 검색 결과 없음: {court} {case_no}")
-    reason = (
-        "받아둔 적 있는 사건을 '없다'고 함(세션 거절)"
-        if NO_SUCH_CASE_MARKER in text
-        else f"[{message or '메시지 못 읽음'}] {text[-120:]}"
+    if CASE_RENDERED_MARKER in text:
+        # 사건 화면은 멀쩡히 떴는데 물건상세조회 버튼만 없다. 지금 내줄 물건이
+        # 없는 것이지 장애가 아니므로 거버너를 깨우지 않는다. 대신 물건을 버리지는
+        # 않는다 — 재시도로 남고, 백오프는 기일을 넘지 못하게 잘린다
+        # (store.mark_detail_failure). 판단이 틀렸어도 기일 전에 한 번은 더 본다.
+        return LookupError(f"물건 목록 없음(사건 화면은 정상): {court} {case_no}")
+    return RuntimeError(
+        f"사건검색 화면 이상: {court} {case_no} "
+        f"[{message or '메시지 못 읽음'}] {text[-120:]}"
     )
-    return RuntimeError(f"사건검색 거절: {court} {case_no} {reason}")
 
 
 @dataclass(slots=True)
@@ -325,9 +342,11 @@ class CourtAuctionDetailCrawler:
                                 self.store.mark_detail_failure(target["item_key"], error)
                                 summary.failed += 1
                             print(f"  !! 상세 수집 실패: {error}")
-                            if is_benign_case_error(exc):
-                                governor.record_healthy()
-                            else:
+                            # 양성 실패는 사이트 건강에 대한 정보가 아니다.
+                            # 성공으로도 세지 않는다 — record_healthy가 성공률 창을
+                            # 채우고 distress를 지우는 탓에, 실패가 아무리 쌓여도
+                            # 거버너가 못 알아채고 자가 복구가 일주일간 0회였다.
+                            if not is_benign_case_error(exc):
                                 governor.record_distress()
                             await page.wait_for_timeout(
                                 int(self.delay * 1000 * governor.delay_multiplier())

@@ -945,14 +945,15 @@ class AuctionStore:
         now = datetime.now(timezone.utc)
         with self.connect() as conn:
             row = conn.execute(
-                "SELECT detail_fail_count, detail_collected_at FROM auction_items WHERE item_key = ?",
+                "SELECT detail_fail_count, detail_collected_at, sale_date"
+                "  FROM auction_items WHERE item_key = ?",
                 (item_key,),
             ).fetchone()
             if row is None:
                 return
             fail_count = int(row["detail_fail_count"] or 0) + 1
             retry_hours = min(24 * 7, 2 ** min(fail_count - 1, 7))
-            next_retry = (now + timedelta(hours=retry_hours)).isoformat(timespec="seconds")
+            next_retry = detail_retry_at(now, retry_hours, row["sale_date"] or "")
             # 이미 상세를 받아둔 물건(재수집=갱신 시도)이 실패하면 status를 failed로
             # 덮지 않는다. 기존 상세 데이터는 여전히 유효하므로 collected를 유지하고
             # 재시도만 백오프 예약한다. 상세를 한 번도 못 받은 것만 failed로 표시한다.
@@ -2151,6 +2152,22 @@ def calculate_crawl_priority(status: str, sale_date: str) -> int:
     if "유찰" in clean_text(status):
         score += 30
     return score
+
+
+def detail_retry_at(now: datetime, retry_hours: int, sale_date: str) -> str:
+    """상세 재시도 시각을 정하되, 기일을 넘겨 잡지 않는다.
+
+    백오프는 실패할수록 배증해 최대 7일까지 간다. 그런데 기일은 보통 2주 앞이라
+    몇 번만 헛걸음해도 다음 방문이 기일 뒤로 밀린다. 그러면 그 물건은 팔릴
+    때까지 다시 안 가보게 된다 — 실패 원인을 잘못 판단했을 때 조용히 놓치는
+    경로가 정확히 여기다. 기일 하루 전으로 당겨 최소 한 번은 더 확인한다.
+    (기일이 이미 지났거나 못 읽으면 백오프 그대로 둔다.)"""
+    scheduled = now + timedelta(hours=retry_hours)
+    remaining = days_until_sale(sale_date, now.date())
+    if remaining is not None and remaining > 0:
+        deadline = now + timedelta(days=remaining - 1) if remaining > 1 else now + timedelta(hours=1)
+        scheduled = min(scheduled, max(deadline, now + timedelta(hours=1)))
+    return scheduled.isoformat(timespec="seconds")
 
 
 def days_until_sale(value: str, today: date) -> int | None:

@@ -277,6 +277,8 @@ class CaseSearchErrorTests(unittest.IsolatedAsyncioTestCase):
     # 실측: 없는 사건은 이 문구가 뜨고, 오류 화면은 '오류'로 끝난다.
     NO_CASE_TEXT = "검색조건\n해당 사건번호는 잘못된 번호입니다. 다시 한번 확인해 보시기 바랍니다.\n유의사항"
     ERROR_TEXT = "법원은 책임을 지지 않습니다.\nCOPYRIGHT\n맨 위로가기\n오류"
+    # 사건 화면은 다 떴는데 물건상세조회 버튼만 없는 실제 화면(대구 2025타경8970).
+    NO_ITEMS_TEXT = "검색조건\n법원 :대구지방법원\n사건기본내역\n사건번호\t2025타경8970전자\n유의사항"
 
     def test_never_collected_case_stays_benign(self):
         error = case_search_error(
@@ -286,23 +288,30 @@ class CaseSearchErrorTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(is_benign_case_error(error))
 
     def test_collected_case_called_missing_is_a_refusal(self):
-        # 받아둔 적 있는 사건을 '없다'고 하면 거짓말이다. 양성으로 넘기면
-        # record_healthy가 불려 거버너가 상한 세션을 영영 못 알아챈다.
+        # 받아둔 적 있는 사건을 '없다'고 하면 거짓말이다(실측 59%가 같은 날 성공).
         error = case_search_error(
             "강릉지원", "2025타경1", self.NO_CASE_TEXT, "", collected_before=True
         )
         self.assertFalse(is_benign_case_error(error))
         self.assertIn("세션 거절", str(error))
 
-    def test_error_screen_counts_as_infrastructure_failure(self):
+    def test_rendered_case_without_items_does_not_wake_the_governor(self):
+        # 사건 화면은 멀쩡한데 물건 버튼만 없는 것 — 전체 실패의 절반. 장애가
+        # 아니므로 양성이어야 한다. 격상하면 거버너가 평상시에 계속 헛돈다.
+        error = case_search_error(
+            "강릉지원", "2025타경1", self.NO_ITEMS_TEXT, "", collected_before=True
+        )
+        self.assertTrue(is_benign_case_error(error))
+        self.assertIn("물건 목록 없음", str(error))
+
+    def test_blank_screen_is_infrastructure_failure(self):
         error = case_search_error(
             "강릉지원", "2025타경1", self.ERROR_TEXT, "조회중입니다.", collected_before=False
         )
-        self.assertNotIsInstance(error, LookupError)
         self.assertFalse(is_benign_case_error(error))
         self.assertIn("조회중입니다.", str(error))
 
-    def test_error_screen_without_readable_message_still_escalates(self):
+    def test_blank_screen_without_readable_message_still_escalates(self):
         error = case_search_error(
             "강릉지원", "2025타경1", self.ERROR_TEXT, "", collected_before=False
         )
