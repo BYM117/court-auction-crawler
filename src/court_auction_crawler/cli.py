@@ -942,15 +942,21 @@ def run_collect_loop(
                 time.sleep(idle_minutes * 60)
                 continue
 
-            # 사이클마다 무결성을 먼저 본다. 인덱스 손상을 방치하면 수집 도중
-            # 'database disk image is malformed'로 죽고 launchd 재시작만 반복한다(실측).
-            # 1.9G DB에서 1~2초라 사이클 비용에 묻힌다. 점검 자체가 실패해도 수집은 계속한다.
-            try:
-                run_db_check(store, repair=True)
-            except Exception as exc:  # noqa: BLE001
-                print(f"!! DB 무결성 점검 건너뜀: {str(exc)[:150]}", flush=True)
-
             run_kind = controller.next_run_kind()
+            # 인덱스 손상을 방치하면 수집 도중 'database disk image is malformed'로 죽고
+            # launchd 재시작만 반복한다(실측). 그래서 점검은 계속 한다. 다만 매 사이클은
+            # 못 한다 — '1.9G DB에서 1~2초'는 옛말이고, 3.9G가 된 지금은 상세 수집기와
+            # 디스크를 다투며 2시간 19분이 걸렸다(2026-09-09 21:51 -> 00:10 실측).
+            # 하루 한 번 도는 full 사이클에만 본다. 점검이 실패해도 수집은 계속한다.
+            if run_kind == "full":
+                try:
+                    run_db_check(store, repair=True)
+                except Exception as exc:  # noqa: BLE001
+                    print(f"!! DB 무결성 점검 건너뜀: {str(exc)[:150]}", flush=True)
+            else:
+                # 안 하는 것도 로그에 남긴다. 조용히 빠지면 몇 달 뒤에 '언제부터 점검이
+                # 안 돌았지'를 알 방법이 없다.
+                print("DB 무결성 점검 생략(하루 한 번, 다음 full 사이클에)", flush=True)
             window = controller.collection_window(run_kind)
             print(
                 f"===== 자동 수집 시작 {time.strftime('%Y-%m-%d %H:%M:%S')} "
