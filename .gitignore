@@ -10,3 +10,4 @@ logs/
 .env
 .env.*
 .DS_Store
+.claude/worktrees/
