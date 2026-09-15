@@ -864,7 +864,13 @@ class AuctionStore:
                     OR (
                         -- 목록이 갱신된 물건은 상세를 다시 받되, 재수집이 실패해
                         -- 백오프가 걸려 있으면 예약 시각 전까지는 다시 올리지 않는다.
-                        last_changed_at IS NOT NULL
+                        -- unavailable은 여기서 빼야 한다. 그 상태는 백오프가 아니라
+                        -- next_retry=NULL로 표시되는데, NULL이 '지금 대상'으로 읽혀
+                        -- 시도->조회불가->NULL->즉시 대상으로 영원히 돈다(실측 41회).
+                        -- 재공고로 다시 볼 필요가 생기면 아래 unavailable 전용
+                        -- 조건이 detail_checked_at 기준으로 잡아준다.
+                        detail_status != 'unavailable'
+                        AND last_changed_at IS NOT NULL
                         AND last_changed_at > detail_collected_at
                         AND (detail_next_retry_at IS NULL OR detail_next_retry_at <= ?)
                     )

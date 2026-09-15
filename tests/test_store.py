@@ -776,3 +776,55 @@ class DetailRetryScheduleTests(unittest.TestCase):
         for sale_date in ("2026.09.01", "", "미정"):
             with self.subTest(sale_date=sale_date):
                 self.assertEqual(self.at(48, sale_date), self.NOW + timedelta(hours=48))
+
+
+class UnavailableRetryLoopTests(unittest.TestCase):
+    """조회 불가 물건이 영원히 재시도 대상으로 돌아오면 안 된다.
+
+    실측: unavailable + 목록갱신일 > 상세수집일 + next_retry NULL 조합이
+    '목록 갱신' 조건에 걸려 시도->조회불가->NULL->즉시 대상으로 41회를 돌았다."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.store = AuctionStore(Path(self.tmp.name) / "auction.sqlite3")
+        self.store.upsert_items([
+            AuctionItem({
+                "사건번호": "울산지방법원 2025타경1041",
+                "물건번호": "1",
+                "소재지": "울산광역시 남구 중앙로 1",
+                "용도": "아파트",
+                "매각기일": "2026.12.01",
+            })
+        ])
+        self.key = self.store.list_detail_targets()[0]["item_key"]
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _make_stale_then_unavailable(self):
+        """상세를 받아둔 뒤 목록이 갱신됐고, 지금은 조회 불가인 상태를 만든다."""
+        self.store.save_item_detail(self.key, {"item_no": "1"})
+        with self.store.connect() as conn:
+            conn.execute(
+                "UPDATE auction_items SET detail_collected_at = '2026-08-29T00:00:00+00:00',"
+                " last_changed_at = '2026-09-02T00:00:00+00:00' WHERE item_key = ?",
+                (self.key,),
+            )
+        self.store.mark_detail_unavailable(self.key, "물건상세조회 버튼 비활성")
+
+    def test_unavailable_item_is_not_due_again(self):
+        self._make_stale_then_unavailable()
+        keys = [row["item_key"] for row in self.store.list_detail_targets()]
+        self.assertNotIn(self.key, keys)
+
+    def test_relisted_unavailable_item_comes_back(self):
+        # 재공고 등으로 확인 이후에 목록이 바뀌면 다시 봐야 한다.
+        self._make_stale_then_unavailable()
+        with self.store.connect() as conn:
+            conn.execute(
+                "UPDATE auction_items SET last_changed_at = '2099-01-01T00:00:00+00:00'"
+                " WHERE item_key = ?",
+                (self.key,),
+            )
+        keys = [row["item_key"] for row in self.store.list_detail_targets()]
+        self.assertIn(self.key, keys)
