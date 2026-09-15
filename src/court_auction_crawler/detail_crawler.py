@@ -89,6 +89,7 @@ class HealthGovernor:
         self.success_streak = 0
         self.trips = 0
         self.degraded = False
+        self.wants_fresh_browser = False
         self.cooldown_until = 0.0
         self.last_healthy_at = time.monotonic()
         self.attempts_since_healthy = 0
@@ -125,9 +126,15 @@ class HealthGovernor:
         )
         self.cooldown_until = time.monotonic() + cooldown
         self.degraded = True
+        # 듣는 처방을 먼저 쓴다. 실측(9/11~9/15, 자가 복구 167회): 냉각·보수 모드만
+        # 거친 뒤 성공률은 48%인데 브라우저를 새로 열면 65%다. 그런데 냉각은
+        # 60→120→240→480초로 올라가며 브라우저 교체를 15분씩 미뤘고, 하루 4~17시간을
+        # 기다리는 데만 썼다. 이제 첫 차단 의심에서 바로 패스를 접고 새로 연다.
+        # (냉각은 워치독이 패스를 접을 때까지의 짧은 브레이크로만 남는다.)
+        self.wants_fresh_browser = True
         print(
             f"!! 차단 의심: 연속 오류 {self.trip_threshold}회 -> "
-            f"{int(cooldown)}초 냉각 후 단일 워커 보수 모드로 전환합니다"
+            f"브라우저를 새로 엽니다 (최대 {int(cooldown)}초 냉각)"
         )
 
     def delay_multiplier(self) -> float:
@@ -376,15 +383,17 @@ class CourtAuctionDetailCrawler:
                     if not governor.abort_requested:
                         stalled = governor.is_stalled(now)
                         throttled = governor.is_throughput_degraded(now)
-                        if stalled or throttled:
+                        tripped = governor.wants_fresh_browser
+                        if stalled or throttled or tripped:
                             governor.abort_requested = True
                             summary.aborted = True
                             hard_deadline = now + 180
-                            reason = (
-                                f"{int(governor.stall_limit_seconds // 60)}분 이상 정상 수집 없음"
-                                if stalled
-                                else "성공률 급락(반오염 의심)"
-                            )
+                            if stalled:
+                                reason = f"{int(governor.stall_limit_seconds // 60)}분 이상 정상 수집 없음"
+                            elif throttled:
+                                reason = "성공률 급락(반오염 의심)"
+                            else:
+                                reason = "차단 의심"
                             print(
                                 f"!! 자가 복구: {reason} -> 이번 패스를 중단하고 브라우저를 새로 엽니다"
                             )

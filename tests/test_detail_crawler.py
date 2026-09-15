@@ -330,3 +330,34 @@ class CaseSearchErrorTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_site_message_is_empty_when_no_message_frame(self):
         self.assertEqual(await site_message(FakeMessagePage([])), "")
+
+
+class GovernorFreshBrowserTests(unittest.TestCase):
+    """차단 의심이 뜨면 냉각 사다리를 타지 말고 바로 브라우저를 새로 열어야 한다.
+
+    실측(9/11~9/15, 자가 복구 167회): 냉각만 거친 뒤 성공률 48%, 브라우저를
+    새로 열면 65%. 그런데 냉각이 60->120->240->480초로 올라가며 교체를 15분씩
+    미뤘고 하루 4~17시간을 기다리는 데 썼다."""
+
+    def test_trip_asks_for_a_fresh_browser(self):
+        governor = HealthGovernor(trip_threshold=3)
+        self.assertFalse(governor.wants_fresh_browser)
+        for _ in range(3):
+            governor.record_distress()
+        self.assertTrue(governor.wants_fresh_browser)
+
+    def test_distress_below_threshold_does_not_ask(self):
+        governor = HealthGovernor(trip_threshold=3)
+        for _ in range(2):
+            governor.record_distress()
+        self.assertFalse(governor.wants_fresh_browser)
+
+    def test_success_before_threshold_keeps_the_browser(self):
+        # 간간이 성공하면 연속 오류가 아니다 — 멀쩡한 세션을 버리면 안 된다.
+        governor = HealthGovernor(trip_threshold=3)
+        governor.record_distress()
+        governor.record_distress()
+        governor.record_healthy()
+        governor.record_distress()
+        governor.record_distress()
+        self.assertFalse(governor.wants_fresh_browser)
