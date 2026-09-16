@@ -173,6 +173,20 @@ PYTHONUNBUFFERED=1 PLAYWRIGHT_BROWSERS_PATH=.playwright-browsers PYTHONPATH=src 
 
 빠른 검증은 `--limit 10`, 이미 완료한 물건 재수집은 `--force`를 붙입니다. 특정 물건 복구는 `--item-key 'auction:법원:사건번호:물건번호' --force`로 실행합니다. 자동 전체 수집기는 목록 갱신을 마칠 때마다 상세 대상 1,000개를 이어서 처리합니다.
 
+## 놓친 매각결과 메우기
+
+매각결과 화면은 기일 다음날부터 이레만 보여줍니다. 그 창이 닫힌 뒤에도 **사건 화면의 '기일 내역'** 에는 물건별 기일결과가 `매각 (175,900,000원)`처럼 금액까지 남아 있어, 놓친 낙찰가를 뒤늦게 메울 수 있습니다. 종결돼서 물건상세조회가 막힌 물건도 이 탭은 열립니다.
+
+```bash
+PYTHONUNBUFFERED=1 PLAYWRIGHT_BROWSERS_PATH=.playwright-browsers PYTHONPATH=src \
+  .venv/bin/python -m court_auction_crawler.cli collect-details \
+  --db data/auction.sqlite3 --backfill-results --limit 1500 --skip-documents
+```
+
+기일이 지났는데 그 기일의 결과행이 없는 물건만 골라 사건 단위로 돕니다. 물건 상세는 건드리지 않습니다. 이미 받아둔 결과행은 덮지 않습니다 — 기일내역은 '매각'인데 금액이 빠져 있을 때가 있어 덮어쓰면 받아둔 낙찰가를 잃습니다.
+
+상세 수집 데몬과 같은 락(`data/collect-details.pid`)을 쓰므로 한 번에 하나만 돕니다. 데몬을 잠시 내리고 실행하세요. 평소 상세 수집도 사건 화면에 들른 김에 빠진 결과행을 함께 메웁니다.
+
 ## 공시기준가 채우기 (공시지가·공동주택가격·개별주택가격)
 
 지오코딩으로 확보한 PNU를 이용해 물건별 공시기준가를 미리 계산해 DB에 저장합니다. 이렇게 하면 꽁지맵은 런타임 조회 없이 즉시 공시기준가를 표시합니다.
