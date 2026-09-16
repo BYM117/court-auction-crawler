@@ -609,7 +609,13 @@ class CourtAuctionCrawler:
               const grid = [];
               for (const tr of table.querySelectorAll('tr')) {
                 const cells = [...tr.querySelectorAll('th,td')];
-                if (!cells.length) continue;
+                if (!cells.length) {
+                  // 셀이 하나도 없는 행도 표에서는 한 줄을 차지한다. 그냥 건너뛰면 위 행의
+                  // rowspan 잔량이 남아 다음 행의 열이 통째로 밀린다. 매각결과 표는 헤더
+                  // 블록 셋째 줄이 이런 빈 행이라 페이지마다 첫 물건이 사라지고 있었다.
+                  for (const slot of pending) { if (slot && slot.remaining > 0) slot.remaining -= 1; }
+                  continue;
+                }
                 const texts = [];
                 const fresh = [];
                 let href = '';
