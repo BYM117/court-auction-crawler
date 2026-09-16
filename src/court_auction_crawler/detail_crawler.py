@@ -11,7 +11,7 @@ import mimetypes
 from pathlib import Path
 import re
 import time
-from typing import Any
+from typing import Any, Iterator
 from urllib.parse import unquote
 
 from playwright.async_api import Page, TimeoutError as PlaywrightTimeoutError, async_playwright
@@ -447,6 +447,38 @@ class CourtAuctionDetailCrawler:
 
         buttons = page.locator(ITEM_DETAIL_BUTTON_SELECTOR)
         button_count = await buttons.count()
+
+        if self.results_only:
+            # 결과만 메우는 패스는 물건 버튼이 필요 없다. 종결된 사건은 버튼이
+            # 통째로 없거나 비활성인데(실측: 대상의 88%), 기일내역은 그대로 남아 있다.
+            # 여기서 버튼을 따지면 정작 메워야 할 물건을 전부 놓친다.
+            shared = await self._extract_case_shared(page)
+            if next(_schedule_tables(shared), None) is None:
+                text = await page.locator("main, body").first.inner_text(timeout=5_000)
+                raise case_search_error(
+                    court,
+                    case_no,
+                    text,
+                    await site_message(page),
+                    collected_before=any(row.get("detail_collected_at") for row in targets),
+                )
+            filled = self.store.backfill_sale_results(
+                parse_case_schedule(shared, court, case_no)
+            )
+            if filled["inserted"]:
+                print(
+                    f"  기일내역에서 매각결과 {filled['inserted']}건 보충 "
+                    f"(낙찰 확정 {filled['sold']})"
+                )
+            return {
+                "collected": 0,
+                "failed": 0,
+                "unavailable": 0,
+                "documents_collected": 0,
+                "documents_pending": 0,
+                "results_filled": filled["inserted"],
+            }
+
         if button_count == 0:
             text = await page.locator("main, body").first.inner_text(timeout=5_000)
             raise case_search_error(
@@ -482,10 +514,6 @@ class CourtAuctionDetailCrawler:
         counts["results_filled"] = filled["inserted"]
         if filled["inserted"]:
             print(f"  기일내역에서 매각결과 {filled['inserted']}건 보충 (낙찰 확정 {filled['sold']})")
-        if self.results_only:
-            # 결과만 메우는 패스다. 물건 상세는 건드리지 않는다 — 종결 물건은
-            # 상세조회 버튼이 막혀 있어 시도해봐야 unavailable만 쌓인다.
-            return counts
 
         enabled_indices = [index for index, (_no, disabled) in enumerate(button_states) if not disabled]
         for position, button_index in enumerate(enabled_indices):
@@ -1254,6 +1282,15 @@ def safe_path_part(value: str) -> str:
 SCHEDULE_ROW_MIN = 7
 
 
+def _schedule_tables(shared: dict[str, Any] | None) -> Iterator[dict[str, Any]]:
+    """사건 화면에서 '기일 내역' 표를 찾아 준다. 탭을 옮겨 다니며 받은 스냅샷이라
+    같은 표가 여러 묶음에 들어 있다."""
+    for key in ("schedule_tables", "case_tables", "filing_and_service_tables"):
+        for table in (shared or {}).get(key) or []:
+            if (table.get("caption") or "").replace(" ", "") == "기일내역":
+                yield table
+
+
 def parse_case_schedule(
     shared: dict[str, Any] | None, court: str, case_no: str
 ) -> list[dict[str, str]]:
@@ -1266,35 +1303,30 @@ def parse_case_schedule(
     표 모양: 물건번호 | 감정평가액 | 기일 | 기일종류 | 기일장소 | 최저매각가격 | 기일결과
     """
     rows: list[dict[str, str]] = []
-    if not shared:
-        return rows
-    for key in ("schedule_tables", "case_tables", "filing_and_service_tables"):
-        for table in shared.get(key) or []:
-            if (table.get("caption") or "").replace(" ", "") != "기일내역":
+    for table in _schedule_tables(shared):
+        for row in table.get("rows") or []:
+            if len(row) < SCHEDULE_ROW_MIN or row[3] != "매각기일":
                 continue
-            for row in table.get("rows") or []:
-                if len(row) < SCHEDULE_ROW_MIN or row[3] != "매각기일":
-                    continue
-                item_no = re.sub(r"\D", "", row[0] or "")
-                date_match = re.search(r"\d{4}\.\d{2}\.\d{2}", row[2] or "")
-                outcome = (row[6] or "").strip()
-                # 결과가 빈 칸이면 법원이 아직 안 올린 것이다. 나중에 채워진다.
-                if not (item_no and date_match and outcome):
-                    continue
-                rows.append(
-                    {
-                        "수집구분": "기일내역",
-                        "법원": court,
-                        "사건번호": case_no,
-                        "물건번호": item_no,
-                        "감정평가액": row[1] or "",
-                        "매각기일": date_match.group(0),
-                        "최저매각가격": row[5] or "",
-                        "매각결과": outcome,
-                    }
-                )
-            if rows:
-                return rows
+            item_no = re.sub(r"\D", "", row[0] or "")
+            date_match = re.search(r"\d{4}\.\d{2}\.\d{2}", row[2] or "")
+            outcome = (row[6] or "").strip()
+            # 결과가 빈 칸이면 법원이 아직 안 올린 것이다. 나중에 채워진다.
+            if not (item_no and date_match and outcome):
+                continue
+            rows.append(
+                {
+                    "수집구분": "기일내역",
+                    "법원": court,
+                    "사건번호": case_no,
+                    "물건번호": item_no,
+                    "감정평가액": row[1] or "",
+                    "매각기일": date_match.group(0),
+                    "최저매각가격": row[5] or "",
+                    "매각결과": outcome,
+                }
+            )
+        if rows:
+            return rows
     return rows
 
 
