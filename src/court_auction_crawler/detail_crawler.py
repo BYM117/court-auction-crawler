@@ -262,6 +262,7 @@ class DetailCollectionSummary:
     unavailable: int = 0
     documents_collected: int = 0
     documents_pending: int = 0
+    results_filled: int = 0   # 사건 기일내역에서 뒤늦게 메운 매각결과 행
     aborted: bool = False  # 자가 복구로 패스를 중단함 — 곧바로 새 패스를 시작해야 한다
 
 
@@ -282,6 +283,7 @@ class CourtAuctionDetailCrawler:
         self.headful = headful
         self.collect_documents = collect_documents
         self.download_document_files = download_document_files
+        self.results_only = False
 
     async def collect_due(
         self,
@@ -291,12 +293,18 @@ class CourtAuctionDetailCrawler:
         force: bool = False,
         item_key: str = "",
         workers: int = 3,
+        results_only: bool = False,
     ) -> DetailCollectionSummary:
-        targets = self.store.list_detail_targets(
-            limit=limit,
-            include_inactive=include_inactive,
-            force=force,
-            item_key=item_key,
+        self.results_only = results_only
+        targets = (
+            self.store.list_missing_result_targets(limit=limit)
+            if results_only
+            else self.store.list_detail_targets(
+                limit=limit,
+                include_inactive=include_inactive,
+                force=force,
+                item_key=item_key,
+            )
         )
         summary = DetailCollectionSummary(targets=len(targets))
         if not targets:
@@ -365,6 +373,7 @@ class CourtAuctionDetailCrawler:
                         summary.unavailable += result["unavailable"]
                         summary.documents_collected += result["documents_collected"]
                         summary.documents_pending += result["documents_pending"]
+                        summary.results_filled += result["results_filled"]
                         await page.wait_for_timeout(
                             int(self.delay * 1000 * governor.delay_multiplier())
                         )
@@ -464,7 +473,19 @@ class CourtAuctionDetailCrawler:
             "unavailable": 0,
             "documents_collected": 0,
             "documents_pending": 0,
+            "results_filled": 0,
         }
+
+        # 사건 화면에는 물건별 기일결과가 금액까지 영구히 남는다. 여기까지 온 김에
+        # 결과 화면에서 놓친 기일을 메운다. 이미 있는 행은 건드리지 않는다.
+        filled = self.store.backfill_sale_results(parse_case_schedule(shared, court, case_no))
+        counts["results_filled"] = filled["inserted"]
+        if filled["inserted"]:
+            print(f"  기일내역에서 매각결과 {filled['inserted']}건 보충 (낙찰 확정 {filled['sold']})")
+        if self.results_only:
+            # 결과만 메우는 패스다. 물건 상세는 건드리지 않는다 — 종결 물건은
+            # 상세조회 버튼이 막혀 있어 시도해봐야 unavailable만 쌓인다.
+            return counts
 
         enabled_indices = [index for index, (_no, disabled) in enumerate(button_states) if not disabled]
         for position, button_index in enumerate(enabled_indices):
@@ -1230,6 +1251,53 @@ def safe_path_part(value: str) -> str:
     return cleaned[:160] or "unknown"
 
 
+SCHEDULE_ROW_MIN = 7
+
+
+def parse_case_schedule(
+    shared: dict[str, Any] | None, court: str, case_no: str
+) -> list[dict[str, str]]:
+    """사건 화면의 '기일 내역' 표에서 물건별 매각기일 결과를 뽑는다.
+
+    물건 상세 쪽 기일내역에는 결과 글자만 있고 금액이 없다. 사건 쪽에는
+    '매각 (175,900,000원)'처럼 금액이 붙어 있고, 종결돼서 물건상세조회 버튼이
+    막힌 물건도 여기에는 남는다. 한 번 조회로 그 사건 모든 물건이 나온다.
+
+    표 모양: 물건번호 | 감정평가액 | 기일 | 기일종류 | 기일장소 | 최저매각가격 | 기일결과
+    """
+    rows: list[dict[str, str]] = []
+    if not shared:
+        return rows
+    for key in ("schedule_tables", "case_tables", "filing_and_service_tables"):
+        for table in shared.get(key) or []:
+            if (table.get("caption") or "").replace(" ", "") != "기일내역":
+                continue
+            for row in table.get("rows") or []:
+                if len(row) < SCHEDULE_ROW_MIN or row[3] != "매각기일":
+                    continue
+                item_no = re.sub(r"\D", "", row[0] or "")
+                date_match = re.search(r"\d{4}\.\d{2}\.\d{2}", row[2] or "")
+                outcome = (row[6] or "").strip()
+                # 결과가 빈 칸이면 법원이 아직 안 올린 것이다. 나중에 채워진다.
+                if not (item_no and date_match and outcome):
+                    continue
+                rows.append(
+                    {
+                        "수집구분": "기일내역",
+                        "법원": court,
+                        "사건번호": case_no,
+                        "물건번호": item_no,
+                        "감정평가액": row[1] or "",
+                        "매각기일": date_match.group(0),
+                        "최저매각가격": row[5] or "",
+                        "매각결과": outcome,
+                    }
+                )
+            if rows:
+                return rows
+    return rows
+
+
 def collect_details_sync(
     store: AuctionStore,
     *,
@@ -1243,6 +1311,7 @@ def collect_details_sync(
     collect_documents: bool = True,
     download_document_files: bool = False,
     workers: int = 3,
+    results_only: bool = False,
 ) -> DetailCollectionSummary:
     with singleton_lock(store.db_path.parent / "collect-details.pid") as acquired:
         if not acquired:
@@ -1263,5 +1332,6 @@ def collect_details_sync(
                 force=force,
                 item_key=item_key,
                 workers=workers,
+                results_only=results_only,
             )
         )

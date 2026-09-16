@@ -1797,6 +1797,122 @@ class AuctionStore:
             "sold": sum(1 for row in prepared if row[5] is not None),
         }
 
+    def backfill_sale_results(self, rows: list[dict[str, str]]) -> dict[str, int]:
+        """사건 화면 기일내역에서 뽑은 결과를 '없는 것만' 채운다.
+
+        매각결과 화면은 기일 다음날부터 이레만 보여주지만 사건 화면의 기일내역은
+        금액까지 영구히 남는다. 그 사이에 놓친 기일을 뒤늦게 메우는 길이다.
+
+        이미 있는 행은 절대 건드리지 않는다. 기일내역은 '매각'인데 금액이 빠져
+        있을 때가 있어서(실측 15%), 덮어쓰면 결과 화면에서 받아둔 낙찰가를 잃는다."""
+        now = utc_now()
+        prepared: list[tuple[Any, ...]] = []
+        for values in rows:
+            common = extract_common_fields(values)
+            case_no = representative_case_no(common["case_no"])
+            sale_date = common["sale_date"]
+            if not (case_no and common["item_no"] and sale_date):
+                continue
+            result, amount = parse_sale_result(values.get("매각결과", ""))
+            if not result:
+                continue
+            prepared.append(
+                (
+                    common["court"],
+                    case_no,
+                    common["item_no"],
+                    sale_date,
+                    result,
+                    amount,
+                    parse_money(common["minimum_bid"]),
+                    parse_money(common["appraisal"]),
+                    build_item_key(values),
+                    json_dumps(values),
+                    now,
+                )
+            )
+        if not prepared:
+            return {"received": len(rows), "inserted": 0, "sold": 0}
+        with self.connect() as conn:
+            before = conn.total_changes
+            conn.executemany(
+                """
+                INSERT INTO auction_sale_results(
+                    court, case_no, item_no, sale_date, result,
+                    sale_amount, minimum_bid, appraisal, item_key, raw_json, collected_at)
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(court, case_no, item_no, sale_date) DO NOTHING
+                """,
+                prepared,
+            )
+            inserted = conn.total_changes - before
+            sold = 0
+            for item_key in {row[8] for row in prepared}:
+                latest = conn.execute(
+                    """
+                    SELECT sale_date, sale_amount FROM auction_sale_results
+                     WHERE item_key = ? ORDER BY sale_date DESC LIMIT 1
+                    """,
+                    (item_key,),
+                ).fetchone()
+                if latest is None or latest["sale_amount"] is None:
+                    continue
+                item = conn.execute(
+                    "SELECT sale_date, sold_amount FROM auction_items WHERE item_key = ?",
+                    (item_key,),
+                ).fetchone()
+                if item is None or item["sold_amount"] is not None:
+                    continue
+                # 대금미납 재매각처럼 새 기일을 받아 되살아난 물건은 아직 팔린 게
+                # 아니다. 옛 낙찰로 목록에서 내리면 입찰 가능한 물건이 사라진다.
+                if (item["sale_date"] or "") > latest["sale_date"]:
+                    continue
+                conn.execute(
+                    """
+                    UPDATE auction_items
+                       SET sold_amount = ?, sold_date = ?, is_active = 0,
+                           crawl_priority = -100, updated_at = ?
+                     WHERE item_key = ?
+                    """,
+                    (latest["sale_amount"], latest["sale_date"], now, item_key),
+                )
+                sold += 1
+        return {"received": len(rows), "inserted": inserted, "sold": sold}
+
+    # 매각결과 화면은 기일 다음날부터 이레만 보여준다. 그 창이 열려 있는 동안은
+    # 정상 경로(수집 사이클)가 가져가므로 사건 화면까지 들출 이유가 없다.
+    RESULT_WINDOW_DAYS = 8
+
+    def list_missing_result_targets(self, limit: int | None = None) -> list[dict[str, Any]]:
+        """기일은 지났는데 그 기일의 결과행이 없는 물건. 사건 화면으로 메울 대상이다.
+
+        결과 화면의 이레 창이 아직 안 닫힌 기일은 뺀다 — 곧 정상 경로가 채운다.
+        활성·비활성을 가리지 않는다. 놓친 낙찰은 이미 비활성이 되어 있고, 상세
+        수집 대기열은 활성만 보기 때문에 영원히 다시 들르지 않는다."""
+        row_limit = 1_000_000 if limit is None or limit <= 0 else min(limit, 1_000_000)
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT item_key, court, case_no, item_no, sale_date, status,
+                       detail_status, detail_collected_at, detail_next_retry_at,
+                       detail_fail_count, last_changed_at
+                  FROM auction_items AS item
+                 WHERE court != '' AND case_no != '' AND item_no != ''
+                   AND sale_date != '' AND REPLACE(sale_date, '.', '-') < ?
+                   AND NOT EXISTS (
+                       SELECT 1 FROM auction_sale_results AS result
+                        WHERE result.item_key = item.item_key
+                          AND result.sale_date = item.sale_date)
+                 ORDER BY sale_date DESC
+                 LIMIT ?
+                """,
+                (
+                    (date.today() - timedelta(days=self.RESULT_WINDOW_DAYS)).isoformat(),
+                    row_limit,
+                ),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def record_popularity(self, rows: list[dict[str, str]], field: str) -> dict[str, int]:
         """다수조회·다수관심 화면에서 받은 인기도 지표를 저장한다.
 

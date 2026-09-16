@@ -260,6 +260,11 @@ def build_parser() -> argparse.ArgumentParser:
     collect_details.add_argument("--include-inactive", action="store_true", help="종결/비활성 물건도 수집합니다.")
     collect_details.add_argument("--force", action="store_true", help="이미 완료한 물건도 다시 수집합니다.")
     collect_details.add_argument("--item-key", default="", help="특정 DB 물건 키 하나만 수집합니다.")
+    collect_details.add_argument(
+        "--backfill-results",
+        action="store_true",
+        help="기일이 지났는데 결과행이 없는 물건만 골라, 사건 화면의 기일내역으로 매각결과를 메웁니다(물건 상세는 건드리지 않음).",
+    )
     collect_details.add_argument("--headful", action="store_true", help="브라우저 창을 표시합니다.")
     collect_details.add_argument("--delay", type=float, default=1.5, help="사건 사이 대기 시간, 초 단위")
     collect_details.add_argument("--workers", type=int, default=3, help="동시에 사건을 처리할 브라우저 컨텍스트 수")
@@ -437,6 +442,7 @@ def main(argv: list[str] | None = None) -> int:
                 include_inactive=args.include_inactive,
                 force=args.force,
                 item_key=args.item_key,
+                results_only=args.backfill_results,
                 asset_dir=args.asset_dir,
                 delay=args.delay,
                 headful=args.headful,
@@ -444,11 +450,18 @@ def main(argv: list[str] | None = None) -> int:
                 download_document_files=args.download_document_files,
                 workers=args.workers,
             )
-            print(
-                f"상세 수집 완료: 대상 {summary.targets}개, 사건 {summary.cases}건, "
-                f"완료 {summary.collected}개, 실패 {summary.failed}개, 조회불가 {summary.unavailable}개, "
-                f"문서 {summary.documents_collected}개, 문서 대기 {summary.documents_pending}개"
-            )
+            if args.backfill_results:
+                print(
+                    f"매각결과 보충 완료: 대상 {summary.targets}개, 사건 {summary.cases}건, "
+                    f"보충 {summary.results_filled}행"
+                )
+            else:
+                print(
+                    f"상세 수집 완료: 대상 {summary.targets}개, 사건 {summary.cases}건, "
+                    f"완료 {summary.collected}개, 실패 {summary.failed}개, 조회불가 {summary.unavailable}개, "
+                    f"문서 {summary.documents_collected}개, 문서 대기 {summary.documents_pending}개, "
+                    f"결과 보충 {summary.results_filled}행"
+                )
             if not args.loop:
                 return 0
             # 자가 복구로 중단된 패스는 새 브라우저로 곧바로 재개하고,
