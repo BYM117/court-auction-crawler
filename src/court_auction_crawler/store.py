@@ -292,6 +292,11 @@ class AuctionStore:
             ):
                 if sold_col not in columns:
                     conn.execute(f"ALTER TABLE auction_items ADD COLUMN {sold_col} {sold_ddl}")
+            # 매각결과 보충이 어디까지 훑었는지. 이게 없으면 대기열 맨 앞이 영영
+            # 안 비켜서(그 기일에 결과가 아예 안 올라오는 물건이 많다) 같은 사건을
+            # 패스마다 다시 걷는다 — 실측: 15번째 패스는 870사건에서 160행뿐이었다.
+            if "result_checked_at" not in columns:
+                conn.execute("ALTER TABLE auction_items ADD COLUMN result_checked_at TEXT")
             for land_col, land_ddl in (
                 ("land_use_detail", "TEXT NOT NULL DEFAULT ''"),
                 ("land_use_status", "TEXT NOT NULL DEFAULT ''"),
@@ -1883,6 +1888,21 @@ class AuctionStore:
     # 정상 경로(수집 사이클)가 가져가므로 사건 화면까지 들출 이유가 없다.
     RESULT_WINDOW_DAYS = 8
 
+    def mark_result_checked(self, item_keys: list[str]) -> None:
+        """매각결과 보충이 이 물건의 사건 화면을 훑었다고 적어 둔다.
+
+        결과를 못 채웠어도 적는다 — 법원이 그 기일 결과를 아예 안 올리는 경우가
+        많아서, 못 채운 것을 다시 맨 앞에 두면 나머지를 영영 못 본다. 다음 차례는
+        돌아오되 한 바퀴 뒤다."""
+        if not item_keys:
+            return
+        now = utc_now()
+        with self.connect() as conn:
+            conn.executemany(
+                "UPDATE auction_items SET result_checked_at = ? WHERE item_key = ?",
+                [(now, key) for key in item_keys],
+            )
+
     def list_missing_result_targets(self, limit: int | None = None) -> list[dict[str, Any]]:
         """기일은 지났는데 그 기일의 결과행이 없는 물건. 사건 화면으로 메울 대상이다.
 
@@ -1903,11 +1923,15 @@ class AuctionStore:
                        SELECT 1 FROM auction_sale_results AS result
                         WHERE result.item_key = item.item_key
                           AND result.sale_date = item.sale_date)
-                 -- 오래된 기일부터 본다. 법원이 기일내역에 결과를 늦게 채우기
+                 -- 한 번도 안 본 것부터. 그 기일에 결과가 끝내 안 올라오는 물건이
+                 -- 많아서, 안 비켜주면 대기열 맨 앞이 고정된다.
+                 -- 그 다음은 오래된 기일 순. 법원이 기일내역에 결과를 늦게 채우기
                  -- 때문에 최근 기일은 '매각'만 뜨고 금액이 아직 없다(실측: 최근분
                  -- 49% vs 전체 85%). 오래된 쪽이 회수율이 높고, 정상 경로로는
                  -- 영영 못 얻는 것도 그쪽이다.
-                 ORDER BY sale_date ASC
+                 ORDER BY (result_checked_at IS NULL) DESC,
+                          result_checked_at ASC,
+                          sale_date ASC
                  LIMIT ?
                 """,
                 (

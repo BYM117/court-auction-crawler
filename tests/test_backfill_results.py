@@ -135,6 +135,15 @@ class MissingResultTargetTests(unittest.TestCase):
         # 창이 닫힌 것만, 그리고 오래된 기일부터. 금액이 채워져 있을 확률이 높다.
         self.assertEqual([row["item_no"] for row in targets], ["4", "2"])
 
+    def test_한_번_훑은_물건은_뒤로_물러난다(self):
+        # 그 기일 결과가 끝내 안 올라오는 물건이 많다. 못 채웠다고 맨 앞에 두면
+        # 패스를 몇 번을 돌려도 같은 사건만 다시 걷는다(실측: 15패스째 870사건 160행).
+        self._seed("4", date.today() - timedelta(days=90))
+        self._seed("2", date.today() - timedelta(days=30))
+        self.store.mark_result_checked([f"auction:{COURT}:{CASE}:4"])
+        targets = self.store.list_missing_result_targets()
+        self.assertEqual([row["item_no"] for row in targets], ["2", "4"])
+
 
 if __name__ == "__main__":
     unittest.main()

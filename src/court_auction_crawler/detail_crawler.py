@@ -465,6 +465,7 @@ class CourtAuctionDetailCrawler:
             filled = self.store.backfill_sale_results(
                 parse_case_schedule(shared, court, case_no)
             )
+            self.store.mark_result_checked([row["item_key"] for row in targets])
             if filled["inserted"]:
                 print(
                     f"  기일내역에서 매각결과 {filled['inserted']}건 보충 "
