@@ -130,8 +130,10 @@ class MissingResultTargetTests(unittest.TestCase):
         self._seed("1", date.today() - timedelta(days=2))    # 결과 화면에 아직 떠 있다
         self._seed("2", date.today() - timedelta(days=30))   # 창이 닫혔다
         self._seed("3", date.today() + timedelta(days=7))    # 아직 오지도 않았다
+        self._seed("4", date.today() - timedelta(days=90))   # 더 오래된 것
         targets = self.store.list_missing_result_targets()
-        self.assertEqual([row["item_no"] for row in targets], ["2"])
+        # 창이 닫힌 것만, 그리고 오래된 기일부터. 금액이 채워져 있을 확률이 높다.
+        self.assertEqual([row["item_no"] for row in targets], ["4", "2"])
 
 
 if __name__ == "__main__":

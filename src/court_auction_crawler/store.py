@@ -1903,7 +1903,11 @@ class AuctionStore:
                        SELECT 1 FROM auction_sale_results AS result
                         WHERE result.item_key = item.item_key
                           AND result.sale_date = item.sale_date)
-                 ORDER BY sale_date DESC
+                 -- 오래된 기일부터 본다. 법원이 기일내역에 결과를 늦게 채우기
+                 -- 때문에 최근 기일은 '매각'만 뜨고 금액이 아직 없다(실측: 최근분
+                 -- 49% vs 전체 85%). 오래된 쪽이 회수율이 높고, 정상 경로로는
+                 -- 영영 못 얻는 것도 그쪽이다.
+                 ORDER BY sale_date ASC
                  LIMIT ?
                 """,
                 (
