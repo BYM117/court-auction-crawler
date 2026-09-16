@@ -50,7 +50,7 @@ payload 모양을 바꾸면 웹이 깨질 수 있다. 필드를 **더하는 것*
 
 ## 자동 실행
 
-launchd가 네 개를 띄운다. `launchctl kickstart -k gui/$(id -u)/com.court-auction.<이름>`으로 재시작한다.
+launchd가 다섯 개를 띄운다. `launchctl kickstart -k gui/$(id -u)/com.court-auction.<이름>`으로 재시작한다.
 
 | | 하는 일 | 주기 |
 |---|---|---|
@@ -58,6 +58,7 @@ launchd가 네 개를 띄운다. `launchctl kickstart -k gui/$(id -u)/com.court-
 | `com.court-auction.collect-details` | 상세·사진·문서 | 쉬지 않고 |
 | `com.court-auction.server` | 로컬 대시보드 | 상시 |
 | `com.court-auction.logrotate` | 로그를 날짜별로 분리 | 매일 00:05 |
+| `com.court-auction.baseline` | 법원 공식 통계와 대조 (G11) | 매달 1일 10:00 |
 
 수집 사이클 한 바퀴 순서다.
 

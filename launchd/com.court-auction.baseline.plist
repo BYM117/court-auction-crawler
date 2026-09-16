@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.court-auction.baseline</string>
+  <!-- 문서 폴더는 TCC 보호 대상이라 launchd가 직접 chdir을 못 한다.
+       전체 디스크 접근이 부여된 zsh 안에서 cd를 수행한다. -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/zsh</string>
+    <string>-lc</string>
+    <string>cd "/Users/bymsub/Documents/경매물건 크롤링" &amp;&amp; YM=$(date -v-1m +%Y%m) &amp;&amp; { print -r -- "===== $(date '+%Y-%m-%d %H:%M:%S') 기준선 대조 $YM ====="; .venv/bin/python scripts/baseline_compare.py --fetch "$YM" &amp;&amp; .venv/bin/python scripts/baseline_compare.py "$YM"; } &gt;&gt; logs/baseline-compare.log 2&gt;&amp;1</string>
+  </array>
+  <!-- 매달 1일 10:00. 법원 통계는 '다음 달 1일 기준'으로 확정되므로
+       지난달치를 그날 받는다(10/1에 202609). 맥이 자고 있었으면 깨어난 직후 한 번 돈다. -->
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Day</key>
+    <integer>1</integer>
+    <key>Hour</key>
+    <integer>10</integer>
+    <key>Minute</key>
+    <integer>0</integer>
+  </dict>
+  <!-- 한 달에 한 번 돌고 끝난다. 살아 있을 이유가 없다. -->
+  <key>RunAtLoad</key>
+  <false/>
+  <key>StandardOutPath</key>
+  <string>/Users/bymsub/Library/Logs/court-auction/baseline.launchd.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/bymsub/Library/Logs/court-auction/baseline.launchd.err.log</string>
+</dict>
+</plist>
