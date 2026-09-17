@@ -15,6 +15,8 @@ payload 필드를 전수로 뽑아(`public_auction_summary` 103개 / `public_auc
 | `property.share` (지분 매각·지분율) | 지분 물건 전부 | 없음 (screening.flags로 간접만) |
 | `property.registry_search_hint` | 전량 | 없음 |
 | `map.coordinate_quality` | 전량 | 없음 (→ `G12`) |
+| `auction.deposit` | 전량 | **새로 생김 2026-09-17** (→ `G04`) |
+| `auction.resale` | 전량 | **새로 생김 2026-09-17** (→ `G04`) |
 
 `screening`·`type_guess`·`special_rights`·`land_use`·`official`·`building`·`popularity`·`sold`는
 잘 쓰이고 있다. 문제는 위 넷이다.
@@ -77,6 +79,33 @@ payload 필드를 전수로 뽑아(`public_auction_summary` 103개 / `public_auc
 from court_auction_crawler.enrichment import public_auction_summary, public_auction_detail
 # → 각각 103 / 240개 필드. 웹 저장소에서 grep으로 대조한다.
 ```
+
+---
+
+## 2026-09-17에 늘어난 것 — 세션 D가 받을 두 덩어리
+
+**① 보증금 (`auction.deposit`) — 돈에 직결된다.**
+
+```json
+"deposit": {"amount": 1711400, "rate": 0.2}
+```
+`rate`가 **0.1을 넘으면 화면에서 경고**해야 한다. 재매각 물건은 매수신청보증금이
+최저가의 20%(때로 30%)라, 모르고 10%만 준비해 가면 **입찰이 그 자리에서 무효**다.
+활성 641건이 해당한다. **비율을 추정하지 말 것** — 법원이 적은 금액을 그대로 싣는다.
+'재매각이면 20%'는 27%에서 틀린다(`G04`).
+
+**② 재매각 이력 (`auction.resale`).**
+
+```json
+"resale": {"is_resale": true, "reason": "대금미납", "status_flow": "매각준비 -> … -> 대금미납"}
+```
+활성 462건(대금미납 388 · 매각불허 74). `special_rights`에도 `재매각`이 붙는다.
+보증금과는 **겹치지만 같지 않다**(둘 다인 것 208건). 따로 보여줘야 한다.
+
+**주의** — 이 두 필드는 **목록(snapshot)에 먼저 실린다.** 스냅샷은 매번 통째로 다시
+만들기 때문이다. 물건별 상세 파일(`v1/items/*.json`)은 그 물건이 갱신될 때 따라간다.
+전량을 당장 맞추려면 `web_sync`의 `kind='item'` 행을 지워야 하는데 763MB 재업로드다
+(`CLAUDE.md` 함정 ②). 급하지 않으면 두고 보는 쪽이 싸다.
 
 ## 관련
 `G02`(share) · `G07`(case_type) · `G12`(coordinate_quality) · `CLAUDE.md` 경계 규칙
