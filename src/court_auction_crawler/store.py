@@ -10,7 +10,12 @@ import re
 import sqlite3
 from typing import Any, Iterator
 
-from .enrichment import parse_case_closing, parse_case_item, parse_case_type
+from .enrichment import (
+    parse_case_closing,
+    parse_case_item,
+    parse_case_parties,
+    parse_case_type,
+)
 from .common import CASE_NO_RE, TERMINAL_STATUS_KEYWORDS, utc_now
 from .models import AuctionItem, SyncSummary
 from .utils import clean_text, parse_date, parse_money, parse_sale_result
@@ -43,7 +48,7 @@ ITEM_LIST_SELECT = """
                        coordinate_source, coordinate_quality, normalized_address,
                        geocode_query, geocoded_at,
                        resale_reason, item_status_flow, deposit_amount, deposit_rate, item_note,
-                       case_type, closing_result, closing_date,
+                       case_type, closing_result, closing_date, parties_json,
                        official_price, official_price_type, official_price_year,
                        official_price_detail, official_price_status, official_price_at,
                        first_seen_at,
@@ -325,6 +330,9 @@ class AuctionStore:
                 # 왜 사라졌는지는 사건 화면의 종국결과로만 알 수 있다.
                 ("closing_result", "TEXT NOT NULL DEFAULT ''"),
                 ("closing_date", "TEXT NOT NULL DEFAULT ''"),
+                # 당사자 구성(임차인·교부권자·가압류권자 수 등). 이름은 가려져 있어도
+                # 구분은 안 가려진다. 목록에서도 쓰려면 여기 있어야 한다.
+                ("parties_json", "TEXT NOT NULL DEFAULT ''"),
             ):
                 if sold_col not in columns:
                     conn.execute(f"ALTER TABLE auction_items ADD COLUMN {sold_col} {sold_ddl}")
@@ -1006,7 +1014,7 @@ class AuctionStore:
                    SET detail_json = ?, detail_status = 'collected',
                        resale_reason = ?, item_status_flow = ?,
                        deposit_amount = ?, deposit_rate = ?, item_note = ?, case_type = ?,
-                       closing_result = ?, closing_date = ?,
+                       closing_result = ?, closing_date = ?, parties_json = ?,
                        detail_collected_at = ?, detail_checked_at = ?,
                        detail_next_retry_at = NULL, detail_fail_count = 0,
                        detail_error = '', updated_at = ?
@@ -1022,6 +1030,7 @@ class AuctionStore:
                     parse_case_type(merged),
                     closing["result"],
                     closing["date"],
+                    json_dumps(parse_case_parties(merged)),
                     now,
                     now,
                     now,

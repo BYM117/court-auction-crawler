@@ -162,6 +162,39 @@ def parse_case_closing(detail: Any) -> dict[str, str]:
     return found
 
 
+# 법원은 화면의 당사자명을 첫 글자만 남기고 가린다(광OOOOOOO). 은행/캐피탈/공공을
+# 이름으로 가르는 것은 **불가능하다**. 다만 이름의 '모양'으로 개인과 기관은 갈린다 —
+# 개인은 성 한 자 + 가림 두 자(이OO)이고, 기관은 길거나 괄호·공백이 붙는다.
+INDIVIDUAL_NAME_RE = re.compile(r"[가-힣]O{1,2}")
+
+
+def parse_case_parties(detail: Any) -> dict[str, Any]:
+    """사건 화면 '당사자 내역'을 구조화한다.
+
+    **이름은 가려져 있어도 당사자 '구분'은 안 가려진다.** 거기에 권리 분석 신호가 있다 —
+    교부권자·압류권자는 조세 체납, 임차인·임차권자는 대항력, 공유자는 우선매수다.
+
+        ['채권자', '광OOOOOOO', '채무자겸소유자', '이OO']
+    """
+    counts: dict[str, int] = {}
+    creditor_individual: bool | None = None
+    for table in _case_tables(detail, "당사자내역"):
+        for row in table.get("rows") or []:
+            if not isinstance(row, list):
+                continue
+            for index in range(0, len(row) - 1, 2):
+                kind = str(row[index]).strip()
+                name = str(row[index + 1]).strip()
+                if not kind or not name or kind == "당사자구분":
+                    continue
+                counts[kind] = counts.get(kind, 0) + 1
+                if kind == "채권자" and creditor_individual is None:
+                    creditor_individual = bool(INDIVIDUAL_NAME_RE.fullmatch(name))
+        if counts:
+            break
+    return {"counts": counts, "creditor_individual": creditor_individual}
+
+
 def parse_money_text(value: Any) -> int | None:
     digits = re.sub(r"[^\d]", "", str(value or ""))
     return int(digits) if digits else None
@@ -394,6 +427,14 @@ def public_auction_enrichment(item: dict[str, Any]) -> dict[str, Any]:
     if not case_item["status_flow"] and item.get("detail"):
         case_item = parse_case_item(item.get("detail"), item.get("item_no"))
     case_type = item.get("case_type") or parse_case_type(item.get("detail"))
+    parties = item.get("parties")
+    if not isinstance(parties, dict):
+        try:
+            parties = json.loads(item.get("parties_json") or "{}")
+        except (TypeError, ValueError):
+            parties = {}
+    if not parties.get("counts") and item.get("detail"):
+        parties = parse_case_parties(item.get("detail"))
     closing = {
         "result": item.get("closing_result") or "",
         "date": normalize_date_text(item.get("closing_date") or ""),
@@ -433,6 +474,12 @@ def public_auction_enrichment(item: dict[str, Any]) -> dict[str, Any]:
             # 취하·기각·취소는 목록 상태로는 절대 알 수 없다. 물건이 왜 사라졌는지는
             # 사건 화면의 종국결과만 말해 준다.
             "closing": closing,
+            # 이름은 가려져 있어도 당사자 '구분'은 안 가려진다. 교부권자·압류권자는
+            # 조세 체납, 임차인은 대항력, 공유자는 우선매수 신호다.
+            "parties": {
+                "counts": parties.get("counts") or {},
+                "creditor_individual": parties.get("creditor_individual"),
+            },
             "fail_count": fail_count,
             "is_active": active,
             "days_until_sale": days_until(item.get("sale_date", "")),

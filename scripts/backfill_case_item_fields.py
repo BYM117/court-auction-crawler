@@ -35,7 +35,12 @@ def main() -> int:
         print(f"DB가 없다: {a.db}\n원본 폴더의 DB 경로를 --db로 주어야 한다.")
         return 2
 
-    from court_auction_crawler.enrichment import parse_case_item, parse_case_type
+    from court_auction_crawler.enrichment import (
+        parse_case_closing,
+        parse_case_item,
+        parse_case_parties,
+        parse_case_type,
+    )
     from court_auction_crawler.store import AuctionStore
 
     # 컬럼은 AuctionStore를 열 때 생긴다(ALTER TABLE). 생으로 붙으면 'no such column'이다.
@@ -48,7 +53,8 @@ def main() -> int:
 
     sql = (
         "SELECT item_key, item_no, detail_json, resale_reason, item_status_flow, "
-        "deposit_amount, deposit_rate, item_note, case_type FROM auction_items "
+        "deposit_amount, deposit_rate, item_note, case_type, closing_result, "
+        "closing_date, parties_json FROM auction_items "
         "WHERE detail_json IS NOT NULL AND detail_json != '' AND detail_json != '{}'"
     )
     if a.limit:
@@ -64,6 +70,8 @@ def main() -> int:
             continue
         info = parse_case_item(detail, row["item_no"])
         case_type = parse_case_type(detail)
+        closing = parse_case_closing(detail)
+        parties = json.dumps(parse_case_parties(detail), ensure_ascii=False, sort_keys=True)
         if info["resale_reason"]:
             resale += 1
         same = (
@@ -73,6 +81,9 @@ def main() -> int:
             and row["deposit_rate"] == info["deposit_rate"]
             and (row["item_note"] or "") == info["note"]
             and (row["case_type"] or "") == case_type
+            and (row["closing_result"] or "") == closing["result"]
+            and (row["closing_date"] or "") == closing["date"]
+            and (row["parties_json"] or "") == parties
         )
         if same:
             continue
@@ -80,7 +91,8 @@ def main() -> int:
         pending.append(
             (
                 info["resale_reason"], info["status_flow"], info["deposit_amount"],
-                info["deposit_rate"], info["note"], case_type, row["item_key"],
+                info["deposit_rate"], info["note"], case_type,
+                closing["result"], closing["date"], parties, row["item_key"],
             )
         )
         if len(pending) >= 500 and not a.dry_run:
@@ -99,7 +111,8 @@ def _flush(conn: sqlite3.Connection, pending: list[tuple]) -> None:
             """
             UPDATE auction_items
                SET resale_reason = ?, item_status_flow = ?, deposit_amount = ?,
-                   deposit_rate = ?, item_note = ?, case_type = ?
+                   deposit_rate = ?, item_note = ?, case_type = ?,
+                   closing_result = ?, closing_date = ?, parties_json = ?
              WHERE item_key = ?
             """,
             pending,

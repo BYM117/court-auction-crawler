@@ -21,6 +21,7 @@ from court_auction_crawler.web import (
 )
 from court_auction_crawler.enrichment import (
     parse_case_item,
+    parse_case_parties,
     parse_case_type,
     public_auction_summary,
 )
@@ -97,6 +98,35 @@ class ShareSaleFlagTests(unittest.TestCase):
             "status": "신건",
         }
         self.assertNotIn("지분매각", public_auction_summary(item)["auction"]["special_rights"])
+
+
+class CasePartyTests(unittest.TestCase):
+    """법원은 당사자 '이름'만 가린다. '구분'은 안 가린다 — 거기 권리 분석 신호가 있다(G10)."""
+
+    @staticmethod
+    def _detail(rows: list) -> dict:
+        return {"case": {"case_tables": [{"caption": "당사자 내역", "rows": rows}]}}
+
+    def test_counts_party_kinds(self):
+        info = parse_case_parties(self._detail([
+            ["당사자구분", "당사자명", "당사자구분", "당사자명"],
+            ["채권자", "광OOOOOOO", "채무자겸소유자", "이OO"],
+            ["임차인", "변OO", "임차인", "김OO"],
+            ["교부권자", "평OO"],
+        ]))
+        self.assertEqual(info["counts"]["임차인"], 2)
+        self.assertEqual(info["counts"]["교부권자"], 1)
+        self.assertNotIn("당사자구분", info["counts"])
+
+    def test_creditor_individual_is_told_apart_by_shape(self):
+        # 이름이 첫 글자만 남아도 개인(성+가림 두 자)과 기관은 모양이 다르다.
+        기관 = parse_case_parties(self._detail([["채권자", "가OOOOOOO(OOOOOOOOOOOO)"]]))
+        개인 = parse_case_parties(self._detail([["채권자", "이OO"]]))
+        self.assertFalse(기관["creditor_individual"])
+        self.assertTrue(개인["creditor_individual"])
+
+    def test_no_party_table_is_harmless(self):
+        self.assertEqual(parse_case_parties(None), {"counts": {}, "creditor_individual": None})
 
 
 class CaseTypeTests(unittest.TestCase):
