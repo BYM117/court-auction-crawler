@@ -64,6 +64,9 @@ RESALE_MARKS: tuple[str, ...] = ("대금미납", "매각불허", "매각허가�
 
 CASE_ITEM_TABLE_CAPTION = "물건내역"
 
+# 형식적경매 4종. '공유물분할을위한경매'처럼 이름에 '형식적'이 없는 것이 있다.
+FORMAL_AUCTION_MARKS: tuple[str, ...] = ("형식적경매", "공유물분할", "청산을위한")
+
 
 def _case_tables(detail: Any, caption: str) -> Iterator[dict[str, Any]]:
     """사건 화면의 표를 caption으로 찾는다.
@@ -113,6 +116,25 @@ def parse_case_item(detail: Any, item_no: Any) -> dict[str, Any]:
         found["resale_reason"] = next((mark for mark in RESALE_MARKS if mark in found["status_flow"]), "")
         return found
     return empty
+
+
+def parse_case_type(detail: Any) -> str:
+    """사건 기본내역에서 사건명을 뽑는다 — 부동산임의경매 / 부동산강제경매 / 형식적경매 등.
+
+    임의경매는 담보권 실행(근저당 등)이고 강제경매는 집행권원(판결 등)이다. 근거가
+    다르면 취소 가능성과 권리 관계가 달라져 권리 분석이 갈린다. 공유물분할·청산을
+    위한 형식적경매는 성격이 아예 다르다.
+
+        ['사건번호', '2024타경178', '사건명', '부동산강제경매']
+    """
+    for table in _case_tables(detail, "사건기본내역"):
+        for row in table.get("rows") or []:
+            if not isinstance(row, list):
+                continue
+            for index, cell in enumerate(row[:-1]):
+                if str(cell).strip() == "사건명":
+                    return str(row[index + 1]).strip()
+    return ""
 
 
 def parse_money_text(value: Any) -> int | None:
@@ -346,11 +368,21 @@ def public_auction_enrichment(item: dict[str, Any]) -> dict[str, Any]:
     }
     if not case_item["status_flow"] and item.get("detail"):
         case_item = parse_case_item(item.get("detail"), item.get("item_no"))
+    case_type = item.get("case_type") or parse_case_type(item.get("detail"))
+
+    # 웹이 딱지로 쓰는 배열은 이것 하나다. 다른 곳에서 이미 아는 사실도 여기 없으면
+    # 화면에 안 보인다(G02에서 지분매각이 그랬다).
     flags = parse_special_rights(
         raw.get("비고"), item.get("address"), address_info.get("detail"), case_item["note"]
     )
     if case_item["resale_reason"] and "재매각" not in flags:
         flags.append("재매각")
+    if parse_share_info(address_info)["is_share_sale"] and "지분매각" not in flags:
+        flags.append("지분매각")
+    # 형식적경매는 성격이 아예 다르다. '공유물분할을위한경매'는 이름에 '형식적'이 없지만
+    # 형식적경매다 — 이름만 보면 놓친다(실측 83건).
+    if any(mark in case_type for mark in FORMAL_AUCTION_MARKS) and "형식적경매" not in flags:
+        flags.append("형식적경매")
 
     return {
         "case": {
@@ -364,6 +396,8 @@ def public_auction_enrichment(item: dict[str, Any]) -> dict[str, Any]:
             "sale_date": normalize_date_text(item.get("sale_date", "")),
             "sale_date_raw": item.get("sale_date", ""),
             "status": item.get("status", ""),
+            # 임의(담보권 실행) / 강제(집행권원) / 형식적경매. 권리 분석이 갈리는 구분이다.
+            "case_type": case_type,
             "fail_count": fail_count,
             "is_active": active,
             "days_until_sale": days_until(item.get("sale_date", "")),

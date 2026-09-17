@@ -10,7 +10,7 @@ import re
 import sqlite3
 from typing import Any, Iterator
 
-from .enrichment import parse_case_item
+from .enrichment import parse_case_item, parse_case_type
 from .common import CASE_NO_RE, TERMINAL_STATUS_KEYWORDS, utc_now
 from .models import AuctionItem, SyncSummary
 from .utils import clean_text, parse_date, parse_money, parse_sale_result
@@ -25,6 +25,7 @@ ITEM_LIST_SELECT = """
                        coordinate_source, coordinate_quality, normalized_address,
                        geocode_query, geocoded_at,
                        resale_reason, item_status_flow, deposit_amount, deposit_rate, item_note,
+                       case_type,
                        official_price, official_price_type, official_price_year,
                        official_price_detail, official_price_status, official_price_at,
                        first_seen_at,
@@ -300,6 +301,8 @@ class AuctionStore:
                 # 물건비고('특별매각조건: …', '미납관리비 …원 있음')는 목록 비고에 없는
                 # 특수권리 단서다. 목록에서도 태그로 쓰려면 여기 있어야 한다.
                 ("item_note", "TEXT NOT NULL DEFAULT ''"),
+                # 사건명(부동산임의경매/강제경매/형식적경매). 사건 단위라 물건마다 같다.
+                ("case_type", "TEXT NOT NULL DEFAULT ''"),
             ):
                 if sold_col not in columns:
                     conn.execute(f"ALTER TABLE auction_items ADD COLUMN {sold_col} {sold_ddl}")
@@ -962,7 +965,7 @@ class AuctionStore:
                 UPDATE auction_items
                    SET detail_json = ?, detail_status = 'collected',
                        resale_reason = ?, item_status_flow = ?,
-                       deposit_amount = ?, deposit_rate = ?, item_note = ?,
+                       deposit_amount = ?, deposit_rate = ?, item_note = ?, case_type = ?,
                        detail_collected_at = ?, detail_checked_at = ?,
                        detail_next_retry_at = NULL, detail_fail_count = 0,
                        detail_error = '', updated_at = ?
@@ -975,6 +978,7 @@ class AuctionStore:
                     case_item["deposit_amount"],
                     case_item["deposit_rate"],
                     case_item["note"],
+                    parse_case_type(merged),
                     now,
                     now,
                     now,

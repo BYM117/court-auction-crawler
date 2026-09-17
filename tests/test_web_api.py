@@ -19,7 +19,11 @@ from court_auction_crawler.web import (
     public_auction_detail,
     safe_external_url,
 )
-from court_auction_crawler.enrichment import parse_case_item, public_auction_summary
+from court_auction_crawler.enrichment import (
+    parse_case_item,
+    parse_case_type,
+    public_auction_summary,
+)
 
 
 def case_detail(item_no: str, status_flow: str, note: str = "", head_money: str = "") -> dict:
@@ -70,6 +74,47 @@ class CaseItemParseTests(unittest.TestCase):
     def test_missing_case_tables_are_harmless(self):
         self.assertEqual(parse_case_item(None, "1")["status_flow"], "")
         self.assertEqual(parse_case_item({}, "1")["resale_reason"], "")
+
+
+class ShareSaleFlagTests(unittest.TestCase):
+    """지분매각은 property.share와 screening에서 잡고 있었지만, 웹이 딱지로 쓰는
+    special_rights 배열에는 없어서 화면에 안 보였다(G02)."""
+
+    def test_share_sale_reaches_special_rights(self):
+        item = {
+            "item_key": "auction:서울중앙지방법원:2025타경1:1",
+            "address": "서울특별시 중구 세종대로 110 [토지 대 100㎡ 갑구 2번 김철수 지분 4분의 1 전부]",
+            "status": "유찰 1회",
+        }
+        summary = public_auction_summary(item)
+        self.assertTrue(summary["property"]["share"]["is_share_sale"])
+        self.assertIn("지분매각", summary["auction"]["special_rights"])
+
+    def test_plain_item_gets_no_share_flag(self):
+        item = {
+            "item_key": "auction:서울중앙지방법원:2025타경2:1",
+            "address": "서울특별시 중구 세종대로 110 [집합건물 철근콘크리트 59.87㎡]",
+            "status": "신건",
+        }
+        self.assertNotIn("지분매각", public_auction_summary(item)["auction"]["special_rights"])
+
+
+class CaseTypeTests(unittest.TestCase):
+    """임의(담보권 실행)와 강제(집행권원)는 권리 분석이 갈리는 구분인데 안 실었다(G07)."""
+
+    @staticmethod
+    def _detail(case_name: str) -> dict:
+        table = {"caption": "사건 기본 내역 검색결과",
+                 "rows": [["사건번호", "2024타경178", "사건명", case_name]]}
+        return {"case": {"case_tables": [table]}}
+
+    def test_reads_the_case_name(self):
+        self.assertEqual(parse_case_type(self._detail("부동산강제경매")), "부동산강제경매")
+        self.assertEqual(parse_case_type(self._detail("부동산임의경매")), "부동산임의경매")
+
+    def test_missing_table_is_harmless(self):
+        self.assertEqual(parse_case_type(None), "")
+        self.assertEqual(parse_case_type({"case": {}}), "")
 
 
 class WebApiTests(unittest.TestCase):
