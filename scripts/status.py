@@ -109,15 +109,56 @@ def pct(part, whole) -> str:
 
 
 # ── 결과를 재는 도구 (원인이 아니라 결과를 본다) ───────────────────────────
-DONG = re.compile(r"([가-힣]+(?:동|리|가|읍|면))\s*(\d+(?:-\d+)?)")
+# 법정동을 뽑는다. **법정동은 지번 앞에 오고 건물 동은 지번 뒤에 온다** — 이 위치
+# 규칙이 글자수 규칙보다 훨씬 안전하다. 글자수로 거르면 '가좌동'·'강제동' 같은
+# 진짜 법정동까지 건물 동으로 오인한다(실측: 그래서 176건이 부풀었다).
+ADMIN_TAIL = re.compile(r"^[가-힣]+(?:동|리|가|읍|면)$")
+PAREN_DONG = re.compile(r"\(([^)]*?([가-힣]{2,}동))")     # 도로명주소는 괄호에 법정동이 온다
+ROAD_PART = re.compile(r"[가-힣]+\d*(?:번길|로|길)")      # 족동2길 · 대산로247번길 · 계양로
+
+
+def legal_dong(text: str) -> str | None:
+    """주소에서 법정동/리만 골라낸다. 못 고르면 None(=비교하지 않는다).
+
+    도로명(`족동2길`)을 먼저 걷어낸다. 안 그러면 첫 숫자 앞에서 자를 때
+    `족동`이 남아 법정동으로 오인된다.
+    """
+    t = ROAD_PART.sub(" ", str(text or ""))
+    head = re.split(r"\d", t, maxsplit=1)[0]            # 첫 숫자 앞까지가 행정구역이다
+    for token in reversed(head.split()):
+        if ADMIN_TAIL.match(token):
+            return token
+    m = PAREN_DONG.search(str(text or ""))              # 도로명주소면 괄호에 있다
+    return m.group(2) if m else None
+
+
+def same_place(a: str, b: str) -> bool | None:
+    """두 주소가 같은 법정동인가. 판단 못 하면 None.
+
+    **읍·면은 리의 상위 단위라 비교하지 않는다.** 도로명주소에는 리가 없어
+    면까지만 잡히는데(`곤명면 막골길 267`), 이것을 `금성리`와 맞대면 멀쩡한
+    좌표가 틀린 것으로 잡힌다 — 금성리가 곤명면 안에 있을 수 있다.
+    """
+    x, y = legal_dong(a), legal_dong(b)
+    if not x or not y:
+        return None
+    if x == y:
+        return True
+    upper = lambda s: s.endswith(("읍", "면"))
+    leaf = lambda s: s.endswith(("리", "동", "가"))
+    if (upper(x) and leaf(y)) or (leaf(x) and upper(y)):
+        return None                       # 상하 관계 — 같은 급이 아니다
+    # '당동' vs '당동리', '고덕면' vs '고덕동' 같은 접미 차이는 같은 곳으로 본다
+    trim = lambda s: re.sub(r"(동|리|가|읍|면)$", "", s)
+    return trim(x) == trim(y) or trim(x) == y or x == trim(y)
 
 
 def wrong_place() -> int | None:
-    """원본 주소와 정규화 주소의 동/리가 다른 활성 물건 수.
+    """원본 주소와 정규화 주소의 법정동이 다른 활성 물건 수.
 
-    G12에서 '망가진 쿼리'는 **원인**이고 이것이 **결과**다. 원인만 보면
-    쿼리를 고쳐도 이미 박힌 틀린 좌표가 안 잡힌다(실측: 쿼리 449→3이 된 뒤에도
-    다른 동네에 찍힌 것이 176건 남았다).
+    G12에서 '망가진 쿼리'는 **원인**이고 이것이 **결과**다. 원인만 보면 쿼리를
+    고쳐도 이미 박힌 틀린 좌표가 안 잡힌다. 다만 이 측정 자체가 틀리면 멀쩡한
+    것을 틀렸다고 하므로, 법정동을 못 고르는 주소는 **세지 않는다**.
     """
     if DB is None:
         return None
@@ -130,8 +171,7 @@ def wrong_place() -> int | None:
         for addr, norm in con.execute(
             "SELECT address, normalized_address FROM auction_items "
             "WHERE is_active=1 AND coordinate_quality IN ('verified','approximate')"):
-            a, b = DONG.search(addr or ""), DONG.search(norm or "")
-            if a and b and a.group(1) != b.group(1):
+            if same_place(addr, norm) is False:
                 n += 1
     except sqlite3.Error:
         return None
