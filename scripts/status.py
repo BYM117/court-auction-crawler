@@ -26,16 +26,47 @@ from datetime import datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-DB = ROOT / "data" / "auction.sqlite3"
 SRC = ROOT / "src" / "court_auction_crawler"
 WEB = Path.home() / "Documents" / "court-auction-web"
+
+
+def _git(*args: str) -> str:
+    try:
+        r = subprocess.run(["git", *args], cwd=ROOT, capture_output=True, text=True, timeout=5)
+        return r.stdout.strip()
+    except Exception:
+        return ""
+
+
+def find_db() -> Path | None:
+    """DB를 찾는다. 격리 워크트리에는 data/ 가 안 따라오므로 본체 저장소를 본다.
+
+    이 도구를 제일 필요로 하는 쪽이 워크트리 세션인데, 거기서 안 돌면 만든 뜻이 없다.
+    `git rev-parse --git-common-dir` 는 워크트리에서도 **본체**의 .git 을 가리킨다.
+    """
+    here = ROOT / "data" / "auction.sqlite3"
+    if here.exists():
+        return here
+    common = _git("rev-parse", "--git-common-dir")
+    if not common:
+        return None
+    p = Path(common)
+    if not p.is_absolute():
+        p = (ROOT / p).resolve()
+    main = p.parent / "data" / "auction.sqlite3"
+    return main if main.exists() else None
+
+
+DB = find_db()
 
 DONE, WIP, TODO, FIXED_LIMIT, UNKNOWN = "해결됨", "진행 중", "미해결", "제약", "확인불가"
 
 
 # ── 재는 도구 ────────────────────────────────────────────────────────────────
 def q1(sql: str, default=0):
-    """DB에서 숫자 하나. DB가 잠겨 있거나 컬럼이 없으면 None을 돌려준다."""
+    """DB에서 숫자 하나. DB가 없거나 잠겨 있거나 컬럼이 없으면 None을 돌려준다."""
+    if DB is None:
+        return None
     try:
         con = sqlite3.connect(f"file:{DB}?mode=ro", uri=True, timeout=5)
         try:
@@ -161,6 +192,8 @@ def checks() -> list[dict]:
     # G12 — 좌표
     broken = None
     try:
+        if DB is None:
+            raise sqlite3.Error("no db")
         con = sqlite3.connect(f"file:{DB}?mode=ro", uri=True, timeout=5)
         SIDO = ("서울특별시", "부산광역시", "대구광역시", "인천광역시", "광주광역시",
                 "대전광역시", "울산광역시", "세종특별자치시", "경기도", "강원도",
@@ -236,6 +269,10 @@ def render(rows: list[dict]) -> str:
     L.append("> **이 파일은 손으로 쓰지 않는다.** `python3 scripts/status.py --write` 가 DB·코드·파일을")
     L.append("> 직접 재서 다시 만든다. 문서를 갱신 안 해도 틀리지 않게 하려는 것이다.")
     L.append("")
+    branch = _git("rev-parse", "--abbrev-ref", "HEAD") or "?"
+    where = "본체" if (ROOT / "data").exists() else f"워크트리 — DB는 본체 것을 읽었다"
+    L.append(f"읽은 곳 `{ROOT.name}` · 브랜치 `{branch}` · {where}")
+    L.append("")
     if head:
         L.append(f"마지막 커밋 `{head}`")
         L.append("")
@@ -287,8 +324,9 @@ def main() -> int:
     ap.add_argument("--write", action="store_true", help="STATUS.md 로도 저장한다")
     args = ap.parse_args()
 
-    if not DB.exists():
-        print(f"DB가 없다: {DB}\n격리 워크트리에서는 data/ 가 따라오지 않는다. 원본 폴더에서 돌릴 것.",
+    if DB is None:
+        print("DB를 못 찾았다. 본체 저장소의 data/auction.sqlite3 가 있어야 한다.\n"
+              "(워크트리에서는 git rev-parse --git-common-dir 로 본체를 찾는다)",
               file=sys.stderr)
         return 1
 
