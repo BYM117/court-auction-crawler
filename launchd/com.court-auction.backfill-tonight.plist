@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.court-auction.backfill-tonight</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/zsh</string>
+    <string>-lc</string>
+    <string>cd "/Users/bymsub/Documents/경매물건 크롤링" &amp;&amp; /bin/zsh scripts/run_backfill_results.sh 430 &gt;&gt; logs/backfill-results.log 2&gt;&amp;1; launchctl bootout gui/$(id -u)/com.court-auction.backfill-tonight</string>
+  </array>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key><integer>0</integer>
+    <key>Minute</key><integer>5</integer>
+  </dict>
+  <key>RunAtLoad</key>
+  <false/>
+  <key>KeepAlive</key>
+  <false/>
+  <key>StandardOutPath</key>
+  <string>/Users/bymsub/Library/Logs/court-auction/backfill-tonight.launchd.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/bymsub/Library/Logs/court-auction/backfill-tonight.launchd.err.log</string>
+</dict>
+</plist>

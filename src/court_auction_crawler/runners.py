@@ -119,8 +119,12 @@ class CollectorControlRunner:
         self.full_current_days_ahead = max(full_current_days_ahead, self.quick_current_days_ahead)
         self.full_scheduled_days_ahead = max(full_scheduled_days_ahead, self.quick_scheduled_days_ahead)
         self.full_interval_seconds = max(full_interval_seconds, self.interval_seconds)
-        self.project_root = Path.cwd()
+        # 프로젝트 뿌리는 cwd가 아니라 DB를 따라간다. cwd로 잡으면 원본 폴더에서
+        # 테스트를 돌릴 때 임시 DB를 쓰면서도 로그만 운영 파일에 쓴다(실측: pytest
+        # 한 번에 collect-all.log가 한 줄 늘었다). 상태 파일은 이미 DB를 따라가므로
+        # 로그만 어긋나 있었다.
         self.data_dir = store.db_path.parent
+        self.project_root = self.data_dir.parent
         self.enabled_path = self.data_dir / "collector.enabled"
         self.last_full_path = self.data_dir / "collector.last_full"
         self.pid_path = self.data_dir / "collect-all.pid"
