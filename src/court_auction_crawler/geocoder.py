@@ -251,10 +251,11 @@ def _extract_building_hint(address: str) -> str:
     paren_groups = PAREN_RE.findall(normalized)
     for group in reversed(paren_groups):
         candidate = group.split(",")[-1].strip()
-        if len(candidate) >= 3 and not re.fullmatch(r"[가-힣]{1,3}동", candidate):
+        if len(candidate) >= 3 and not re.fullmatch(r"[가-힣]{1,3}(?:동|읍|면|리)", candidate):
             return candidate
     # 블록·로트형/신규 필지 주소는 지번 대신 건물명이 위치 단서다.
-    # 동 표기(107동·비동·에이동)와 법정동(당하동)은 건물명이 아니므로 건너뛴다.
+    # 동 표기(107동·비동·에이동)와 행정구역명(당하동·삼산면·전라남도)은 건물명이 아니므로
+    # 건너뛴다. '도'를 빼면 순수 토지 주소에서 맨 앞 시도명까지 흘러가 가짜 좌표가 된다(G12).
     without_paren = re.sub(r"\s+", " ", PAREN_RE.sub(" ", normalized)).strip()
     for token in reversed(without_paren.split()):
         if re.search(r"(?:층|호)$", token) or re.fullmatch(r"(?:제)?(?:\d+[A-Za-z가-힣]?|[가-힣]{1,2}|[A-Za-z])동", token):
@@ -262,7 +263,7 @@ def _extract_building_hint(address: str) -> str:
         if (
             len(token) >= 3
             and re.search(r"[가-힣]{3,}", token)
-            and not re.search(r"(?:시|군|구|읍|면|동|리|로|길|대로|번길)$", token)
+            and not re.search(r"(?:시|도|군|구|읍|면|동|리|로|길)$", token)
         ):
             return token
     return ""

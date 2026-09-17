@@ -90,6 +90,16 @@ class GeocoderTests(unittest.TestCase):
         )
         # 괄호가 법정동명뿐이면 건물명이 아니다
         self.assertEqual(_extract_building_hint("서울 도봉구 방학로2길 27 (방학동)"), "")
+        # 괄호가 읍·면·리여도 마찬가지다
+        self.assertEqual(_extract_building_hint("경기도 김포시 대곶면 대곶로 123 (석정리)"), "")
+        # G12: 건물명이 없는 순수 토지에서 시도명이 새어나가면 같은 읍면의 모든 토지가
+        # 한 점에 뭉친다. 빈 문자열이어야 폴백 자체를 포기한다.
+        self.assertEqual(
+            _extract_building_hint("전라남도 여수시 삼산면 덕촌리 1069 [토지 전 3498㎡]"), ""
+        )
+        self.assertEqual(
+            _extract_building_hint("충청북도 음성군 대소면 삼호리 790 [토지 답 1058㎡]"), ""
+        )
 
     def test_is_mappable_property_excludes_vehicles_and_ships(self):
         self.assertFalse(is_mappable_property("사용본거지 : 서울 도봉구 방학로2길 27", ""))
