@@ -205,9 +205,13 @@ def past_sales_shown() -> bool | None:
         from court_auction_crawler.enrichment import public_auction_summary  # noqa: PLC0415
         st = AuctionStore(str(DB))
         with st.connect() as c:
+            # 기록이 남아 있는 물건으로 시험해야 '기능이 붙었나'를 본다.
+            # 아무 재매각 물건이나 집으면 '데이터가 있나'를 재게 된다(다른 질문이다).
             keys = [r[0] for r in c.execute(
-                "SELECT item_key FROM auction_items "
-                "WHERE is_active=1 AND resale_reason!='' LIMIT 5")]
+                "SELECT i.item_key FROM auction_items i "
+                "WHERE i.is_active=1 AND i.resale_reason!='' AND EXISTS("
+                "  SELECT 1 FROM auction_sale_results r"
+                "   WHERE r.item_key=i.item_key AND r.sale_amount IS NOT NULL) LIMIT 5")]
         if not keys:
             return None
         for k in keys:
@@ -271,10 +275,15 @@ def checks() -> list[dict]:
     stale = q1("SELECT COUNT(*) FROM auction_items WHERE is_active=1 AND sold_amount IS NOT NULL")
     hist = past_sales_shown()
     cleared = (stale or 0) <= 5
+    have = q1("SELECT COUNT(*) FROM auction_items i WHERE i.is_active=1 AND i.resale_reason!='' "
+              "AND EXISTS(SELECT 1 FROM auction_sale_results r "
+              "WHERE r.item_key=i.item_key AND r.sale_amount IS NOT NULL)")
+    resale_n = q1("SELECT COUNT(*) FROM auction_items WHERE is_active=1 AND resale_reason!=''")
     add("G05", "되살아난 물건의 낙찰가", "B",
         DONE if (cleared and hist) else (WIP if cleared else TODO),
-        f"활성인데 낙찰가 박힘 {stale:,}건 · 직전 낙찰가 실림 {'예' if hist else '아니오'}",
-        "지우는 것만으로는 반쪽이다 — 얼마에 낙찰됐다 깨졌는지를 보여줘야 한다",
+        f"낙찰가 박힘 {stale:,}건 · 이력 실림 {'예' if hist else '아니오'} "
+        f"· 기록 보유 {have or 0}/{resale_n or 0}건",
+        "법원은 깨진 낙찰의 금액을 지운다. 8/20부터 모았으므로 보유분은 시간이 채운다",
         by="시험")
 
     # G06 — 감정평가서 본문
