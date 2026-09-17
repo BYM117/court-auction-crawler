@@ -1488,7 +1488,7 @@ class AuctionStore:
         with self.connect() as conn:
             rows = conn.execute(
                 f"""
-                SELECT item_key, address, category, pnu
+                SELECT item_key, address, category, pnu, normalized_address
                   FROM auction_items
                  WHERE {where}
                  ORDER BY crawl_priority DESC, sale_date ASC

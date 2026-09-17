@@ -1311,6 +1311,7 @@ def run_enrich_transactions(
         try:
             result = fetch_transactions(
                 str(row.get("pnu") or ""), row.get("category", ""), row.get("address", ""),
+                normalized_address=str(row.get("normalized_address") or ""),
                 cache=cache,
             )
         except RateLimitError:  # 한도 초과 → 즉시 중단(다음 실행 재개)

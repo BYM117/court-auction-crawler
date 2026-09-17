@@ -138,6 +138,68 @@ class TransactionClassifyTests(unittest.TestCase):
         self.assertFalse(_name_matches(row, ("aptNm",), "다른단지"))
 
 
+class 필지매칭Tests(unittest.TestCase):
+    """이름이 아니라 필지로 대조한다. 그리고 못 맞추면 **어디까지 좁혔는지** 밝힌다.
+
+    법원이 쓰는 단지명과 국토부가 쓰는 단지명이 다르다 — `가산양우내안애애플` vs
+    `가산양우내안에애플`(애/에), `달동엠타운` vs `달동 M타운`. 정규화로는 못 붙는다.
+    반면 실거래 응답에는 행마다 `umdNm`·`jibun`이 있고 우리도 지오코딩 때 같은 것을
+    받아 뒀다(활성 물건의 97%가 verified 등급으로 보유).
+    """
+
+    행 = [
+        {"umdNm": "가산동", "jibun": "141-2", "mhouseNm": "가산양우내안에애플",
+         "dealAmount": "40,000", "dealYear": "2026", "dealMonth": "7", "dealDay": "1"},
+        {"umdNm": "가산동", "jibun": "999-9", "mhouseNm": "다른빌라",
+         "dealAmount": "30,000", "dealYear": "2026", "dealMonth": "7", "dealDay": "2"},
+        {"umdNm": "독산동", "jibun": "141-2", "mhouseNm": "남의동네같은지번",
+         "dealAmount": "20,000", "dealYear": "2026", "dealMonth": "7", "dealDay": "3"},
+    ]
+
+    def _collect(self, parcel, building=""):
+        rows, level = tx_mod._collect(
+            "key", "op", "11545", ["202607"], building, ("mhouseNm",),
+            cache={("op", "11545", "202607"): list(self.행)}, parcel=parcel)
+        return [r["mhouseNm"] for r in rows], level
+
+    def test_정규화주소에서_동과_지번을_뽑는다(self):
+        self.assertEqual(tx_mod.parcel_key("가산동 141-2"), ("가산동", "141-2"))
+        self.assertEqual(tx_mod.parcel_key("전라남도 목포시 달동 산 12"), ("달동", "산 12"))
+        self.assertIsNone(tx_mod.parcel_key("서울특별시 강남구"))
+
+    def test_같은_지번이라도_동이_다르면_남의_땅이다(self):
+        # 한 시군구 안에 같은 지번이 동마다 있다. 지번만 대면 남의 거래를 붙인다.
+        이름, 수준 = self._collect(("가산동", "141-2"))
+        self.assertEqual(이름, ["가산양우내안에애플"])
+        self.assertEqual(수준, "parcel")
+
+    def test_이름이_한_글자_달라도_필지로_잡는다(self):
+        이름, 수준 = self._collect(("가산동", "141-2"), building="가산양우내안애애플")
+        self.assertEqual(수준, "parcel")
+        self.assertEqual(이름, ["가산양우내안에애플"])
+
+    def test_필지를_못_맞추면_이름으로_간다(self):
+        이름, 수준 = self._collect(("가산동", "000-0"), building="가산양우내안에애플")
+        self.assertEqual(수준, "name")
+
+    def test_둘_다_못_맞추면_적어도_같은_동까지_좁힌다(self):
+        """예전에는 여기서 시군구 전체를 '인근(법정동)'이라 부르며 내보냈다."""
+        이름, 수준 = self._collect(("가산동", "000-0"))
+        self.assertEqual(수준, "dong")
+        self.assertNotIn("남의동네같은지번", 이름)
+
+    def test_동조차_모르면_시군구_전체이고_그렇게_말한다(self):
+        이름, 수준 = self._collect(None)
+        self.assertEqual(수준, "sigungu")
+        self.assertEqual(len(이름), 3)
+
+    def test_괄호_밖_단지명도_뽑는다(self):
+        # 법원 주소의 절반이 지번 형식이라 괄호만 보면 13%밖에 못 뽑았다
+        self.assertEqual(
+            _building_name("전라북도 군산시 소룡동 1323-13 동아아파트 107동 3층301호"),
+            "동아아파트")
+
+
 class TransactionSummaryTests(unittest.TestCase):
     def test_summarize_computes_stats_and_recent_sorted(self):
         rows = [
@@ -148,8 +210,9 @@ class TransactionSummaryTests(unittest.TestCase):
             {"aptNm": "가", "excluUseAr": "59.9", "dealAmount": "",  # 금액 없는 행은 제외
              "dealYear": "2026", "dealMonth": "5", "dealDay": "1"},
         ]
-        summary = _summarize((rows, True), "sales", max_recent=12)
+        summary = _summarize((rows, "parcel"), "sales", max_recent=12)
         self.assertTrue(summary["matched"])
+        self.assertEqual(summary["match_level"], "parcel")
         self.assertEqual(summary["count"], 2)
         self.assertEqual(summary["min"], 28000)
         self.assertEqual(summary["max"], 40500)
@@ -159,8 +222,9 @@ class TransactionSummaryTests(unittest.TestCase):
 
     def test_summarize_rent_uses_deposit(self):
         rows = [{"deposit": "2,000", "monthlyRent": "50", "dealYear": "2026", "dealMonth": "6", "dealDay": "1"}]
-        summary = _summarize((rows, False), "rent", max_recent=12)
+        summary = _summarize((rows, "sigungu"), "rent", max_recent=12)
         self.assertFalse(summary["matched"])
+        self.assertEqual(summary["match_level"], "sigungu")
         self.assertEqual(summary["min"], 2000)
         self.assertEqual(summary["recent"][0]["monthly"], 50)
 
