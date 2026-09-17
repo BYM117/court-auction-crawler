@@ -82,6 +82,9 @@ from court_auction_crawler.enrichment import public_auction_summary, public_auct
 
 ---
 
+> **세션 D는 `../HANDOFF-WEB.md`부터 읽을 것.** 2026-09-17 기준으로 무엇이 실려 있고
+> 화면에서 무엇을 해야 하는지 한 장으로 정리해 뒀다. 아래는 그 배경이다.
+
 ## 2026-09-17에 늘어난 것 — 세션 D가 받을 두 덩어리
 
 **① 보증금 (`auction.deposit`) — 돈에 직결된다.**
