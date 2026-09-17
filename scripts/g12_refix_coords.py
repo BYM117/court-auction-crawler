@@ -51,6 +51,13 @@ def wrong_place_rows(db: Path, include_inactive: bool) -> list[sqlite3.Row]:
     `_matches_region`이 시도·시군구만 보던 시절에 박힌 것들이다. '고전면 명교리'를
     물었는데 '고전면 고하리'가 와도 통과해 verified 로 저장됐다(실측 55건).
     판정은 수집기와 같은 규칙(`geocoder.same_place`)을 쓴다.
+
+    **무엇과 대조하는지도 수집기와 같아야 한다.** 주소 검색은 일부러 깎은 쿼리로
+    묻고 수집기도 그 쿼리와 대조하므로(함정 ⑤) 여기서도 쿼리와 댄다. 원본과 대면
+    도로명주소가 전부 걸린다 — 브이월드가 `양천로 400-12 (등촌동)` 이라 정확히
+    답해도 법원 괄호가 `가양동` 이라 다르기 때문이다. 그것을 다시 물어봐야
+    같은 답이 돌아오므로 고쳐지지도 않는다. 건물명 검색은 수집기가 원본과
+    대조하니 여기서도 원본과 댄다.
     """
     from court_auction_crawler.geocoder import same_place
 
@@ -63,7 +70,11 @@ def wrong_place_rows(db: Path, include_inactive: bool) -> list[sqlite3.Row]:
             "SELECT item_key, address, normalized_address, lat, lng, geocode_query, "
             f"coordinate_source, coordinate_quality, geocoded_at, is_active FROM auction_items WHERE {where}"
         ).fetchall()
-    return [r for r in rows if same_place(r["address"], r["normalized_address"]) is False]
+    def 어긋났나(r: sqlite3.Row) -> bool:
+        물은것 = r["geocode_query"] if r["coordinate_source"] == "address" else r["address"]
+        return same_place(물은것 or "", r["normalized_address"]) is False
+
+    return [r for r in rows if 어긋났나(r)]
 
 
 def mislabeled_rows(db: Path, include_inactive: bool) -> list[sqlite3.Row]:

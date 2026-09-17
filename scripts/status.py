@@ -124,11 +124,24 @@ except Exception:  # 워크트리에 src 가 없거나 임포트가 깨져도 �
 
 
 def wrong_place() -> int | None:
-    """원본 주소와 정규화 주소의 법정동이 다른 활성 물건 수.
+    """지오코더의 답이 **지오코더가 받은 질문**과 어긋나는 활성 물건 수.
 
     G12에서 '망가진 쿼리'는 **원인**이고 이것이 **결과**다. 원인만 보면 쿼리를
     고쳐도 이미 박힌 틀린 좌표가 안 잡힌다. 다만 이 측정 자체가 틀리면 멀쩡한
     것을 틀렸다고 하므로, 법정동을 못 고르는 주소는 **세지 않는다**.
+
+    무엇과 대조하느냐가 핵심이다. `geocoder` 가 대조하는 것과 **같은 것**을
+    대조해야 한다. 어긋나면 지표가 코드로 막을 수 없는 것을 계속 고발한다.
+
+      주소 검색(source='address') 은 일부러 깎은 쿼리로 묻는다. 법원이
+      `양천로 400-12 (가양동, 더리브골드타워)` 라 해도 `양천로 400-12` 로 묻고,
+      브이월드는 `양천로 400-12 (등촌동)` 이라 답한다 — 도로명을 그대로 되받은
+      **정확한 핀**인데 법원 괄호와 동 이름만 다르다. 원본과 대면 이것이 전부
+      틀린 것이 된다(실측 179건 중 125건이 이 경우였다). 그래서 쿼리와 댄다.
+
+      건물명 검색(source='building') 은 이름으로 찾으므로 다른 동의 동명이건물을
+      집어온다(`서구 삼우빌라` → 가좌동이 아닌 석남동). 여기서는 코드도 원본과
+      대조하므로 지표도 원본과 댄다.
     """
     if DB is None:
         return None
@@ -138,10 +151,12 @@ def wrong_place() -> int | None:
         return None
     n = 0
     try:
-        for addr, norm in con.execute(
-            "SELECT address, normalized_address FROM auction_items "
+        for addr, norm, query, source in con.execute(
+            "SELECT address, normalized_address, geocode_query, coordinate_source "
+            "FROM auction_items "
             "WHERE is_active=1 AND coordinate_quality IN ('verified','approximate')"):
-            if same_place(addr, norm) is False:
+            asked = query if source == "address" else addr
+            if same_place(asked or "", norm) is False:
                 n += 1
     except sqlite3.Error:
         return None

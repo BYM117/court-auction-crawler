@@ -176,12 +176,18 @@ def _district_only(address: str) -> str:
 
     어업권('상정리 상정 지선')이나 건설기계처럼 **애초에 지번이 없는 물건**이 있다.
     못 찾은 게 아니라 없는 것이라, 리 단위가 이 물건이 가질 수 있는 가장 정확한 위치다.
+
+    **법정동은 지번 앞에만 온다.** 숫자가 섞인 토막을 지나쳐 계속 찾으면 건물 동을
+    집는다 — `탁옥로74번길 3 202동` 에서 `202동` 을 리 단위라고 내놓았다. 지번을
+    만나면 멈추고, 거기까지 못 찾았으면 도로명주소의 괄호를 읽는 `legal_dong` 에
+    맡긴다(`(심곡동,한국아파트)` → `인천광역시 서구 심곡동`).
     """
     parts = normalize_auction_address(address).split()
-    for i, part in enumerate(parts):
+    for i, part in enumerate(_before_lot_number(normalize_auction_address(address))):
         if i >= 2 and len(part) >= 2 and part[-1] in ("리", "동", "가"):
             return " ".join(parts[: i + 1]) if i + 1 >= 3 else ""
-    return ""
+    dong = legal_dong(address)
+    return " ".join([*parts[:2], dong]) if dong and len(parts) >= 2 else ""
 
 
 def _try_coarse_address(key: str, address: str) -> GeocodeResult | None:
@@ -224,6 +230,30 @@ def _try_coarse_address(key: str, address: str) -> GeocodeResult | None:
                     ),
                     query=query,
                     source=source,
+                    quality="approximate",
+                )
+        # 주소 검색은 지번이 있어야 답한다. `인천광역시 서구 가좌동` 처럼 동까지만
+        # 물으면 빈손이고, 본번만 붙이면 **다른 시도의 같은 이름 동**이 온다
+        # (`서구 가좌동 146` → 고양시 일산서구 가좌동 485-2). 장소 검색은 동 이름만으로도
+        # 그 동 안의 지점을 돌려주므로 마지막에 그것으로 한 번 더 건진다.
+        if source == "district":
+            try:
+                items = _request_vworld_search_items(key, narrowed, request_type="PLACE", size=5)
+            except (TimeoutError, OSError, URLError, json.JSONDecodeError):
+                items = []
+            for item in items:
+                point = item.get("point") if isinstance(item, dict) else None
+                if not point or not point.get("x") or not point.get("y"):
+                    continue
+                if not _same_region(narrowed, item):
+                    continue
+                return GeocodeResult(
+                    lat=float(point["y"]),
+                    lng=float(point["x"]),
+                    pnu="",
+                    normalized_address=str(item.get("address", {}).get("parcel") or narrowed),
+                    query=narrowed,
+                    source="district",
                     quality="approximate",
                 )
     return None
@@ -573,19 +603,37 @@ def ssl_context() -> ssl.SSLContext | None:
 # 규칙이 글자수 규칙보다 안전하다. 글자수로 거르면 '가좌동'·'강제동' 같은 진짜
 # 법정동까지 건물 동으로 오인한다.
 _ADMIN_TAIL_RE = re.compile(r"^[가-힣]+(?:동|리|가|읍|면)$")
-_PAREN_DONG_RE = re.compile(r"\(([^)]*?([가-힣]{2,}동))")   # 도로명주소는 괄호에 법정동이 온다
+# 도로명주소의 괄호는 `(법정동, 건물명)` 순서다. **쉼표 앞만** 본다. 통째로 뒤지면
+# `(연동,신제주연동트리플시티)` 에서 건물명 조각 `신제주연동` 을 법정동으로 집는다.
+# `연동`·`외동` 처럼 두 자짜리 법정동도 있으므로 한 자 이상이면 받는다.
+_PAREN_DONG_RE = re.compile(r"\(\s*([가-힣]+(?:동|리|가))\s*[,)]")
 _ROAD_PART_RE = re.compile(r"[가-힣]+\d*(?:번길|로|길)")     # 족동2길 · 대산로247번길
 
 
+def _before_lot_number(text: str) -> list[str]:
+    """지번을 만나기 전까지의 토막들. 법정동은 지번 앞에만 온다."""
+    tokens: list[str] = []
+    for token in str(text or "").split():
+        if any(ch.isdigit() for ch in token):
+            break
+        tokens.append(token)
+    return tokens
+
+
 def legal_dong(text: str) -> str | None:
-    """주소에서 법정동/리만 골라낸다. 못 고르면 None(=비교하지 않는다)."""
+    """주소에서 법정동/리만 골라낸다. 못 고르면 None(=비교하지 않는다).
+
+    **숫자를 만나면 토막 자체를 버린다.** 첫 숫자 앞에서 문자열을 자르면 없던
+    단어가 생긴다 — `루원시티공동2블록` 이 `루원시티공동` 이 되어 법정동으로
+    뽑혔다. 길이로는 못 거른다. 진짜 법정동에도 `등억알프스리`(6자)가 있다.
+    """
     cleaned = _ROAD_PART_RE.sub(" ", str(text or ""))
-    head = re.split(r"\d", cleaned, maxsplit=1)[0]
-    for token in reversed(head.split()):
+    head = _before_lot_number(cleaned)
+    for token in reversed(head):
         if _ADMIN_TAIL_RE.match(token):
             return token
     match = _PAREN_DONG_RE.search(str(text or ""))
-    return match.group(2) if match else None
+    return match.group(1) if match else None
 
 
 def same_place(left: str, right: str) -> bool | None:
@@ -624,14 +672,18 @@ def _matches_region(address: str, returned_texts: list[str]) -> bool:
     source_parts = normalize_auction_address(address).split()
     if len(source_parts) < 2:
         return False
+    # 시도·시군구만 보면 얕다. '경상남도 하동군 고전면'을 물었는데 '고전면 고하리'가
+    # 와도 통과해 **다른 리의 좌표가 verified로 박힌다**(실측 55건). 양쪽이 모두
+    # 법정동을 말하고 그것이 다르면 거른다. 한쪽이 못 말하면(도로명주소·읍면까지만)
+    # 판단하지 않고 기존대로 둔다.
+    #
+    # 거부는 **항목 단위**여야 한다. 줄마다 따로 보면 동을 말하지 않는 줄 하나가
+    # 항목 전체를 통과시킨다 — 장소검색 결과의 road 가 비어 있어서 `서구 영동빌라`가
+    # 가좌동 대신 심곡동에 찍힌 채로 들어왔다. 한 줄이라도 다른 동을 말하면 버린다.
+    if any(same_place(address, str(t or "")) is False for t in returned_texts):
+        return False
     for returned in returned_texts:
         returned_parts = str(returned or "").split()
-        # 시도·시군구만 보면 얕다. '경상남도 하동군 고전면'을 물었는데 '고전면 고하리'가
-        # 와도 통과해 **다른 리의 좌표가 verified로 박힌다**(실측 55건). 양쪽이 모두
-        # 법정동을 말하고 그것이 다르면 거른다. 한쪽이 못 말하면(도로명주소·읍면까지만)
-        # 판단하지 않고 기존대로 둔다.
-        if same_place(address, str(returned or "")) is False:
-            continue
         if (
             len(returned_parts) >= 2
             and normalize_sido(source_parts[0]) == normalize_sido(returned_parts[0])
