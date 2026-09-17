@@ -91,7 +91,10 @@ def main() -> int:
                     r["item_key"],
                     normalized_address=normalize_auction_address(r["address"] or ""),
                     geocode_query=r["geocode_query"] or "",
-                    quality="approximate",
+                    # 좌표가 없는데 'approximate'라고 하면 앞뒤가 안 맞는다. 웹은
+                    # quality='missing'을 '위치 미상'으로 읽는다(snapshot payload와 같은 말).
+                    # 'missing'도 재시도 대상에서 안 빠진다(not_applicable만 빠진다).
+                    quality="missing",
                     clear_point=True,
                 )
         else:
