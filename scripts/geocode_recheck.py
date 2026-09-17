@@ -67,11 +67,15 @@ def main(limit: int, seed: int, db: Path) -> None:
 
     random.seed(seed)
     sample = random.sample(rows, min(limit, len(rows)))
-    dists, still = [], []
+    dists, still, coarse = [], [], []
     for i, r in enumerate(sample, 1):
         res = geocode_address(r["address"] or "")
         if res and res.quality == "verified":
             dists.append(km_between(r["lat"], r["lng"], res.lat, res.lng))
+        elif res:
+            # 지번이 없는 물건(어업권·건설기계)이나 새로 갈라진 필지. 핀은 만들되
+            # 어디까지 맞는지 밝힌 것들이다.
+            coarse.append((res.source, r["address"]))
         else:
             still.append(r["address"])
         if i % 10 == 0:
@@ -80,14 +84,17 @@ def main(limit: int, seed: int, db: Path) -> None:
     n = len(sample)
     print(f"\n표본 {n}건")
     print(f"  다시 돌리면 정상(verified) 좌표를 얻음 : {len(dists)}건 ({len(dists)/n*100:.0f}%)")
-    print(f"  여전히 실패                            : {len(still)}건")
+    print(f"  근사 핀(옆 필지·리 단위)               : {len(coarse)}건")
+    print(f"  핀 없음                                : {len(still)}건")
     if dists:
         dists.sort()
         far = sum(1 for d in dists if d > 1)
         print(f"\n  고쳐진 핀이 옮겨간 거리 — 중앙값 {dists[len(dists)//2]:.2f}km, 최대 {dists[-1]:.2f}km")
         print(f"  1km 넘게 틀려 있던 것 {far}건 ({far/len(dists)*100:.0f}%)")
+    for source, addr in coarse[:5]:
+        print(f"    근사({source}): {addr}")
     for addr in still[:5]:
-        print(f"    여전히 실패: {addr}")
+        print(f"    핀 없음: {addr}")
 
 
 def selfcheck() -> None:

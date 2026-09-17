@@ -3,6 +3,9 @@ import unittest
 from court_auction_crawler.geocoder import (
     _candidate_queries,
     _extract_building_hint,
+    apply_swapped_eup_myeon,
+    _lot_main_only,
+    _district_only,
     _pnu_from_structure,
     _same_region,
     is_mappable_property,
@@ -76,6 +79,47 @@ class GeocoderTests(unittest.TestCase):
         )
         self.assertEqual(_pnu_from_structure({"level4LC": "", "level5": "1-2"}), "")
         self.assertEqual(_pnu_from_structure({"level4LC": "5117034023", "level5": ""}), "")
+
+    def test_swap_eup_myeon_covers_promoted_names(self):
+        # 법원은 승격 전 이름을, 지도는 승격 후 이름을 쓴다. 둘 다 던져야 지번이 잡힌다.
+        self.assertEqual(
+            apply_swapped_eup_myeon("충청북도 음성군 대소면 성본리 577-2"),
+            "충청북도 음성군 대소읍 성본리 577-2",
+        )
+        self.assertEqual(
+            apply_swapped_eup_myeon("전라남도 영암군 삼호읍 용당리 789"),
+            "전라남도 영암군 삼호면 용당리 789",
+        )
+        # 읍면이 없는 주소는 건드리지 않는다
+        self.assertEqual(apply_swapped_eup_myeon("서울특별시 도봉구 방학동 1-2"), "")
+        # 도로명·리 이름은 바꾸지 않는다
+        self.assertEqual(apply_swapped_eup_myeon("충청북도 청주시 서원구 산남동 1"), "")
+
+    def test_candidate_queries_include_eup_myeon_swap(self):
+        queries = _candidate_queries("충청북도 음성군 대소면 성본리 577-2 [토지 전 1809㎡]")
+        # 상한(GEOCODER_MAX_QUERIES=4)에 잘리면 안 된다
+        self.assertIn("충청북도 음성군 대소읍 성본리 577-2", queries[:4])
+
+    def test_lot_main_only_drops_sub_number(self):
+        # 새로 갈라진 필지는 지도에 없지만 본번은 있다
+        self.assertEqual(
+            _lot_main_only("경상북도 김천시 삼락동 891-171 [토지 전 1㎡]"),
+            "경상북도 김천시 삼락동 891",
+        )
+        # 부번이 없으면 넓힐 것이 없다
+        self.assertEqual(_lot_main_only("경상북도 김천시 삼락동 891"), "")
+
+    def test_district_only_keeps_up_to_ri_or_dong(self):
+        # 어업권은 지번이 아예 없다. 리 단위가 이 물건이 가질 수 있는 최선이다.
+        self.assertEqual(
+            _district_only("전라남도 완도군 고금면 상정리 상정 지선 [어업권 어류등양식]"),
+            "전라남도 완도군 고금면 상정리",
+        )
+        self.assertEqual(
+            _district_only("경상북도 김천시 삼락동 891-171"), "경상북도 김천시 삼락동"
+        )
+        # 리·동이 없으면 넓히지 않는다 — 시군구 단위 핀은 거짓말이다
+        self.assertEqual(_district_only("서울특별시 도봉구 방학로2길 27"), "")
 
     def test_extract_building_hint(self):
         self.assertEqual(

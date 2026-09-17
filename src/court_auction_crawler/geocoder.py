@@ -130,7 +130,8 @@ def geocode_address(address: str) -> GeocodeResult | None:
                 return result
 
     # 지번이 없는 블록·로트형 주소는 건물명 장소 검색으로 근사 좌표라도 확보한다.
-    return _try_place_search(key, address)
+    # 건물명이 없으면(순수 토지·어업권·건설기계) 범위를 넓혀 근사 핀을 만든다.
+    return _try_place_search(key, address) or _try_coarse_address(key, address)
 
 
 def _try_getcoord(key: str, query: str, category: str, address: str) -> GeocodeResult | None:
@@ -155,6 +156,72 @@ def _try_getcoord(key: str, query: str, category: str, address: str) -> GeocodeR
         source="address",
         quality="verified",
     )
+
+
+def _lot_main_only(address: str) -> str:
+    """지번의 부번을 떼어 본번만 남긴다. 해당 없으면 빈 문자열.
+
+    891-171처럼 새로 갈라진 필지는 지도에 아직 없지만 본번 891은 있다.
+    같은 본번은 바로 옆 필지라 오차가 수십 m다.
+    """
+    core = _extract_lot_core(address)
+    if not core:
+        return ""
+    stripped = re.sub(r"(\d+)-\d+\s*$", r"\1", core)
+    return stripped if stripped != core else ""
+
+
+def _district_only(address: str) -> str:
+    """리·동까지만 남기고 뒤를 버린다. 해당 없으면 빈 문자열.
+
+    어업권('상정리 상정 지선')이나 건설기계처럼 **애초에 지번이 없는 물건**이 있다.
+    못 찾은 게 아니라 없는 것이라, 리 단위가 이 물건이 가질 수 있는 가장 정확한 위치다.
+    """
+    parts = normalize_auction_address(address).split()
+    for i, part in enumerate(parts):
+        if i >= 2 and len(part) >= 2 and part[-1] in ("리", "동", "가"):
+            return " ".join(parts[: i + 1]) if i + 1 >= 3 else ""
+    return ""
+
+
+def _try_coarse_address(key: str, address: str) -> GeocodeResult | None:
+    """지번이 정확히 안 잡히면 범위를 넓혀 가며 정직한 근사 핀을 만든다.
+
+    핀을 없애는 것은 답이 아니다. 다만 **어디까지 맞는 핀인지 밝힌다** —
+    source='lot'(옆 필지) · 'district'(리 단위), quality는 둘 다 approximate다.
+    PNU는 절대 싣지 않는다. 옆 필지의 PNU를 그대로 쓰면 공시가격·건축물대장·
+    실거래가가 남의 땅 것으로 채워진다.
+    """
+    for source, narrowed in (("lot", _lot_main_only(address)), ("district", _district_only(address))):
+        if not narrowed:
+            continue
+        # _candidate_queries는 행정구역만 있는 쿼리를 일부러 버린다(지번 검색의 정책).
+        # 여기는 마지막 수단이라 그 필터를 우회하되, 이름 보정은 똑같이 얹는다.
+        variants = [narrowed, apply_merged_sido(narrowed), apply_swapped_eup_myeon(narrowed)]
+        seen: set[str] = set()
+        for query in [q for q in variants if q and not (q in seen or seen.add(q))]:
+            for category in ("PARCEL", "ROAD"):
+                try:
+                    item = _request_vworld_address(key, query, category)
+                except (TimeoutError, OSError, URLError, json.JSONDecodeError):
+                    continue
+                point = item.get("point") if isinstance(item, dict) else None
+                if not point or not point.get("x") or not point.get("y"):
+                    continue
+                if not _same_region(query, item):
+                    continue
+                return GeocodeResult(
+                    lat=float(point["y"]),
+                    lng=float(point["x"]),
+                    pnu="",
+                    normalized_address=str(
+                        item.get("address", {}).get("parcel") or item.get("address", {}).get("road") or query
+                    ),
+                    query=query,
+                    source=source,
+                    quality="approximate",
+                )
+    return None
 
 
 def _try_place_search(key: str, address: str) -> GeocodeResult | None:
@@ -301,6 +368,25 @@ def apply_renamed_sigungu(address: str) -> str:
     return " ".join([parts[0], renamed, *parts[2:]])
 
 
+def apply_swapped_eup_myeon(address: str) -> str:
+    """읍↔면 승격으로 어긋난 이름을 바꾼다. 해당 없으면 빈 문자열.
+
+    법원경매정보는 승격 전 이름(대소면)을 그대로 주고 지도 API는 새 이름(대소읍)만
+    안다. 시도·시군구와 같은 병인데 여기는 읍면이라 RENAMED_SIGUNGU가 못 잡는다.
+    승격은 계속 일어나므로 목록을 두지 않고 두 이름을 다 던진다.
+
+        충청북도 음성군 대소면 성본리 577-2  → 없음
+        충청북도 음성군 대소읍 성본리 577-2  → 36.962750, 127.528336 (지번 일치)
+    """
+    parts = str(address or "").split()
+    # 시도·시군구를 지나 읍면이 나오는 자리만 본다. 리·동·도로명은 건드리지 않는다.
+    for i, part in enumerate(parts[:4]):
+        if len(part) >= 2 and part[-1] in ("읍", "면"):
+            swapped = part[:-1] + ("면" if part[-1] == "읍" else "읍")
+            return " ".join([*parts[:i], swapped, *parts[i + 1:]])
+    return ""
+
+
 def apply_merged_sido(address: str) -> str:
     """옛 시도명으로 시작하는 주소를 통합 시도명으로 바꾼다. 해당 없으면 그대로."""
     text = str(address or "")
@@ -324,6 +410,12 @@ def _candidate_queries(address: str) -> list[str]:
     merged_wp = apply_merged_sido(without_paren)
     if merged_wp != without_paren:
         candidates.append(merged_wp)
+    # 읍면 승격 이름은 후보 상한에 잘리지 않게 시군구 개명보다 앞에 둔다. 지번 검색은
+    # 읍면 이름이 어긋나면 통째로 실패해서, 이게 없으면 그 면의 토지가 전부 폴백으로 샌다.
+    for value in (normalized, without_paren):
+        swapped = apply_swapped_eup_myeon(value)
+        if swapped:
+            candidates.append(swapped)
     # 옛 시군구명은 원본 뒤에 둔다. 갈라져 나간 경우 옛 이름이 여전히 맞는 물건이 있다.
     for value in (normalized, without_paren):
         renamed = apply_renamed_sigungu(value)
