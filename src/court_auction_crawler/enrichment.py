@@ -373,6 +373,36 @@ def build_sold(item: dict[str, Any], appraisal: int | None) -> dict[str, Any] | 
     }
 
 
+def build_past_sales(item: dict[str, Any], appraisal: int | None) -> list[dict[str, Any]]:
+    """전에 낙찰됐다 깨진 기록. "1억 3천에 낙찰됐다가 대금미납으로 다시 나왔다"를 만든다.
+
+    **법원은 이걸 안 준다.** 매각이 실효되면 사건 기일내역에서 금액을 지우기 때문이다
+    (실측: 매각행 뒤가 '납부'면 금액이 남고 5,604건, '미납'이면 사라진다 3,526건).
+    그래서 우리가 낙찰 시점에 받아둔 `auction_sale_results`가 유일한 기록이다.
+    `retire_sold_amount`가 물건이 되살아날 때 낙찰가를 그리로 옮겨 두고 있다.
+
+    지금 기일보다 **이전**의 매각만 고른다. 이번 회차 낙찰은 `sold`가 따로 싣는다.
+    """
+    current = str(item.get("sale_date") or "")
+    out: list[dict[str, Any]] = []
+    for row in item.get("sale_results") or []:
+        amount = row.get("sale_amount")
+        when = str(row.get("sale_date") or "")
+        if not amount or not when:
+            continue
+        if current and when >= current:
+            continue
+        out.append({
+            "date": normalize_date_text(when),
+            "amount": int(amount),
+            "rate": round(int(amount) / appraisal, 4) if appraisal else None,
+            # 왜 깨졌는지. 물건상태에서 읽는다 — 매각 기록 자체에는 사유가 없다.
+            "broken_by": item.get("resale_reason") or "",
+        })
+    out.sort(key=lambda r: r["date"], reverse=True)
+    return out
+
+
 def build_sale_results(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """매각결과검색에서 받은 기일별 결과. 낙찰가율은 감정가 대비다."""
     results = []
@@ -498,6 +528,10 @@ def public_auction_enrichment(item: dict[str, Any]) -> dict[str, Any]:
             # 낙찰되면 목록에서 조용히 사라질 뿐 status는 '유찰 N회'에 머문다.
             # 낙찰가를 여기 실어야 목록에서 바로 '얼마에 팔렸는지'가 보인다.
             "sold": build_sold(item, appraisal),
+            # 전에 낙찰됐다 깨진 기록. 재매각이면 보증금이 오르고(위 deposit),
+            # 직전 낙찰가는 시세의 강한 단서다. 법원은 실효된 낙찰가를 지우므로
+            # 우리가 그때 받아둔 것이 유일한 기록이다.
+            "past_sales": build_past_sales(item, appraisal),
             # 법원 사이트의 다수조회·다수관심 화면에서 받은 인기도. 상위 물건에만 값이 있다.
             "popularity": {
                 "view_count": item.get("view_count") or (item.get("popularity") or {}).get("view_count"),

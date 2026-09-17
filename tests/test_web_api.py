@@ -408,3 +408,56 @@ class WebApiTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PastSalesTest(unittest.TestCase):
+    """깨진 낙찰의 금액은 법원이 지운다 — 우리가 받아둔 것만이 기록이다.
+
+    실측(2026-09-17): 사건 기일내역의 매각행 뒤가 '납부'면 금액이 남고(5,604건)
+    '미납'이면 사라진다(3,526건). 하필 재매각 물건이 그 경우다.
+    """
+
+    def _item(self, sale_date, results, resale="대금미납", appraisal="100,000,000원"):
+        return {
+            "sale_date": sale_date,
+            "appraisal": appraisal,
+            "resale_reason": resale,
+            "sale_results": results,
+        }
+
+    def test_지난_기일의_낙찰만_고른다(self):
+        from court_auction_crawler.enrichment import build_past_sales
+
+        item = self._item("2026.11.03", [
+            {"sale_date": "2026.07.14", "sale_amount": 71_379_000},   # 지난 낙찰
+            {"sale_date": "2026.11.03", "sale_amount": 80_000_000},   # 이번 회차 — 제외
+            {"sale_date": "2026.06.02", "sale_amount": None},         # 유찰 — 제외
+        ])
+        got = build_past_sales(item, 100_000_000)
+        self.assertEqual([r["date"] for r in got], ["2026-07-14"])
+        self.assertEqual(got[0]["amount"], 71_379_000)
+        self.assertEqual(got[0]["broken_by"], "대금미납")
+        self.assertAlmostEqual(got[0]["rate"], 0.7138, places=3)
+
+    def test_기록이_없으면_빈_배열(self):
+        from court_auction_crawler.enrichment import build_past_sales
+
+        self.assertEqual(build_past_sales(self._item("2026.11.03", []), 100_000_000), [])
+        self.assertEqual(build_past_sales({}, None), [])
+
+    def test_최신순으로_준다(self):
+        from court_auction_crawler.enrichment import build_past_sales
+
+        item = self._item("2026.12.01", [
+            {"sale_date": "2026.03.10", "sale_amount": 10_000_000},
+            {"sale_date": "2026.08.19", "sale_amount": 20_000_000},
+        ])
+        self.assertEqual([r["date"] for r in build_past_sales(item, None)],
+                         ["2026-08-19", "2026-03-10"])
+
+    def test_상세_payload에_실린다(self):
+        from court_auction_crawler.enrichment import public_auction_detail
+
+        item = self._item("2026.11.03", [{"sale_date": "2026.07.14", "sale_amount": 5_000_000}])
+        item.update({"item_key": "auction:X:2025타경1:1", "raw": {}, "detail": {}})
+        self.assertEqual(public_auction_detail(item)["auction"]["past_sales"][0]["amount"], 5_000_000)
