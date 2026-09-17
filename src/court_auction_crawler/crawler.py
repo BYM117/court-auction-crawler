@@ -58,6 +58,11 @@ class SearchPageConfig:
     # 다수조회·다수관심은 법원을 골라도 전국 물건이 섞여 나온다. 선택값을 믿고
     # 법원을 붙이면 엉뚱한 물건 키가 만들어지므로 사건번호에서 법원을 읽게 둔다.
     trust_court_select: bool = True
+    # 입찰구분 라디오의 '전체' 항목. 진행·예정 두 화면의 **기본값이 `기일입찰`** 이라
+    # 그냥 두면 기간입찰 물건이 에러도 경고도 없이 빠진다(G09). 지금은 제도가 중단돼
+    # 손실이 0이지만 재개되면 행이 줄 뿐 아무도 모른다 — 함정 ④와 같은 종류인데
+    # 연속 0건 감시에도 안 걸린다. 애초에 존재를 모르기 때문이다.
+    bid_type_all_input_id: str = ""
 
 
 CURRENT_SEARCH = SearchPageConfig(
@@ -69,6 +74,7 @@ CURRENT_SEARCH = SearchPageConfig(
     start_date_selector="#mf_wfm_mainFrame_cal_rletPerdStr_input",
     end_date_selector="#mf_wfm_mainFrame_cal_rletPerdEnd_input",
     search_button_selector="#mf_wfm_mainFrame_btn_gdsDtlSrch",
+    bid_type_all_input_id="mf_wfm_mainFrame_rad_mvprpBidLst_input_2",
 )
 
 SCHEDULED_SEARCH = SearchPageConfig(
@@ -80,6 +86,7 @@ SCHEDULED_SEARCH = SearchPageConfig(
     start_date_selector="#mf_wfm_mainFrame_cal_dspslSchdGdsPerdStr_input",
     end_date_selector="#mf_wfm_mainFrame_cal_dspslSchdGdsPerdEnd_input",
     search_button_selector="#mf_wfm_mainFrame_btn_dspslSchdGdsSrch",
+    bid_type_all_input_id="mf_wfm_mainFrame_rad_dspslSchdGdsBidLst_input_2",
 )
 
 # 매각결과검색. 낙찰 여부와 낙찰가(매각대금)를 주는 유일한 화면이다.
@@ -280,6 +287,27 @@ class CourtAuctionCrawler:
             # 폼이 늦으면 이후 법원 선택 재시도 루프가 실패를 처리한다.
             pass
         await page.wait_for_timeout(300)
+        await self._select_all_bid_types(page, config)
+
+    async def _select_all_bid_types(self, page: Page, config: SearchPageConfig) -> None:
+        """입찰구분을 '전체'로. 기본값 `기일입찰`이 기간입찰을 조용히 걸러낸다(G09).
+
+        라디오 input 자체는 가려져 있어 Playwright가 못 누른다. **라벨**을 누른다.
+        WebSquare는 신뢰된 클릭만 받으므로 JS로 `checked`를 세우면 안 된다 —
+        값은 바뀌어도 화면이 모르는 상태가 된다(`_go_next_page`와 같은 문제).
+
+        못 눌러도 검색은 그대로 진행한다. 지금 기간입찰 물건은 0이므로(실측:
+        서울중앙 223·수원 734·부산 271 모두 기일입찰과 전체가 같다) 여기서
+        수집을 멈추는 것이 더 나쁘다.
+        """
+        if not config.bid_type_all_input_id:
+            return
+        try:
+            label = page.locator(f'label[for="{config.bid_type_all_input_id}"]')
+            if await label.count():
+                await label.first.click(timeout=5_000)
+        except Exception:  # noqa: BLE001 - 못 눌러도 수집은 계속한다
+            pass
 
     async def _results_token(self, page: Page) -> str:
         try:
