@@ -569,6 +569,45 @@ def ssl_context() -> ssl.SSLContext | None:
         return None
 
 
+# 법정동을 뽑는다. **법정동은 지번 앞에 오고 건물 동은 지번 뒤에 온다** — 이 위치
+# 규칙이 글자수 규칙보다 안전하다. 글자수로 거르면 '가좌동'·'강제동' 같은 진짜
+# 법정동까지 건물 동으로 오인한다.
+_ADMIN_TAIL_RE = re.compile(r"^[가-힣]+(?:동|리|가|읍|면)$")
+_PAREN_DONG_RE = re.compile(r"\(([^)]*?([가-힣]{2,}동))")   # 도로명주소는 괄호에 법정동이 온다
+_ROAD_PART_RE = re.compile(r"[가-힣]+\d*(?:번길|로|길)")     # 족동2길 · 대산로247번길
+
+
+def legal_dong(text: str) -> str | None:
+    """주소에서 법정동/리만 골라낸다. 못 고르면 None(=비교하지 않는다)."""
+    cleaned = _ROAD_PART_RE.sub(" ", str(text or ""))
+    head = re.split(r"\d", cleaned, maxsplit=1)[0]
+    for token in reversed(head.split()):
+        if _ADMIN_TAIL_RE.match(token):
+            return token
+    match = _PAREN_DONG_RE.search(str(text or ""))
+    return match.group(2) if match else None
+
+
+def same_place(left: str, right: str) -> bool | None:
+    """두 주소가 같은 법정동인가. 판단 못 하면 None.
+
+    **읍·면은 리의 상위 단위라 비교하지 않는다.** 도로명주소에는 리가 없어 면까지만
+    잡히는데(`곤명면 막골길 267`), 이것을 `금성리`와 맞대면 멀쩡한 좌표가 틀린 것으로
+    잡힌다 — 금성리가 곤명면 안에 있을 수 있다.
+    """
+    x, y = legal_dong(left), legal_dong(right)
+    if not x or not y:
+        return None
+    if x == y:
+        return True
+    upper = lambda s: s.endswith(("읍", "면"))       # noqa: E731
+    leaf = lambda s: s.endswith(("리", "동", "가"))  # noqa: E731
+    if (upper(x) and leaf(y)) or (leaf(x) and upper(y)):
+        return None
+    trim = lambda s: re.sub(r"(동|리|가|읍|면)$", "", s)  # noqa: E731
+    return trim(x) == trim(y) or trim(x) == y or x == trim(y)
+
+
 def _same_region(address: str, item: dict[str, Any]) -> bool:
     address_payload = item.get("address") if isinstance(item.get("address"), dict) else {}
     return _matches_region(
@@ -587,6 +626,12 @@ def _matches_region(address: str, returned_texts: list[str]) -> bool:
         return False
     for returned in returned_texts:
         returned_parts = str(returned or "").split()
+        # 시도·시군구만 보면 얕다. '경상남도 하동군 고전면'을 물었는데 '고전면 고하리'가
+        # 와도 통과해 **다른 리의 좌표가 verified로 박힌다**(실측 55건). 양쪽이 모두
+        # 법정동을 말하고 그것이 다르면 거른다. 한쪽이 못 말하면(도로명주소·읍면까지만)
+        # 판단하지 않고 기존대로 둔다.
+        if same_place(address, str(returned or "")) is False:
+            continue
         if (
             len(returned_parts) >= 2
             and normalize_sido(source_parts[0]) == normalize_sido(returned_parts[0])

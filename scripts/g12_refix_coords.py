@@ -45,6 +45,27 @@ def fake_rows(db: Path, include_inactive: bool) -> list[sqlite3.Row]:
     return [r for r in rows if str(r["geocode_query"] or "").rstrip().endswith(SIDO)]
 
 
+def wrong_place_rows(db: Path, include_inactive: bool) -> list[sqlite3.Row]:
+    """**다른 법정동**에 찍힌 행. 쿼리가 시도명으로 끝나는 것만으로는 안 잡힌다.
+
+    `_matches_region`이 시도·시군구만 보던 시절에 박힌 것들이다. '고전면 명교리'를
+    물었는데 '고전면 고하리'가 와도 통과해 verified 로 저장됐다(실측 55건).
+    판정은 수집기와 같은 규칙(`geocoder.same_place`)을 쓴다.
+    """
+    from court_auction_crawler.geocoder import same_place
+
+    where = "lat IS NOT NULL AND coordinate_quality IN ('verified','approximate')"
+    if not include_inactive:
+        where += " AND is_active=1"
+    with sqlite3.connect(f"file:{db}?mode=ro", uri=True) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT item_key, address, normalized_address, lat, lng, geocode_query, "
+            f"coordinate_source, coordinate_quality, geocoded_at, is_active FROM auction_items WHERE {where}"
+        ).fetchall()
+    return [r for r in rows if same_place(r["address"], r["normalized_address"]) is False]
+
+
 def mislabeled_rows(db: Path, include_inactive: bool) -> list[sqlite3.Row]:
     """좌표는 있는데 quality가 'missing'이라고 적힌 행. 라벨이 거짓말인 쪽이다.
 
@@ -70,6 +91,11 @@ def main() -> int:
     ap.add_argument("--include-inactive", action="store_true")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument(
+        "--wrong-place",
+        action="store_true",
+        help="다른 법정동에 찍힌 행을 다시 물어 고친다(쿼리가 시도명으로 끝나지 않아 --기본 모드로는 안 잡힌다)",
+    )
+    ap.add_argument(
         "--mislabeled",
         action="store_true",
         help="가짜 좌표 대신, 좌표는 있는데 quality가 'missing'인 행의 라벨을 사실로 맞춘다",
@@ -85,10 +111,14 @@ def main() -> int:
     from court_auction_crawler.geocoder import geocode_address, normalize_auction_address
     from court_auction_crawler.store import AuctionStore
 
-    rows = mislabeled_rows(a.db, a.include_inactive) if a.mislabeled else fake_rows(a.db, a.include_inactive)
+    if a.mislabeled:
+        rows, label = mislabeled_rows(a.db, a.include_inactive), "라벨이 어긋난 행"
+    elif a.wrong_place:
+        rows, label = wrong_place_rows(a.db, a.include_inactive), "다른 법정동에 찍힌 행"
+    else:
+        rows, label = fake_rows(a.db, a.include_inactive), "가짜 좌표"
     if a.limit:
         rows = rows[: a.limit]
-    label = "라벨이 어긋난 행" if a.mislabeled else "가짜 좌표"
     print(f"{label} {len(rows)}건" + (" (비활성 포함)" if a.include_inactive else " (활성만)"))
     if not rows:
         return 0
@@ -102,13 +132,14 @@ def main() -> int:
         print(f"원본 값 백업: {backup}")
 
     store = None if a.dry_run else AuctionStore(a.db)
-    fixed = coarse = cleared = 0
+    fixed = coarse = cleared = locked = 0
     for i, r in enumerate(rows, 1):
         result = geocode_address(r["address"] or "")
         if result is None:
             cleared += 1
             # 라벨 교정 모드에서는 점을 건드리지 않는다. 좌표가 틀렸다는 근거가 없다.
             if store and not a.mislabeled:
+              try:
                 # 답이 없으면 가짜를 그대로 두지 않는다. **점까지 지운다** —
                 # quality만 바꾸면 틀린 핀이 지도에 그대로 남는다.
                 # 그때 던진 쿼리는 남긴다. 지우면 나중에 무엇이 가짜였는지 못 찾는다.
@@ -122,27 +153,46 @@ def main() -> int:
                     quality="missing",
                     clear_point=True,
                 )
+              except sqlite3.OperationalError as exc:
+                # 데몬이 4GB DB에 무거운 쓰기를 하는 동안은 busy_timeout(30초)을
+                # 넘길 수 있다. 한 건 때문에 전체를 버리지 않는다 — 이 도구는
+                # 대상을 매번 다시 고르므로 다시 돌리면 남은 것만 잡는다.
+                if "locked" not in str(exc):
+                    raise
+                locked += 1
+                cleared -= 1
         else:
             if result.quality == "verified":
                 fixed += 1
             else:
                 coarse += 1
             if store:
-                store.update_coordinates(
-                    r["item_key"],
-                    lat=result.lat,
-                    lng=result.lng,
-                    pnu=result.pnu,
-                    coordinate_source=result.source,
-                    coordinate_quality=result.quality,
-                    normalized_address=result.normalized_address,
-                    geocode_query=result.query,
-                )
+                try:
+                    store.update_coordinates(
+                        r["item_key"],
+                        lat=result.lat,
+                        lng=result.lng,
+                        pnu=result.pnu,
+                        coordinate_source=result.source,
+                        coordinate_quality=result.quality,
+                        normalized_address=result.normalized_address,
+                        geocode_query=result.query,
+                    )
+                except sqlite3.OperationalError as exc:
+                    if "locked" not in str(exc):
+                        raise
+                    locked += 1
+                    if result.quality == "verified":
+                        fixed -= 1
+                    else:
+                        coarse -= 1
         if i % 50 == 0:
             print(f"  {i}/{len(rows)} … 정확 {fixed} · 근사 {coarse} · 핀없음 {cleared}", flush=True)
 
     tail = "손 안 댐" if a.mislabeled else "핀 없음"
     print(f"\n{'[예행]' if a.dry_run else '완료'} 정확 {fixed} · 근사 {coarse} · {tail} {cleared}")
+    if locked:
+        print(f"잠겨서 못 쓴 것 {locked}건 — 데몬이 한가할 때 같은 명령을 다시 돌리면 남은 것만 잡는다")
     return 0
 
 

@@ -109,48 +109,18 @@ def pct(part, whole) -> str:
 
 
 # ── 결과를 재는 도구 (원인이 아니라 결과를 본다) ───────────────────────────
-# 법정동을 뽑는다. **법정동은 지번 앞에 오고 건물 동은 지번 뒤에 온다** — 이 위치
-# 규칙이 글자수 규칙보다 훨씬 안전하다. 글자수로 거르면 '가좌동'·'강제동' 같은
-# 진짜 법정동까지 건물 동으로 오인한다(실측: 그래서 176건이 부풀었다).
-ADMIN_TAIL = re.compile(r"^[가-힣]+(?:동|리|가|읍|면)$")
-PAREN_DONG = re.compile(r"\(([^)]*?([가-힣]{2,}동))")     # 도로명주소는 괄호에 법정동이 온다
-ROAD_PART = re.compile(r"[가-힣]+\d*(?:번길|로|길)")      # 족동2길 · 대산로247번길 · 계양로
-
-
-def legal_dong(text: str) -> str | None:
-    """주소에서 법정동/리만 골라낸다. 못 고르면 None(=비교하지 않는다).
-
-    도로명(`족동2길`)을 먼저 걷어낸다. 안 그러면 첫 숫자 앞에서 자를 때
-    `족동`이 남아 법정동으로 오인된다.
-    """
-    t = ROAD_PART.sub(" ", str(text or ""))
-    head = re.split(r"\d", t, maxsplit=1)[0]            # 첫 숫자 앞까지가 행정구역이다
-    for token in reversed(head.split()):
-        if ADMIN_TAIL.match(token):
-            return token
-    m = PAREN_DONG.search(str(text or ""))              # 도로명주소면 괄호에 있다
-    return m.group(2) if m else None
-
-
-def same_place(a: str, b: str) -> bool | None:
-    """두 주소가 같은 법정동인가. 판단 못 하면 None.
-
-    **읍·면은 리의 상위 단위라 비교하지 않는다.** 도로명주소에는 리가 없어
-    면까지만 잡히는데(`곤명면 막골길 267`), 이것을 `금성리`와 맞대면 멀쩡한
-    좌표가 틀린 것으로 잡힌다 — 금성리가 곤명면 안에 있을 수 있다.
-    """
-    x, y = legal_dong(a), legal_dong(b)
-    if not x or not y:
+# 법정동 비교는 **수집기 본체와 같은 규칙을 써야 한다.** 여기서 따로 두면 두 곳이
+# 어긋나고, 그러면 지표가 코드를 못 따라간다. geocoder 가 이 규칙으로 응답을 거르므로
+# 판정도 같은 것을 쓴다.
+sys.path.insert(0, str(ROOT / "src"))
+try:
+    from court_auction_crawler.geocoder import legal_dong, same_place  # noqa: E402
+except Exception:  # 워크트리에 src 가 없거나 임포트가 깨져도 도구는 돌아야 한다
+    def legal_dong(text):  # type: ignore[misc]
         return None
-    if x == y:
-        return True
-    upper = lambda s: s.endswith(("읍", "면"))
-    leaf = lambda s: s.endswith(("리", "동", "가"))
-    if (upper(x) and leaf(y)) or (leaf(x) and upper(y)):
-        return None                       # 상하 관계 — 같은 급이 아니다
-    # '당동' vs '당동리', '고덕면' vs '고덕동' 같은 접미 차이는 같은 곳으로 본다
-    trim = lambda s: re.sub(r"(동|리|가|읍|면)$", "", s)
-    return trim(x) == trim(y) or trim(x) == y or x == trim(y)
+
+    def same_place(left, right):  # type: ignore[misc]
+        return None
 
 
 def wrong_place() -> int | None:

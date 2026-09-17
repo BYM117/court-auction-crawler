@@ -1,4 +1,8 @@
-"""`scripts/status.py` 가 '엉뚱한 좌표'를 세는 방식이 맞는지 못 박는다.
+"""법정동 비교 규칙을 못 박는다 — `geocoder.same_place` 와 그것을 쓰는 status 도구.
+
+이 규칙은 두 곳에서 쓰인다. 수집기는 **브이월드 응답을 거를 때**(다른 리의 좌표를
+verified 로 박지 않게), status 도구는 **이미 박힌 것을 셀 때**. 둘이 어긋나면
+지표가 코드를 못 따라가므로 규칙은 `geocoder` 한 곳에만 둔다.
 
 이 지표는 2026-09-17에 **네 번** 고쳤다. 고칠 때마다 숫자가 크게 흔들렸다.
 
@@ -30,7 +34,8 @@ def _load():
 
 class LegalDongTest(unittest.TestCase):
     def setUp(self):
-        self.m = _load()
+        from court_auction_crawler import geocoder
+        self.m = geocoder
 
     def test_지번주소에서_법정동을_고른다(self):
         self.assertEqual(self.m.legal_dong("인천광역시 서구 가좌동 146-44 영동빌라 1동 2층201호"), "가좌동")
@@ -56,7 +61,8 @@ class LegalDongTest(unittest.TestCase):
 
 class SamePlaceTest(unittest.TestCase):
     def setUp(self):
-        self.m = _load()
+        from court_auction_crawler import geocoder
+        self.m = geocoder
 
     def test_진짜_다른_동네는_False(self):
         for a, b in [
@@ -83,6 +89,22 @@ class SamePlaceTest(unittest.TestCase):
 
     def test_한쪽을_못_고르면_None(self):
         self.assertIsNone(self.m.same_place("서울특별시 강남구", "서울특별시 강남구 역삼동 1-1"))
+
+    def test_수집기가_다른_리의_응답을_거른다(self):
+        """가드가 실제로 거르는지. 이게 없어 55건이 verified 로 박혔다."""
+        from court_auction_crawler.geocoder import _matches_region
+
+        self.assertFalse(_matches_region(
+            "경상남도 하동군 고전면 명교리 182-9", ["경상남도 하동군 고전면 고하리 1-1"]))
+        self.assertTrue(_matches_region(
+            "경상남도 하동군 고전면 명교리 182-9", ["경상남도 하동군 고전면 명교리 182"]))
+
+    def test_면까지만_물으면_거르지_않는다(self):
+        """근사 핀(_try_coarse_address)은 일부러 면까지만 묻는다. 막으면 안 된다."""
+        from court_auction_crawler.geocoder import _matches_region
+
+        self.assertTrue(_matches_region(
+            "경상남도 하동군 고전면", ["경상남도 하동군 고전면 고하리 1-1"]))
 
 
 class StatusToolShapeTest(unittest.TestCase):
