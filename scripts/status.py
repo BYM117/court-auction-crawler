@@ -166,13 +166,19 @@ def wrong_place() -> int | None:
 
 
 def sample_details(limit: int, where: str = "detail_status='collected'"):
-    """detail_json 을 조금만 읽는다. 전수는 4GB라 몇 분 걸린다."""
+    """detail_json 을 조금만 읽는다. 전수는 4GB라 몇 분 걸린다.
+
+    **최근에 받은 것부터 본다.** 정렬 없이 `LIMIT`만 걸면 가장 오래된 것을 집어,
+    수집기를 고쳐도 지표가 영영 안 움직인다(G08에서 실제로 그럴 뻔했다). 지표는
+    고친 코드가 만든 데이터를 볼 수 있어야 한다.
+    """
     if DB is None:
         return []
     try:
         con = sqlite3.connect(f"file:{DB}?mode=ro", uri=True, timeout=10)
         rows = [r[0] for r in con.execute(
-            f"SELECT detail_json FROM auction_items WHERE {where} LIMIT {limit}")]
+            f"SELECT detail_json FROM auction_items WHERE {where} "
+            f"ORDER BY detail_collected_at DESC LIMIT {limit}")]
         con.close()
         return rows
     except sqlite3.Error:
@@ -329,8 +335,8 @@ def checks() -> list[dict]:
     near_n = near_stats_filled(200)
     add("G08", "인근매각통계 채우기", "A",
         DONE if (near_n or 0) > 10 else TODO,
-        f"표본 200건 중 데이터 있음 {near_n if near_n is not None else '—'}건",
-        "버튼을 눌러야 채워진다 — Playwright locator.click()")
+        f"최근 200건 중 데이터 있음 {near_n if near_n is not None else '—'}건",
+        "'인근매각물건사례'의 검색 버튼을 눌러야 채워진다. 소급은 안 된다")
 
     # G09 — 입찰구분
     bid = src_has("crawler.py", "BidLst")

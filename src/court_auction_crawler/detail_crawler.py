@@ -33,6 +33,9 @@ CASE_TAB_SELECTOR = "#mf_wfm_mainFrame_tac_srchRsltDvs_tab_tabs1_tabHTML"
 SCHEDULE_TAB_SELECTOR = "#mf_wfm_mainFrame_tac_srchRsltDvs_tab_tabs2_tabHTML"
 FILING_TAB_SELECTOR = "#mf_wfm_mainFrame_tac_srchRsltDvs_tab_tabs3_tabHTML"
 ITEM_DETAIL_BUTTON_SELECTOR = "input[value='물건상세조회']"
+# '인근매각물건사례' 절의 조회 버튼과, 그 결과로 나타나는 탭 묶음(G08).
+NEAR_SALES_SEARCH_SELECTOR = "#mf_wfm_mainFrame_btn_srchNearHist"
+NEAR_SALES_GROUP_SELECTOR = "#mf_wfm_mainFrame_tac_aroundGdsExmGrp"
 CASE_DETAIL_BUTTON_SELECTOR = "input[value='사건상세조회']"
 # 사이트가 '그런 사건 없다'고 할 때 띄우는 문구. 화면 중간에 나오므로 본문 끝만
 # 잘라 보면 안 보인다. 이 문구가 곧 진실은 아니다 — 판단은 case_search_error 참고.
@@ -662,6 +665,7 @@ class CourtAuctionDetailCrawler:
             )
         except PlaywrightTimeoutError:
             pass
+        await self._open_near_sales(page)
         tables = await extract_tables(page)
         sections = await extract_sections(page)
         photos = await page.evaluate(
@@ -683,6 +687,64 @@ class CourtAuctionDetailCrawler:
             "photo_data": photos,
             "source_url": page.url,
         }
+
+    async def _open_near_sales(self, page: Page) -> bool:
+        """'인근매각물건사례'를 조회해 표를 채운다. 안 하면 머리글만 받는다(G08).
+
+        화면 구조가 문서에 적혀 있던 것과 다르다. `인근매각통계` 라는 버튼을 누르는
+        게 아니라, 그 위 절의 **`검색` 버튼**(`btn_srchNearHist`)이 조회를 돌리고
+        그제야 탭 묶음이 나타난다. 누르기 전에는 묶음 전체가 `display:none` 이라
+        탭은 0x0이고, 그래서 탭을 직접 누르려 하면 영원히 기다린다.
+
+        실측(제주 2025타경9291): 누른 뒤 묶음 높이 0 → 325, 표가 3개월·6개월·
+        12개월 세 줄로 찬다. 누르기 전에는 머리글 한 줄뿐이다.
+
+        **기다리는 조건을 잘못 고르면 안 기다린 것과 같다.** 묶음은 즉시 보이는데
+        내용은 그 뒤에 온다. 조건을 세 번 틀렸고 셋 다 클릭 직후 이미 참이었다 —
+        `보이면 끝`, 묶음에 `N개월`이 있으면 끝(기간 표기는 데이터 전부터 DOM에
+        있다), 묶음에 `td`가 든 행이 있으면 끝(묶음 안에 **다른 표가 하나 더**
+        있고 그것이 이미 `td`를 갖고 있다). 세 번 다 16건을 재면 16건 모두 머리글
+        한 줄만 받고 성공으로 넘어갔다.
+
+        그래서 DOM이 실제로 어떻게 변하는지 찍어 보고 조건을 정했다.
+
+            [클릭 전]   통계표 tr 1 · td행 0      다른 표 tr 1 · td행 1
+            [+0ms]     통계표 tr 1 · td행 0
+            [+500ms]   통계표 tr 4 · td행 3      ← 데이터 도착
+
+        **읽어 갈 그 표 하나**를 본다. 캡션에 `매각가율`이 든 표에 `td` 행이
+        생길 때까지다. `extract_tables`가 읽어 가는 것과 같은 것이라 어긋날 수 없다.
+
+        나머지 두 탭(`인근매각물건` 237행 · `인근진행물건` 196행)은 누르지 않는다.
+        물건 하나에 수백 행이라 상세 payload가 감당이 안 되고, 우리가 원한 것은
+        그것을 요약한 통계 네 줄이다.
+
+        **소급은 안 된다.** 종국된 사건은 물건상세가 아예 안 열리므로 이미 쌓인
+        빈 표는 그대로 남는다. 앞으로 수집하는 진행 물건부터 채워진다.
+
+        못 눌러도 수집은 계속한다. 이건 덤이지 본체가 아니다.
+        """
+        try:
+            button = page.locator(NEAR_SALES_SEARCH_SELECTOR)
+            if not await button.count():
+                return False
+            await button.first.click(timeout=5_000)
+            await page.wait_for_function(
+                """(selector) => {
+                  const group = document.querySelector(selector);
+                  if (!group) return false;
+                  const table = [...group.querySelectorAll('table')].find(
+                    (item) => (item.caption ? item.caption.innerText : '').includes('매각가율'));
+                  if (!table) return false;
+                  return [...table.querySelectorAll('tr')].some(
+                    (row) => row.querySelector('td'));
+                }""",
+                arg=NEAR_SALES_GROUP_SELECTOR,
+                timeout=8_000,
+            )
+            return True
+        except Exception:  # noqa: BLE001 - 덤이므로 실패해도 넘어간다
+            return False
 
     async def _collect_item_documents(
         self,
