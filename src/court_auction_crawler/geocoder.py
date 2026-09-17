@@ -197,7 +197,12 @@ def _try_coarse_address(key: str, address: str) -> GeocodeResult | None:
             continue
         # _candidate_queries는 행정구역만 있는 쿼리를 일부러 버린다(지번 검색의 정책).
         # 여기는 마지막 수단이라 그 필터를 우회하되, 이름 보정은 똑같이 얹는다.
-        variants = [narrowed, apply_merged_sido(narrowed), apply_swapped_eup_myeon(narrowed)]
+        variants = [
+            narrowed,
+            apply_merged_sido(narrowed),
+            apply_swapped_eup_myeon(narrowed),
+            apply_dropped_eup_myeon(narrowed),
+        ]
         seen: set[str] = set()
         for query in [q for q in variants if q and not (q in seen or seen.add(q))]:
             for category in ("PARCEL", "ROAD"):
@@ -357,6 +362,26 @@ RENAMED_SIGUNGU = {
 }
 
 
+def apply_dropped_eup_myeon(address: str) -> str:
+    """읍면 토큰을 빼고 시군구+리로 만든다. 해당 없으면 빈 문자열.
+
+    승격(대소면→대소읍)이 아니라 **아예 개명·전환**된 경우는 맞바꾸기로 못 잡는다.
+    읍면을 빼면 지도가 새 이름으로 찾아 준다.
+
+        경상북도 성주군 금수면 후평리 927-2 → 없음
+        경상북도 성주군 후평리 927-2        → 금수강산면 후평리 927-2 (지번 일치)
+
+    같은 시군구 안에 이름이 같은 리가 둘 있으면 엉뚱한 곳이 잡힐 수 있다. 법정동명은
+    시군구 안에서 좀처럼 겹치지 않고, 겹치더라도 _same_region이 시도·시군구는 막는다.
+    """
+    parts = str(address or "").split()
+    # 시도(0)·시군구(1)는 절대 빼지 않는다. 읍면은 보통 2번째 자리다.
+    for i, part in enumerate(parts[:4]):
+        if i >= 2 and len(part) >= 2 and part[-1] in ("읍", "면"):
+            return " ".join([*parts[:i], *parts[i + 1:]])
+    return ""
+
+
 def apply_renamed_sigungu(address: str) -> str:
     """옛 시군구명을 새 이름으로 바꾼다. 해당 없으면 빈 문자열."""
     parts = str(address or "").split()
@@ -416,6 +441,11 @@ def _candidate_queries(address: str) -> list[str]:
         swapped = apply_swapped_eup_myeon(value)
         if swapped:
             candidates.append(swapped)
+    # 읍면이 개명된 경우는 맞바꾸기로 안 잡힌다. 토큰을 빼서 한 번 더 던진다.
+    for value in (normalized, without_paren):
+        dropped = apply_dropped_eup_myeon(value)
+        if dropped:
+            candidates.append(dropped)
     # 옛 시군구명은 원본 뒤에 둔다. 갈라져 나간 경우 옛 이름이 여전히 맞는 물건이 있다.
     for value in (normalized, without_paren):
         renamed = apply_renamed_sigungu(value)

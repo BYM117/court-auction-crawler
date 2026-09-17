@@ -4,6 +4,7 @@ from court_auction_crawler.geocoder import (
     _candidate_queries,
     _extract_building_hint,
     apply_swapped_eup_myeon,
+    apply_dropped_eup_myeon,
     _lot_main_only,
     _district_only,
     _pnu_from_structure,
@@ -94,6 +95,15 @@ class GeocoderTests(unittest.TestCase):
         self.assertEqual(apply_swapped_eup_myeon("서울특별시 도봉구 방학동 1-2"), "")
         # 도로명·리 이름은 바꾸지 않는다
         self.assertEqual(apply_swapped_eup_myeon("충청북도 청주시 서원구 산남동 1"), "")
+
+    def test_drop_eup_myeon_covers_renamed_ones(self):
+        # 승격이 아니라 개명된 경우(금수면→금수강산면)는 맞바꾸기로 못 잡는다
+        self.assertEqual(
+            apply_dropped_eup_myeon("경상북도 성주군 금수면 후평리 927-2"),
+            "경상북도 성주군 후평리 927-2",
+        )
+        # 시도·시군구는 절대 빼지 않는다
+        self.assertEqual(apply_dropped_eup_myeon("서울특별시 도봉구 방학동 1-2"), "")
 
     def test_candidate_queries_include_eup_myeon_swap(self):
         queries = _candidate_queries("충청북도 음성군 대소면 성본리 577-2 [토지 전 1809㎡]")

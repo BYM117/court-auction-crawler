@@ -124,6 +124,26 @@ class StoreTests(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
+    def test_mark_coordinate_missing_can_clear_a_wrong_point(self):
+        """틀린 것으로 밝혀진 좌표는 점까지 지워야 한다.
+
+        quality만 바꾸면 지도에는 틀린 핀이 그대로 남는다. G12에서 실제로 9건이
+        '핀 없음'으로 기록됐는데 가짜 좌표를 달고 있었다."""
+        key = "auction:서울중앙지방법원:2025타경1234:1"
+        self.store.upsert_items([AuctionItem({"사건번호": "서울중앙지방법원 2025타경1234", "물건번호": "1"})])
+        self.store.update_coordinates(key, lat=37.0, lng=127.0, pnu="1" * 19, coordinate_source="building")
+
+        # 기본값은 점을 건드리지 않는다 — 원래 호출자에는 지울 점이 없다
+        self.store.mark_coordinate_missing(key, quality="missing")
+        item = self.store.get_item(key)
+        self.assertEqual(item["lat"], 37.0)
+
+        self.store.mark_coordinate_missing(key, quality="approximate", clear_point=True)
+        item = self.store.get_item(key)
+        self.assertIsNone(item["lat"])
+        self.assertIsNone(item["lng"])
+        self.assertEqual(item["pnu"], "")
+
     def test_upsert_tracks_insert_update_and_unchanged(self):
         first = [AuctionItem({"사건번호": "서울중앙지방법원 2025타경1234", "물건번호": "1", "최저매각가격": "100원"})]
         second = [AuctionItem({"사건번호": "서울중앙지방법원 2025타경1234", "물건번호": "1", "최저매각가격": "90원"})]

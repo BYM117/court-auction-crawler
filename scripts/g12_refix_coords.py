@@ -84,11 +84,15 @@ def main() -> int:
         if result is None:
             cleared += 1
             if store:
-                # 답이 없으면 가짜를 그대로 두지 않는다. 좌표를 비워 재시도 대상으로 돌린다.
+                # 답이 없으면 가짜를 그대로 두지 않는다. **점까지 지운다** —
+                # quality만 바꾸면 틀린 핀이 지도에 그대로 남는다.
+                # 그때 던진 쿼리는 남긴다. 지우면 나중에 무엇이 가짜였는지 못 찾는다.
                 store.mark_coordinate_missing(
                     r["item_key"],
                     normalized_address=normalize_auction_address(r["address"] or ""),
+                    geocode_query=r["geocode_query"] or "",
                     quality="approximate",
+                    clear_point=True,
                 )
         else:
             if result.quality == "verified":

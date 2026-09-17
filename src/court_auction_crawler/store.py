@@ -1419,12 +1419,20 @@ class AuctionStore:
         normalized_address: str = "",
         geocode_query: str = "",
         quality: str = "missing",
+        clear_point: bool = False,
     ) -> None:
+        """좌표를 못 얻었다고 기록한다.
+
+        기본값은 점을 건드리지 않는다 — 원래 호출자(좌표가 처음부터 없는 물건)에는
+        지울 점이 없다. **이미 박힌 좌표가 틀린 것으로 밝혀진 경우**에는 clear_point로
+        점까지 지워야 한다. 안 그러면 quality만 바뀌고 틀린 핀이 지도에 그대로 남는다.
+        """
+        cleared = ", lat = NULL, lng = NULL, pnu = ''" if clear_point else ""
         with self.connect() as conn:
             conn.execute(
-                """
+                f"""
                 UPDATE auction_items
-                   SET coordinate_quality = ?,
+                   SET coordinate_quality = ?{cleared},
                        normalized_address = ?,
                        geocode_query = ?,
                        geocoded_at = ?,
