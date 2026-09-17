@@ -133,6 +133,66 @@ class StoreTests(unittest.TestCase):
             "소재지": "서울특별시 중구 청계천로 334",
         })
 
+    def _vanish(self, key, *, seen: str, collected: str | None):
+        """목록에서 사라진 상태를 만든다. 상세는 사라지기 전에 받아 둔 것으로 둔다."""
+        with self.store.connect() as conn:
+            conn.execute(
+                "UPDATE auction_items SET is_active=0, last_seen_at=?, detail_collected_at=?,"
+                " detail_checked_at=?, detail_status='collected' WHERE item_key=?",
+                (seen, collected, collected, key),
+            )
+
+    def test_vanished_item_is_looked_at_once_more(self):
+        """취하된 물건은 상태 변화 없이 그냥 사라진다. 왜 사라졌는지는 사건 화면의
+        종국결과만 안다(G03). 사라진 뒤로 상세를 안 받았으면 딱 한 번 더 받는다."""
+        key = "auction:서울중앙지방법원:2025타경1234:1"
+        self.store.upsert_items([self._item()])
+        self._vanish(key, seen="2026-09-16T00:00:00+00:00", collected="2026-09-01T00:00:00+00:00")
+
+        keys = [row["item_key"] for row in self.store.list_detail_targets(limit=50)]
+        self.assertIn(key, keys)
+
+    def test_it_is_not_looked_at_again_after_that(self):
+        """한 번 보고 나면 스스로 큐에서 빠져야 한다. 안 그러면 대기열이 영영 안 나간다."""
+        key = "auction:서울중앙지방법원:2025타경1234:1"
+        self.store.upsert_items([self._item()])
+        self._vanish(key, seen="2026-09-16T00:00:00+00:00", collected="2026-09-01T00:00:00+00:00")
+        self.store.save_item_detail(key, {"case": {}})
+
+        keys = [row["item_key"] for row in self.store.list_detail_targets(limit=50)]
+        self.assertNotIn(key, keys)
+
+    def test_unavailable_item_also_leaves_the_queue(self):
+        """상세조회가 막힌 물건(종결·취하)은 collected_at이 안 올라간다. 그걸로 걸면
+        같은 물건이 영영 큐 앞에 남아 대기열이 안 나간다."""
+        key = "auction:서울중앙지방법원:2025타경1234:1"
+        self.store.upsert_items([self._item()])
+        self._vanish(key, seen="2026-09-16T00:00:00+00:00", collected="2026-09-01T00:00:00+00:00")
+        self.store.mark_detail_unavailable(key, "상세조회 버튼 없음")
+
+        keys = [row["item_key"] for row in self.store.list_detail_targets(limit=50)]
+        self.assertNotIn(key, keys)
+
+    def test_long_gone_items_are_left_alone(self):
+        """사건이 종국되면 기일 정보가 끊기고 30일이 더 지나면 기본정보만 남는다.
+        뒤늦게 파도 얻을 게 없으므로 훑지 않는다."""
+        key = "auction:서울중앙지방법원:2025타경1234:1"
+        self.store.upsert_items([self._item()])
+        self._vanish(key, seen="2025-01-01T00:00:00+00:00", collected="2024-12-01T00:00:00+00:00")
+
+        keys = [row["item_key"] for row in self.store.list_detail_targets(limit=50)]
+        self.assertNotIn(key, keys)
+
+    def test_closing_result_is_read_from_the_case_screen(self):
+        from court_auction_crawler.enrichment import parse_case_closing
+
+        table = {"caption": "사건 기본 내역 검색결과",
+                 "rows": [["종국결과", "취하", "종국일자", "2026.09.09"]]}
+        self.assertEqual(
+            parse_case_closing({"case": {"case_tables": [table]}}),
+            {"result": "취하", "date": "2026.09.09"},
+        )
+
     def test_case_item_fields_reach_the_list_payload(self):
         """재매각·보증금은 목록에서 보여야 한다(G04). 목록 조회는 detail_json을 읽지
         않으므로(763MB) 상세를 저장할 때 컬럼으로 뽑아 둔다. 그 길이 실제로 이어지는지

@@ -137,6 +137,31 @@ def parse_case_type(detail: Any) -> str:
     return ""
 
 
+def parse_case_closing(detail: Any) -> dict[str, str]:
+    """사건 기본내역에서 종국결과·종국일자를 뽑는다.
+
+    목록 화면의 진행상태는 '신건'과 '유찰 N회' 둘뿐이라, **취하된 물건은 상태 변화
+    없이 그냥 사라진다.** 왜 사라졌는지는 사건 화면만 안다.
+
+        ['종국결과', '미종국', '종국일자']
+        ['종국결과', '취하', '종국일자', '2026.09.09']
+    """
+    found = {"result": "", "date": ""}
+    for table in _case_tables(detail, "사건기본내역"):
+        for row in table.get("rows") or []:
+            if not isinstance(row, list):
+                continue
+            for index, cell in enumerate(row[:-1]):
+                label = str(cell).strip()
+                if label == "종국결과" and not found["result"]:
+                    found["result"] = str(row[index + 1]).strip()
+                elif label == "종국일자" and not found["date"]:
+                    found["date"] = str(row[index + 1]).strip()
+        if found["result"]:
+            return found
+    return found
+
+
 def parse_money_text(value: Any) -> int | None:
     digits = re.sub(r"[^\d]", "", str(value or ""))
     return int(digits) if digits else None
@@ -369,6 +394,13 @@ def public_auction_enrichment(item: dict[str, Any]) -> dict[str, Any]:
     if not case_item["status_flow"] and item.get("detail"):
         case_item = parse_case_item(item.get("detail"), item.get("item_no"))
     case_type = item.get("case_type") or parse_case_type(item.get("detail"))
+    closing = {
+        "result": item.get("closing_result") or "",
+        "date": normalize_date_text(item.get("closing_date") or ""),
+    }
+    if not closing["result"] and item.get("detail"):
+        raw_closing = parse_case_closing(item.get("detail"))
+        closing = {"result": raw_closing["result"], "date": normalize_date_text(raw_closing["date"])}
 
     # 웹이 딱지로 쓰는 배열은 이것 하나다. 다른 곳에서 이미 아는 사실도 여기 없으면
     # 화면에 안 보인다(G02에서 지분매각이 그랬다).
@@ -398,6 +430,9 @@ def public_auction_enrichment(item: dict[str, Any]) -> dict[str, Any]:
             "status": item.get("status", ""),
             # 임의(담보권 실행) / 강제(집행권원) / 형식적경매. 권리 분석이 갈리는 구분이다.
             "case_type": case_type,
+            # 취하·기각·취소는 목록 상태로는 절대 알 수 없다. 물건이 왜 사라졌는지는
+            # 사건 화면의 종국결과만 말해 준다.
+            "closing": closing,
             "fail_count": fail_count,
             "is_active": active,
             "days_until_sale": days_until(item.get("sale_date", "")),

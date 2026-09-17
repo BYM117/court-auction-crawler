@@ -10,7 +10,7 @@ import re
 import sqlite3
 from typing import Any, Iterator
 
-from .enrichment import parse_case_item, parse_case_type
+from .enrichment import parse_case_closing, parse_case_item, parse_case_type
 from .common import CASE_NO_RE, TERMINAL_STATUS_KEYWORDS, utc_now
 from .models import AuctionItem, SyncSummary
 from .utils import clean_text, parse_date, parse_money, parse_sale_result
@@ -19,13 +19,31 @@ from .utils import clean_text, parse_date, parse_money, parse_sale_result
 SCHEMA_VERSION = 4
 
 
+# 목록에서 사라진 뒤로 상세를 한 번도 안 받은 물건. 받고 나면
+# detail_collected_at > last_seen_at이 되어 스스로 큐에서 빠진다.
+# collected_at이 아니라 **checked_at**이다. 조회불가·실패로 끝난 물건은 collected_at이
+# 안 올라가서, 그걸로 걸면 같은 물건이 영영 큐 앞에 남는다(매각결과 보충에서 이미
+# 한 번 겪은 정체다). checked_at은 성공·실패·조회불가 모두에서 올라간다.
+CLOSING_SWEEP_SQL = (
+    "is_active = 0"
+    " AND COALESCE(last_seen_at, '') >= ?"
+    " AND (detail_checked_at IS NULL OR detail_checked_at < last_seen_at)"
+)
+
+
+def closing_sweep_cutoff(days: int) -> str:
+    """이보다 오래 전에 사라진 물건은 훑지 않는다. 사건이 종국되면 기일 정보가 끊기고,
+    30일이 더 지나면 기본정보만 남는다. 뒤늦게 파도 얻을 게 줄어든다."""
+    return (datetime.now(timezone.utc) - timedelta(days=days)).isoformat(timespec="seconds")
+
+
 ITEM_LIST_SELECT = """
                 SELECT item_key, source, case_no, item_no, court, address, category, appraisal,
                        minimum_bid, sale_date, status, detail_url, lat, lng, pnu,
                        coordinate_source, coordinate_quality, normalized_address,
                        geocode_query, geocoded_at,
                        resale_reason, item_status_flow, deposit_amount, deposit_rate, item_note,
-                       case_type,
+                       case_type, closing_result, closing_date,
                        official_price, official_price_type, official_price_year,
                        official_price_detail, official_price_status, official_price_at,
                        first_seen_at,
@@ -303,6 +321,10 @@ class AuctionStore:
                 ("item_note", "TEXT NOT NULL DEFAULT ''"),
                 # 사건명(부동산임의경매/강제경매/형식적경매). 사건 단위라 물건마다 같다.
                 ("case_type", "TEXT NOT NULL DEFAULT ''"),
+                # 취하·기각·취소. 목록 화면은 '신건'과 '유찰 N회'밖에 안 줘서, 물건이
+                # 왜 사라졌는지는 사건 화면의 종국결과로만 알 수 있다.
+                ("closing_result", "TEXT NOT NULL DEFAULT ''"),
+                ("closing_date", "TEXT NOT NULL DEFAULT ''"),
             ):
                 if sold_col not in columns:
                     conn.execute(f"ALTER TABLE auction_items ADD COLUMN {sold_col} {sold_ddl}")
@@ -872,11 +894,21 @@ class AuctionStore:
         include_inactive: bool = False,
         force: bool = False,
         item_key: str = "",
+        closing_sweep_days: int = 30,
     ) -> list[dict[str, Any]]:
         clauses = ["court != ''", "case_no != ''", "item_no != ''"]
         params: list[Any] = []
         if not include_inactive:
-            clauses.append("is_active = 1")
+            # 물건이 왜 사라졌는지는 사건 화면의 종국결과(취하·기각·취소)만 말해 준다.
+            # 목록 상태는 '신건'과 '유찰 N회'뿐이라 취하는 흔적 없이 사라진다(G03).
+            # 사라진 뒤로 한 번도 안 들여다본 물건을 딱 한 번 더 본다 —
+            # 보고 나면 detail_checked_at > last_seen_at이 되어 스스로 빠진다.
+            # 오래 전에 사라진 것까지 파헤치지 않는다(사건이 종국되면 창이 닫힌다).
+            if closing_sweep_days > 0:
+                clauses.append(f"is_active = 1 OR ({CLOSING_SWEEP_SQL})")
+                params.append(closing_sweep_cutoff(closing_sweep_days))
+            else:
+                clauses.append("is_active = 1")
         if item_key:
             clauses.append("item_key = ?")
             params.append(item_key)
@@ -918,11 +950,16 @@ class AuctionStore:
                                AND (document.next_retry_at IS NULL OR document.next_retry_at <= ?)
                         )
                     )
+                    -- 사라진 물건을 딱 한 번 더 본다. 위에서 문을 열어도 이 조건이
+                    -- 막고 있으면 영영 안 들어온다(실측: 큐에 0건이었다).
+                    OR ({closing_sweep})
                 )
-                """
+                """.format(closing_sweep=CLOSING_SWEEP_SQL if closing_sweep_days > 0 else "0")
             )
             now = utc_now()
             params.extend([now, now, now])
+            if closing_sweep_days > 0:
+                params.append(closing_sweep_cutoff(closing_sweep_days))
         row_limit = 1_000_000 if limit is None or limit <= 0 else min(limit, 1_000_000)
         with self.connect() as conn:
             rows = conn.execute(
@@ -932,7 +969,9 @@ class AuctionStore:
                        detail_fail_count, last_changed_at
                   FROM auction_items
                  WHERE {' AND '.join(f'({clause})' for clause in clauses)}
-                 ORDER BY (detail_collected_at IS NULL) DESC,
+                 -- 살아 있는 물건이 먼저다. 사라진 물건 훑기가 산 물건을 굶기면 안 된다.
+                 ORDER BY is_active DESC,
+                          (detail_collected_at IS NULL) DESC,
                           (REPLACE(SUBSTR(sale_date, 1, 10), '.', '-') > ?) DESC,
                           (sale_date IS NULL OR sale_date = '') ASC,
                           sale_date ASC,
@@ -960,12 +999,14 @@ class AuctionStore:
                 merged = {}
             merged.update(detail)
             case_item = parse_case_item(merged, row["item_no"])
+            closing = parse_case_closing(merged)
             conn.execute(
                 """
                 UPDATE auction_items
                    SET detail_json = ?, detail_status = 'collected',
                        resale_reason = ?, item_status_flow = ?,
                        deposit_amount = ?, deposit_rate = ?, item_note = ?, case_type = ?,
+                       closing_result = ?, closing_date = ?,
                        detail_collected_at = ?, detail_checked_at = ?,
                        detail_next_retry_at = NULL, detail_fail_count = 0,
                        detail_error = '', updated_at = ?
@@ -979,6 +1020,8 @@ class AuctionStore:
                     case_item["deposit_rate"],
                     case_item["note"],
                     parse_case_type(merged),
+                    closing["result"],
+                    closing["date"],
                     now,
                     now,
                     now,
