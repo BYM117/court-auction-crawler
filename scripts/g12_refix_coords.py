@@ -45,12 +45,35 @@ def fake_rows(db: Path, include_inactive: bool) -> list[sqlite3.Row]:
     return [r for r in rows if str(r["geocode_query"] or "").rstrip().endswith(SIDO)]
 
 
+def mislabeled_rows(db: Path, include_inactive: bool) -> list[sqlite3.Row]:
+    """좌표는 있는데 quality가 'missing'이라고 적힌 행. 라벨이 거짓말인 쪽이다.
+
+    웹이 quality를 쓰기 시작하면 멀쩡한 핀이 '위치 미상'으로 빠진다. 다시 물어봐
+    라벨을 사실로 맞춘다. **여기서는 실패해도 점을 지우지 않는다** — 좌표가 틀렸다는
+    근거가 없고, API가 잠깐 죽은 것만으로 멀쩡한 핀을 날릴 수는 없다.
+    """
+    where = "lat IS NOT NULL AND coordinate_quality='missing'"
+    if not include_inactive:
+        where += " AND is_active=1"
+    with sqlite3.connect(f"file:{db}?mode=ro", uri=True) as conn:
+        conn.row_factory = sqlite3.Row
+        return conn.execute(
+            "SELECT item_key, address, lat, lng, geocode_query, coordinate_source, "
+            f"coordinate_quality, geocoded_at, is_active FROM auction_items WHERE {where}"
+        ).fetchall()
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--db", type=Path, default=ROOT / "data" / "auction.sqlite3")
     ap.add_argument("--limit", type=int, default=0, help="0이면 전부")
     ap.add_argument("--include-inactive", action="store_true")
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument(
+        "--mislabeled",
+        action="store_true",
+        help="가짜 좌표 대신, 좌표는 있는데 quality가 'missing'인 행의 라벨을 사실로 맞춘다",
+    )
     a = ap.parse_args()
 
     # 워크트리엔 data/가 따라오지 않는다. 없는 DB를 열면 AuctionStore가 빈 DB를
@@ -62,10 +85,11 @@ def main() -> int:
     from court_auction_crawler.geocoder import geocode_address, normalize_auction_address
     from court_auction_crawler.store import AuctionStore
 
-    rows = fake_rows(a.db, a.include_inactive)
+    rows = mislabeled_rows(a.db, a.include_inactive) if a.mislabeled else fake_rows(a.db, a.include_inactive)
     if a.limit:
         rows = rows[: a.limit]
-    print(f"가짜 좌표 {len(rows)}건" + (" (비활성 포함)" if a.include_inactive else " (활성만)"))
+    label = "라벨이 어긋난 행" if a.mislabeled else "가짜 좌표"
+    print(f"{label} {len(rows)}건" + (" (비활성 포함)" if a.include_inactive else " (활성만)"))
     if not rows:
         return 0
 
@@ -83,7 +107,8 @@ def main() -> int:
         result = geocode_address(r["address"] or "")
         if result is None:
             cleared += 1
-            if store:
+            # 라벨 교정 모드에서는 점을 건드리지 않는다. 좌표가 틀렸다는 근거가 없다.
+            if store and not a.mislabeled:
                 # 답이 없으면 가짜를 그대로 두지 않는다. **점까지 지운다** —
                 # quality만 바꾸면 틀린 핀이 지도에 그대로 남는다.
                 # 그때 던진 쿼리는 남긴다. 지우면 나중에 무엇이 가짜였는지 못 찾는다.
@@ -116,7 +141,8 @@ def main() -> int:
         if i % 50 == 0:
             print(f"  {i}/{len(rows)} … 정확 {fixed} · 근사 {coarse} · 핀없음 {cleared}", flush=True)
 
-    print(f"\n{'[예행]' if a.dry_run else '완료'} 정확 {fixed} · 근사 {coarse} · 핀 없음 {cleared}")
+    tail = "손 안 댐" if a.mislabeled else "핀 없음"
+    print(f"\n{'[예행]' if a.dry_run else '완료'} 정확 {fixed} · 근사 {coarse} · {tail} {cleared}")
     return 0
 
 
