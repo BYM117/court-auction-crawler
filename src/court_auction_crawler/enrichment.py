@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any
+from typing import Any, Iterator
 from urllib.parse import urlparse
 
 from . import __version__
@@ -55,6 +55,69 @@ def price_per_pyeong(amount: int | None, sqm: float | None) -> int | None:
     if not amount or not pyeong:
         return None
     return int(round(amount / pyeong))
+
+
+# 물건상태에 이 말이 있으면 재매각이다. 낙찰됐다 깨진 물건이라 보증금이 20%로 오른다.
+# 법원 사이트 오타를 그대로 받는다 — '대금납부'가 아니라 '대급납부'다. '대금'으로
+# 찾으면 정상 납부 353건이 걸리고 정작 '대금미납'과 구별이 안 된다.
+RESALE_MARKS: tuple[str, ...] = ("대금미납", "매각불허", "매각허가취소")
+
+CASE_ITEM_TABLE_CAPTION = "물건내역"
+
+
+def _case_tables(detail: Any, caption: str) -> Iterator[dict[str, Any]]:
+    """사건 화면의 표를 caption으로 찾는다.
+
+    탭을 옮겨 다니며 받은 스냅샷이라 같은 표가 세 리스트에 중복해 들어 있다.
+    리스트 이름을 믿지 말고 셋 다 훑는다.
+    """
+    case = (detail or {}).get("case") if isinstance(detail, dict) else None
+    for key in ("case_tables", "filing_and_service_tables", "schedule_tables"):
+        for table in (case or {}).get(key) or []:
+            if isinstance(table, dict) and caption in str(table.get("caption") or "").replace(" ", ""):
+                yield table
+
+
+def parse_case_item(detail: Any, item_no: Any) -> dict[str, Any]:
+    """사건 화면 '물건내역'에서 **이 물건 번호의** 상태·비고·보증금을 뽑는다.
+
+    물건내역은 물건번호마다 표가 따로라 형제 물건이 안 섞인다(기일내역과 다르다).
+
+        ['물건번호', '1', '물건용도', '상가', '감정평가액 (최저매각가격) (매수신청보증금)',
+         '304,000,000원 (8,557,000원) (1,711,400원)']
+        ['물건상태', '매각준비 -> 매각공고 -> 매각 -> 매각허가결정 -> 대금미납']
+        ['물건비고', '특별매각조건: 매수신청보증금 최저매각가격의 20%']
+    """
+    wanted = re.sub(r"\D", "", str(item_no or ""))
+    empty = {"status_flow": "", "note": "", "resale_reason": "", "deposit_amount": None, "deposit_rate": None}
+    for table in _case_tables(detail, CASE_ITEM_TABLE_CAPTION):
+        rows = [row for row in table.get("rows") or [] if isinstance(row, list)]
+        head = next((row for row in rows if row and str(row[0]).strip() == "물건번호"), None)
+        if head is None or len(head) < 2:
+            continue
+        if wanted and re.sub(r"\D", "", str(head[1])) != wanted:
+            continue
+        found = dict(empty)
+        for row in rows:
+            label = str(row[0]).strip() if row else ""
+            if label == "물건상태" and len(row) > 1:
+                found["status_flow"] = str(row[1]).strip()
+            elif label == "물건비고" and len(row) > 1:
+                found["note"] = str(row[1]).strip()
+        money = [parse_money_text(part) for part in re.findall(r"[\d,]+원", " ".join(str(v) for v in head))]
+        # 감정평가액 (최저매각가격) (매수신청보증금) 순서다. 보증금만 쓰고 비율은 최저가 대비다.
+        if len(money) >= 3 and money[2]:
+            found["deposit_amount"] = money[2]
+            if money[1]:
+                found["deposit_rate"] = round(money[2] / money[1], 3)
+        found["resale_reason"] = next((mark for mark in RESALE_MARKS if mark in found["status_flow"]), "")
+        return found
+    return empty
+
+
+def parse_money_text(value: Any) -> int | None:
+    digits = re.sub(r"[^\d]", "", str(value or ""))
+    return int(digits) if digits else None
 
 
 def parse_special_rights(*texts: Any) -> list[str]:
@@ -271,7 +334,23 @@ def public_auction_enrichment(item: dict[str, Any]) -> dict[str, Any]:
             raw = json.loads(item.get("raw_json") or "{}")
         except (TypeError, ValueError):
             raw = {}
-    flags = parse_special_rights(raw.get("비고"), item.get("address"), address_info.get("detail"))
+    # 사건 화면 물건내역은 여태 받아만 놓고 안 읽었다. 재매각 여부와 보증금이 여기 있다.
+    # 값은 상세를 저장할 때 컬럼으로 뽑아 둔다 — 목록 조회는 detail_json을 안 읽는다.
+    # 아직 안 뽑힌 행(예전 수집분)은 상세가 손에 있으면 그 자리에서 읽는다.
+    case_item = {
+        "resale_reason": item.get("resale_reason") or "",
+        "status_flow": item.get("item_status_flow") or "",
+        "deposit_amount": item.get("deposit_amount"),
+        "deposit_rate": item.get("deposit_rate"),
+        "note": item.get("item_note") or "",
+    }
+    if not case_item["status_flow"] and item.get("detail"):
+        case_item = parse_case_item(item.get("detail"), item.get("item_no"))
+    flags = parse_special_rights(
+        raw.get("비고"), item.get("address"), address_info.get("detail"), case_item["note"]
+    )
+    if case_item["resale_reason"] and "재매각" not in flags:
+        flags.append("재매각")
 
     return {
         "case": {
@@ -289,6 +368,17 @@ def public_auction_enrichment(item: dict[str, Any]) -> dict[str, Any]:
             "is_active": active,
             "days_until_sale": days_until(item.get("sale_date", "")),
             "special_rights": flags,
+            # 재매각이면 매수신청보증금이 최저가의 20%다(보통 10%). 모르고 가면
+            # 보증금 부족으로 입찰이 그 자리에서 무효가 된다. 목록에서 구별돼야 한다.
+            "resale": {
+                "is_resale": bool(case_item["resale_reason"]),
+                "reason": case_item["resale_reason"],
+                "status_flow": case_item["status_flow"],
+            },
+            "deposit": {
+                "amount": case_item["deposit_amount"],
+                "rate": case_item["deposit_rate"],
+            },
             # 낙찰되면 목록에서 조용히 사라질 뿐 status는 '유찰 N회'에 머문다.
             # 낙찰가를 여기 실어야 목록에서 바로 '얼마에 팔렸는지'가 보인다.
             "sold": build_sold(item, appraisal),

@@ -19,7 +19,57 @@ from court_auction_crawler.web import (
     public_auction_detail,
     safe_external_url,
 )
-from court_auction_crawler.enrichment import public_auction_summary
+from court_auction_crawler.enrichment import parse_case_item, public_auction_summary
+
+
+def case_detail(item_no: str, status_flow: str, note: str = "", head_money: str = "") -> dict:
+    """사건 화면 스냅샷 흉내. 같은 표가 세 리스트에 중복해 들어오는 것까지 재현한다."""
+    table = {
+        "caption": "물건내역",
+        "rows": [
+            ["물건번호", item_no, "물건용도", "상가",
+             "감정평가액 (최저매각가격) (매수신청보증금)", head_money],
+            ["물건상태", status_flow],
+            ["물건비고", note],
+        ],
+    }
+    return {"case": {"case_tables": [table], "schedule_tables": [table], "filing_and_service_tables": []}}
+
+
+class CaseItemParseTests(unittest.TestCase):
+    """사건 화면 '물건내역'은 여태 받아만 놓고 안 읽었다(G04). 재매각 여부와
+    보증금이 여기 있는데, 재매각이면 보증금이 최저가의 20%라 모르고 가면
+    입찰이 무효가 된다."""
+
+    def test_resale_is_read_from_the_item_status(self):
+        detail = case_detail("1", "매각준비 -> 매각공고 -> 매각 -> 매각허가결정 -> 대금미납")
+        info = parse_case_item(detail, "1")
+        self.assertEqual(info["resale_reason"], "대금미납")
+
+    def test_normal_payment_is_not_a_resale(self):
+        # 법원 오타 '대급납부'. '대금'으로 찾으면 정상 납부를 재매각으로 오인한다.
+        detail = case_detail("1", "매각준비 -> 매각공고 -> 매각 -> 매각허가결정 -> 대급납부")
+        self.assertEqual(parse_case_item(detail, "1")["resale_reason"], "")
+
+    def test_sibling_item_status_is_not_borrowed(self):
+        # 사건 화면에는 형제 물건이 같이 들어 있다. 남의 이력을 붙이면 안 된다.
+        detail = case_detail("2", "매각준비 -> 매각공고 -> 매각 -> 매각허가결정 -> 대금미납")
+        self.assertEqual(parse_case_item(detail, "1")["resale_reason"], "")
+        self.assertEqual(parse_case_item(detail, "2")["resale_reason"], "대금미납")
+
+    def test_deposit_rate_comes_from_the_head_row(self):
+        detail = case_detail("1", "매각준비", head_money="304,000,000원 (8,557,000원) (1,711,400원)")
+        info = parse_case_item(detail, "1")
+        self.assertEqual(info["deposit_amount"], 1711400)
+        self.assertEqual(info["deposit_rate"], 0.2)
+
+    def test_zero_minimum_bid_does_not_divide(self):
+        detail = case_detail("1", "매각준비", head_money="304,000,000원 (0원) (0원)")
+        self.assertIsNone(parse_case_item(detail, "1")["deposit_rate"])
+
+    def test_missing_case_tables_are_harmless(self):
+        self.assertEqual(parse_case_item(None, "1")["status_flow"], "")
+        self.assertEqual(parse_case_item({}, "1")["resale_reason"], "")
 
 
 class WebApiTests(unittest.TestCase):

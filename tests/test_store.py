@@ -124,6 +124,100 @@ class StoreTests(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
+    def _item(self, *, status="유찰 1회", sale_date="2026.09.23"):
+        return AuctionItem({
+            "사건번호": "서울중앙지방법원 2025타경1234",
+            "물건번호": "1",
+            "매각기일": sale_date,
+            "물건상태": status,
+            "소재지": "서울특별시 중구 청계천로 334",
+        })
+
+    def test_case_item_fields_reach_the_list_payload(self):
+        """재매각·보증금은 목록에서 보여야 한다(G04). 목록 조회는 detail_json을 읽지
+        않으므로(763MB) 상세를 저장할 때 컬럼으로 뽑아 둔다. 그 길이 실제로 이어지는지
+        끝에서 끝까지 확인한다."""
+        from court_auction_crawler.enrichment import public_auction_summary
+
+        key = "auction:서울중앙지방법원:2025타경1234:1"
+        self.store.upsert_items([self._item()])
+        table = {
+            "caption": "물건내역",
+            "rows": [
+                ["물건번호", "1", "물건용도", "상가",
+                 "감정평가액 (최저매각가격) (매수신청보증금)",
+                 "304,000,000원 (8,557,000원) (1,711,400원)"],
+                ["물건상태", "매각준비 -> 매각공고 -> 매각 -> 매각허가결정 -> 대금미납"],
+                ["물건비고", "특별매각조건: 매수신청보증금 최저매각가격의 20%"],
+            ],
+        }
+        self.store.save_item_detail(key, {"case": {"case_tables": [table]}})
+        self.store.update_coordinates(key, lat=37.0, lng=127.0)
+
+        rows = list(self.store.iter_public_rows(active=True))
+        self.assertEqual(len(rows), 1)
+        auction = public_auction_summary(rows[0])["auction"]
+        self.assertTrue(auction["resale"]["is_resale"])
+        self.assertEqual(auction["resale"]["reason"], "대금미납")
+        self.assertEqual(auction["deposit"], {"amount": 1711400, "rate": 0.2})
+        self.assertIn("재매각", auction["special_rights"])
+
+    def test_revived_item_moves_its_sale_into_history(self):
+        """낙찰됐다 되돌아온 물건에 옛 낙찰가가 남아 '지금 입찰 가능한데 낙찰 ○○원'이
+        화면에 떴다(G05). 지우되 **이력으로 옮기고** 지운다 — 실측 18건 중 6건은
+        이력 쪽에 금액이 없어 그냥 비우면 낙찰가를 영영 잃는다."""
+        key = "auction:서울중앙지방법원:2025타경1234:1"
+        self.store.upsert_items([self._item(sale_date="2026.08.19")])
+        with self.store.connect() as conn:
+            conn.execute(
+                "UPDATE auction_items SET sold_amount=12507000, sold_date='2026.08.19' WHERE item_key=?",
+                (key,),
+            )
+
+        # 새 기일을 달고 목록에 다시 나타났다
+        self.store.upsert_items([self._item(sale_date="2026.09.23")])
+
+        item = self.store.get_item(key)
+        self.assertIsNone(item["sold_amount"])
+        self.assertEqual(item["sold_date"], "")
+        self.assertTrue(item["is_active"])
+        history = item["sale_results"]
+        self.assertEqual([(r["sale_date"], r["result"], r["sale_amount"]) for r in history],
+                         [("2026.08.19", "매각", 12507000)])
+
+    def test_sale_history_keeps_the_amount_it_already_had(self):
+        """이력에 이미 금액이 있으면 덮어쓰지 않는다. 결과 화면에서 받아둔 값이 더 정확하다."""
+        key = "auction:서울중앙지방법원:2025타경1234:1"
+        self.store.upsert_items([self._item(sale_date="2026.08.19")])
+        with self.store.connect() as conn:
+            conn.execute(
+                "UPDATE auction_items SET sold_amount=999 WHERE item_key=?", (key,))
+            conn.execute(
+                "UPDATE auction_items SET sold_date='2026.08.19' WHERE item_key=?", (key,))
+            conn.execute(
+                """INSERT INTO auction_sale_results(court, case_no, item_no, sale_date,
+                       result, sale_amount, item_key, collected_at)
+                   VALUES('서울중앙지방법원','2025타경1234','1','2026.08.19','매각',12507000,?,'now')""",
+                (key,),
+            )
+
+        self.store.upsert_items([self._item(sale_date="2026.09.23")])
+
+        history = self.store.get_item(key)["sale_results"]
+        self.assertEqual([r["sale_amount"] for r in history], [12507000])
+
+    def test_sale_is_kept_while_the_item_is_still_being_processed(self):
+        """새 기일이 낙찰일보다 앞이면 되살아난 게 아니다. 건드리지 않는다."""
+        key = "auction:서울중앙지방법원:2025타경1234:1"
+        self.store.upsert_items([self._item(sale_date="2026.08.19")])
+        with self.store.connect() as conn:
+            conn.execute(
+                "UPDATE auction_items SET sold_amount=12507000, sold_date='2026.09.30' WHERE item_key=?",
+                (key,),
+            )
+        self.store.upsert_items([self._item(sale_date="2026.08.19", status="신건")])
+        self.assertEqual(self.store.get_item(key)["sold_amount"], 12507000)
+
     def test_mark_coordinate_missing_can_clear_a_wrong_point(self):
         """틀린 것으로 밝혀진 좌표는 점까지 지워야 한다.
 

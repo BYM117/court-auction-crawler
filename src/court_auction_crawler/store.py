@@ -10,6 +10,7 @@ import re
 import sqlite3
 from typing import Any, Iterator
 
+from .enrichment import parse_case_item
 from .common import CASE_NO_RE, TERMINAL_STATUS_KEYWORDS, utc_now
 from .models import AuctionItem, SyncSummary
 from .utils import clean_text, parse_date, parse_money, parse_sale_result
@@ -23,6 +24,7 @@ ITEM_LIST_SELECT = """
                        minimum_bid, sale_date, status, detail_url, lat, lng, pnu,
                        coordinate_source, coordinate_quality, normalized_address,
                        geocode_query, geocoded_at,
+                       resale_reason, item_status_flow, deposit_amount, deposit_rate, item_note,
                        official_price, official_price_type, official_price_year,
                        official_price_detail, official_price_status, official_price_at,
                        first_seen_at,
@@ -289,6 +291,15 @@ class AuctionStore:
             for sold_col, sold_ddl in (
                 ("sold_amount", "INTEGER"),
                 ("sold_date", "TEXT NOT NULL DEFAULT ''"),
+                # 사건 화면 '물건내역'에서 뽑아 둔다. 목록 조회는 detail_json을 안 읽으므로
+                # (763MB라 스냅샷이 감당 못 한다) 여기 적어야 목록에서도 보인다.
+                ("resale_reason", "TEXT NOT NULL DEFAULT ''"),
+                ("item_status_flow", "TEXT NOT NULL DEFAULT ''"),
+                ("deposit_amount", "INTEGER"),
+                ("deposit_rate", "REAL"),
+                # 물건비고('특별매각조건: …', '미납관리비 …원 있음')는 목록 비고에 없는
+                # 특수권리 단서다. 목록에서도 태그로 쓰려면 여기 있어야 한다.
+                ("item_note", "TEXT NOT NULL DEFAULT ''"),
             ):
                 if sold_col not in columns:
                     conn.execute(f"ALTER TABLE auction_items ADD COLUMN {sold_col} {sold_ddl}")
@@ -562,8 +573,8 @@ class AuctionStore:
                 content_hash = stable_hash(values)
                 list_hash = stable_list_hash(values)
                 existing = conn.execute(
-                    "SELECT raw_json, detail_json, content_hash, list_hash, sale_date "
-                    "FROM auction_items WHERE item_key = ?",
+                    "SELECT raw_json, detail_json, content_hash, list_hash, sale_date, "
+                    "sold_amount, sold_date FROM auction_items WHERE item_key = ?",
                     (item_key,),
                 ).fetchone()
 
@@ -584,6 +595,11 @@ class AuctionStore:
 
                 changed = existing is None or existing["list_hash"] != list_hash
                 active = is_active_status(extracted["status"])
+                # 낙찰됐다 되돌아온 물건(대금미납·매각불허)에 옛 낙찰가가 그대로 남아
+                # "지금 입찰 가능한데 낙찰 ○○원"이 화면에 떴다. 지우기 전에 이력으로
+                # 옮긴다 — 직전 낙찰가는 입찰자에게 시세의 강한 단서다.
+                if active and existing is not None and existing["sold_amount"]:
+                    retire_sale(conn, item_key, extracted, existing, now)
                 next_check_at = calculate_next_check_at(
                     extracted["status"],
                     extracted["sale_date"],
@@ -930,7 +946,7 @@ class AuctionStore:
         now = utc_now()
         with self.connect() as conn:
             row = conn.execute(
-                "SELECT detail_json FROM auction_items WHERE item_key = ?",
+                "SELECT detail_json, item_no FROM auction_items WHERE item_key = ?",
                 (item_key,),
             ).fetchone()
             if row is None:
@@ -940,16 +956,30 @@ class AuctionStore:
             except (TypeError, ValueError):
                 merged = {}
             merged.update(detail)
+            case_item = parse_case_item(merged, row["item_no"])
             conn.execute(
                 """
                 UPDATE auction_items
                    SET detail_json = ?, detail_status = 'collected',
+                       resale_reason = ?, item_status_flow = ?,
+                       deposit_amount = ?, deposit_rate = ?, item_note = ?,
                        detail_collected_at = ?, detail_checked_at = ?,
                        detail_next_retry_at = NULL, detail_fail_count = 0,
                        detail_error = '', updated_at = ?
                  WHERE item_key = ?
                 """,
-                (json_dumps(merged), now, now, now, item_key),
+                (
+                    json_dumps(merged),
+                    case_item["resale_reason"],
+                    case_item["status_flow"],
+                    case_item["deposit_amount"],
+                    case_item["deposit_rate"],
+                    case_item["note"],
+                    now,
+                    now,
+                    now,
+                    item_key,
+                ),
             )
 
     def mark_detail_failure(self, item_key: str, error: str) -> None:
@@ -2254,6 +2284,55 @@ def aggregate_items_by_key(items: list[AuctionItem]) -> list[tuple[str, dict[str
             order.append(key)
         grouped[key].append(values)
     return [(key, merge_parcel_rows(grouped[key])) for key in order]
+
+
+def retire_sale(
+    conn: sqlite3.Connection,
+    item_key: str,
+    extracted: dict[str, Any],
+    existing: sqlite3.Row,
+    now: str,
+) -> bool:
+    """되살아난 물건의 낙찰을 이력(auction_sale_results)으로 옮기고 현재 낙찰을 비운다.
+
+    **정보를 버리는 게 아니다.** 실측한 18건 중 6건은 이력 쪽에 금액이 없어서,
+    그냥 비우면 낙찰가를 영영 잃는다. 먼저 이력에 넣고 나서 비운다.
+
+    새 기일이 낙찰일보다 뒤일 때만 은퇴시킨다. 낙찰 직후 아직 처리 중인 물건을
+    건드리지 않기 위해서다(backfill_sale_results의 되살아남 방지 가드와 같은 뜻).
+    """
+    sold_date = str(existing["sold_date"] or "")
+    if not sold_date or not (str(extracted["sale_date"] or "") > sold_date):
+        return False
+    conn.execute(
+        """
+        INSERT INTO auction_sale_results(
+            court, case_no, item_no, sale_date, result,
+            sale_amount, minimum_bid, appraisal, item_key, raw_json, collected_at)
+        VALUES(?, ?, ?, ?, '매각', ?, NULL, NULL, ?, '{}', ?)
+        ON CONFLICT(court, case_no, item_no, sale_date) DO UPDATE SET
+            sale_amount = COALESCE(auction_sale_results.sale_amount, excluded.sale_amount),
+            result = CASE WHEN auction_sale_results.result = '' THEN excluded.result
+                          ELSE auction_sale_results.result END,
+            item_key = CASE WHEN auction_sale_results.item_key = '' THEN excluded.item_key
+                            ELSE auction_sale_results.item_key END
+        """,
+        (
+            extracted["court"],
+            representative_case_no(extracted["case_no"]),
+            extracted["item_no"],
+            sold_date,
+            existing["sold_amount"],
+            item_key,
+            now,
+        ),
+    )
+    conn.execute(
+        # sold_date는 NOT NULL DEFAULT ''다. 빈 문자열이 '낙찰 아님'의 표현이다.
+        "UPDATE auction_items SET sold_amount = NULL, sold_date = '', updated_at = ? WHERE item_key = ?",
+        (now, item_key),
+    )
+    return True
 
 
 def is_active_status(status: str) -> bool:
