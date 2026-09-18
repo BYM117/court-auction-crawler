@@ -2170,33 +2170,59 @@ class AuctionStore:
         drop_ratio: float = 0.3,
         min_baseline: int = 20,
     ) -> list[str]:
-        """전체 수집의 법원별 건수를 기록하고, 직전 기록 대비 급감·누락 경고를 돌려준다.
+        """전체 수집의 법원별 건수를 기록하고, **진짜** 급감·누락만 경고로 돌려준다.
 
-        사이트 개편으로 추출이 조용히 깨지는 것이 가장 위험한 누락 시나리오라서,
-        법원 단위 건수 급감을 감지해 로그로 드러낸다."""
+        예전에는 **직전 기록**과 댔다. 그래서 정상적인 기일 소진까지 경고가 됐다 —
+        진행 화면은 '오늘~13일' 창이라 그 창에 그 법원 기일이 없으면 **0건이 정답**이다.
+        통영이 9/14 기일을 소진하면 그 뒤로 계속 0인데, 매 사이클 "246건 -> 0건" 이
+        울렸다. 6일에 54번. 그래서 아무도 안 보게 됐고 **진짜 신호가 묻혔다**(G17).
+
+        이제 **같은 날 다른 사이클**과 댄다(최근 24시간 최대치). 하루 안에서 0↔비0 이
+        갈리는 것만 창이 망가진 것이다 — 실측 58일에서 12.1%가 여기 해당하고, 한 번에
+        광주 478건·목포 264건씩 통째로 빠진다.
+
+        그리고 **상태가 아니라 전환**에서만 운다. 직전 사이클도 낮았으면 이미 아는
+        일이라 다시 울리지 않는다. 소진된 법원이 하루 종일 짖는 것을 막는다.
+        """
         if not counts:
             return []
         now = utc_now()
         warnings: list[str] = []
+        하루전 = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
         with self.connect() as conn:
             previous: dict[tuple[str, str], int] = {}
-            rows = conn.execute(
+            for row in conn.execute(
                 """
                 SELECT mode, court, item_count FROM court_run_stats
                  WHERE finished_at = (SELECT MAX(finished_at) FROM court_run_stats)
                 """
-            ).fetchall()
-            for row in rows:
+            ):
                 previous[(row["mode"], row["court"])] = row["item_count"]
+
+            # 최근 24시간(≈5사이클)의 최대치. 같은 창을 본 다른 사이클이 무엇을 봤는가.
+            최근최대: dict[tuple[str, str], int] = {}
+            for row in conn.execute(
+                "SELECT mode, court, MAX(item_count) AS top FROM court_run_stats "
+                " WHERE finished_at >= ? GROUP BY mode, court", (하루전,)
+            ):
+                최근최대[(row["mode"], row["court"])] = row["top"]
 
             for (mode, court), count in sorted(counts.items()):
                 conn.execute(
                     "INSERT INTO court_run_stats(finished_at, mode, court, item_count) VALUES(?, ?, ?, ?)",
                     (now, mode, court, count),
                 )
-                baseline = previous.get((mode, court))
-                if baseline is not None and baseline >= min_baseline and count < baseline * drop_ratio:
-                    warnings.append(f"{court} {mode} 수집 급감: {baseline}건 -> {count}건")
+                기준 = 최근최대.get((mode, court))
+                직전 = previous.get((mode, court))
+                if 기준 is None or 기준 < min_baseline:
+                    continue
+                if count >= 기준 * drop_ratio:
+                    continue
+                # 직전도 이미 낮았으면 전환이 아니다 — 소진된 법원이 하루 종일 짖는다.
+                if 직전 is not None and 직전 < 기준 * drop_ratio:
+                    continue
+                warnings.append(
+                    f"{court} {mode} 수집 급감: 오늘 최대 {기준}건 -> {count}건")
             for (mode, court), baseline in sorted(previous.items()):
                 if (mode, court) not in counts and baseline >= min_baseline:
                     warnings.append(f"{court} {mode} 이번 수집에서 누락 (이전 {baseline}건)")

@@ -1002,3 +1002,44 @@ class UnavailableRetryLoopTests(unittest.TestCase):
             )
         keys = [row["item_key"] for row in self.store.list_detail_targets()]
         self.assertIn(self.key, keys)
+
+
+class 커버리지경고Test(unittest.TestCase):
+    """경고가 54번 울렸는데 대부분 오탐이라 아무도 안 보던 자리 (G17).
+
+    진행 화면은 '오늘~13일' 창이라 그 창에 기일이 없으면 **0건이 정답**이다.
+    직전 값과 대면 정상적인 기일 소진이 전부 경고가 된다. 같은 날 다른 사이클과 대야
+    '창이 망가진 것'만 걸린다.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.store = AuctionStore(Path(self.tmp.name) / "t.sqlite3")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_기일_소진은_한_번만_울리고_그친다(self):
+        # 246건 보이다가 기일을 소진해 계속 0 — 매 사이클 짖으면 안 된다
+        self.store.record_court_stats({("current", "통영지원"): 246})
+        첫번째 = self.store.record_court_stats({("current", "통영지원"): 0})
+        self.assertTrue(첫번째, "비0 -> 0 전환은 알려야 한다")
+        for _ in range(3):
+            또 = self.store.record_court_stats({("current", "통영지원"): 0})
+            self.assertEqual(또, [], "이미 낮은 상태가 이어지는 것은 새 소식이 아니다")
+
+    def test_같은_날_되살아나는_흔들림은_매번_잡는다(self):
+        """창이 망가진 진짜 신호. 실측 58일에서 12.1%."""
+        self.store.record_court_stats({("current", "광주지방법원"): 478})
+        self.assertTrue(self.store.record_court_stats({("current", "광주지방법원"): 0}))
+        self.store.record_court_stats({("current", "광주지방법원"): 478})
+        self.assertTrue(self.store.record_court_stats({("current", "광주지방법원"): 0}))
+
+    def test_작은_법원은_기준에_못_미쳐_안_운다(self):
+        self.store.record_court_stats({("current", "작은지원"): 5})
+        self.assertEqual(self.store.record_court_stats({("current", "작은지원"): 0}), [])
+
+    def test_통째로_사라지면_누락으로_잡는다(self):
+        self.store.record_court_stats({("current", "부천지원"): 130})
+        경고 = self.store.record_court_stats({("current", "다른법원"): 100})
+        self.assertTrue(any("부천지원" in w and "누락" in w for w in 경고))

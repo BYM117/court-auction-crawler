@@ -730,6 +730,36 @@ def run_popularity_cycle(store: AuctionStore, options: SearchOptions) -> dict[st
     return totals
 
 
+def _refresh_current_window(options: SearchOptions) -> SearchOptions:
+    """진행 수집에 들어가기 직전에 '오늘' 을 다시 잡는다 (G17).
+
+    창은 사이클 **시작 때** 정해지는데 한 사이클이 중앙값 1.5시간이다. 23시대에
+    시작한 사이클은 진행 수집에 들어갈 즈음 자정을 넘고, 그러면 `current_start` 가
+    어제가 된다. 물건상세검색은 '오늘~2주' 만 허용하므로 **그때부터 빈 화면이
+    돌아온다** — 에러도 경고도 없이.
+
+    실측(58일·296사이클): 21~23시 시작 사이클의 진행 놓침률이 **23.1%** 로
+    다른 시간대(0.8~8.9%)와 확연히 다르다. 진행 법원의 절반 이상을 놓친 사이클
+    11회 중 6회가 23:20~23:38 시작이다. **하루 5회 중 1회가 반쪽이었다.**
+
+    예정 수집은 창이 두 달짜리라 하루 밀려도 견딘다. 그래서 진행만 다시 잡는다.
+    """
+    today = date.today()
+    start = options.current_start_date
+    if start is None or start >= today:
+        return options
+    이동 = (today - start).days
+    끝 = options.current_end_date
+    print(f"  창을 다시 잡는다: 진행 시작일 {start} -> {today} "
+          f"(사이클이 자정을 넘겼다, {이동}일)", flush=True)
+    return replace(
+        options,
+        current_start_date=today,
+        # 끝도 함께 민다. 안 밀면 창이 하루 좁아져 마지막 날 기일을 놓친다.
+        current_end_date=끝 + timedelta(days=이동) if 끝 else 끝,
+    )
+
+
 def run_collect_cycle(
     store: AuctionStore,
     options: SearchOptions,
@@ -740,6 +770,7 @@ def run_collect_cycle(
 ) -> dict[str, Any]:
     """목록 수집 한 사이클: 수집→커버리지 기록→생명주기→지오코딩→공시기준가.
     collect-all(일회성)과 collect-loop(데몬)이 공유한다."""
+    options = _refresh_current_window(options)
     totals = {"inserted": 0, "updated": 0, "unchanged": 0}
     court_counts: dict[tuple[str, str], int] = {}
 
@@ -749,7 +780,12 @@ def run_collect_cycle(
         totals["updated"] += result.updated
         totals["unchanged"] += result.unchanged
         key = (partition.source_mode or "current", partition.court)
-        court_counts[key] = court_counts.get(key, 0) + len(partition_items)
+        # **긁은 줄 수가 아니라 들어간 수를 센다.** 물건이 없는 화면이 안내 행을
+        # 7~8줄 돌려주는데, 긁은 줄 수로 세면 0건인 법원이 8건으로 기록된다
+        # (실측: '긁었는데 하나도 안 들어간' 구간 3,406개가 전부 7줄 아니면 8줄).
+        # 커버리지 경고가 0건을 못 잡던 이유 중 하나다(G17).
+        들어간수 = result.inserted + result.updated + result.unchanged
+        court_counts[key] = court_counts.get(key, 0) + 들어간수
         print(
             f"  -> {len(partition_items)}개 반영 "
             f"(신규 {result.inserted}, 변경 {result.updated}, 동일 {result.unchanged})"

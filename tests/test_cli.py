@@ -223,3 +223,45 @@ class BuildingBackfillTests(unittest.TestCase):
         rows = self.store.list_missing_enrichment("building", limit=10, active=None)
 
         self.assertEqual(rows, [])
+
+
+class 자정넘김창Test(unittest.TestCase):
+    """23시대에 시작한 사이클이 진행 수집을 통째로 날리던 자리 (G17).
+
+    창은 사이클 **시작 때** 정해지는데 한 사이클이 중앙값 1.5시간이다. 자정을 넘기면
+    `current_start` 가 어제가 되고, 물건상세검색은 '오늘~2주' 만 허용하므로 빈 화면이
+    돌아온다 — 에러도 경고도 없이. 실측: 21~23시 시작 사이클의 진행 놓침률 23.1%.
+    """
+
+    def _고침(self, **kw):
+        from court_auction_crawler.cli import _refresh_current_window
+        from court_auction_crawler.models import SearchOptions
+        return _refresh_current_window(SearchOptions(**kw))
+
+    def test_시작일이_어제면_오늘로_당긴다(self):
+        from datetime import date, timedelta
+        오늘 = date.today()
+        got = self._고침(current_start_date=오늘 - timedelta(days=1),
+                        current_end_date=오늘 + timedelta(days=12))
+        self.assertEqual(got.current_start_date, 오늘)
+
+    def test_끝도_함께_민다(self):
+        """안 밀면 창이 하루 좁아져 마지막 날 기일을 놓친다."""
+        from datetime import date, timedelta
+        오늘 = date.today()
+        got = self._고침(current_start_date=오늘 - timedelta(days=1),
+                        current_end_date=오늘 + timedelta(days=12))
+        self.assertEqual(got.current_end_date, 오늘 + timedelta(days=13))
+        self.assertEqual((got.current_end_date - got.current_start_date).days, 13)
+
+    def test_정상_사이클은_건드리지_않는다(self):
+        from datetime import date, timedelta
+        오늘 = date.today()
+        끝 = 오늘 + timedelta(days=13)
+        got = self._고침(current_start_date=오늘, current_end_date=끝)
+        self.assertEqual(got.current_start_date, 오늘)
+        self.assertEqual(got.current_end_date, 끝)
+
+    def test_창이_없으면_그대로_둔다(self):
+        got = self._고침()
+        self.assertIsNone(got.current_start_date)
