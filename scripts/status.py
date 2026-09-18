@@ -206,6 +206,55 @@ def near_stats_filled(sample: int = 200) -> int | None:
     return hit
 
 
+def recent_coverage_warnings() -> tuple[int, int] | None:
+    """(울린 경고 수, 판정을 돌린 횟수). **둘 다 세야 한다.**
+
+    경고 0건은 '좋아졌다' 일 수도 '아예 안 쟀다' 일 수도 있다. 커버리지 기록은
+    예정 창이 120일 이상인 full 사이클에서만 돌아가므로, quick 사이클만 돈 날은
+    판정이 한 번도 실행되지 않는다(실측: 9/18 사이클 3회 중 기록 0회).
+    **분모를 같이 내놓지 않으면 0이 초록불로 읽힌다** — 오늘 열 번째로 밟은 함정이다.
+    """
+    log = ROOT / "logs" / "collect-all.log"
+    if not log.exists():
+        return None
+    try:
+        text = log.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    return (text.count("커버리지 경고"), text.count("법원별 수집 기록 저장"))
+
+
+def building_match_rate() -> tuple[int, int]:
+    """(건물 표본, 이 물건의 값이라 말해도 되는 것). G13 의 B 몫이다.
+
+    **토지를 빼고 센다.** 토지는 특정 지번이 6개월 안에 거래될 확률이 낮아 구조적으로
+    0%다(실측 316건 중 parcel·name 0건). 섞어 세면 건물 37%가 전체 17%로 보여
+    "안 고쳐졌다"고 읽힌다 — 분모가 다른 것이지 성적이 나쁜 게 아니다.
+    """
+    if DB is None:
+        return (0, 0)
+    try:
+        con = sqlite3.connect(f"file:{DB}?mode=ro", uri=True, timeout=10)
+        rows = con.execute(
+            "SELECT transactions_detail FROM auction_items "
+            "WHERE is_active=1 AND transactions_detail LIKE '%match_level%'").fetchall()
+        con.close()
+    except sqlite3.Error:
+        return (0, 0)
+    건물 = 믿을만 = 0
+    for (tj,) in rows:
+        try:
+            t = json.loads(tj)
+        except Exception:
+            continue
+        if t.get("type") == "land":
+            continue
+        건물 += 1
+        if ((t.get("sales") or {}).get("match_level")) in ("parcel", "name"):
+            믿을만 += 1
+    return (건물, 믿을만)
+
+
 def screening_can_say_low() -> bool | None:
     """위험도가 '낮음'을 낼 수 있는지 **실제로 호출해서** 본다.
 
@@ -321,9 +370,12 @@ def checks() -> list[dict]:
     appraisal_body = q1(
         "SELECT COUNT(*) FROM auction_documents "
         "WHERE document_type='감정평가서' AND LENGTH(metadata_json)>2000")
+    거짓 = q1("SELECT COUNT(*) FROM auction_documents "
+              "WHERE document_type='감정평가서' AND status='collected'")
     add("G06", "감정평가서 본문", "A",
-        DONE if (appraisal_body or 0) > 1000 else TODO,
-        f"본문 있는 것 {appraisal_body:,}건", "지금은 상태가 거짓말을 한다")
+        FIXED_LIMIT if (거짓 or 0) < 100 else TODO,
+        f"본문 있는 것 {appraisal_body:,}건 · 거짓 '수집됨' {거짓:,}건",
+        "본문은 협회 뷰어라 원천 불가(함정 ⑧). 상태는 정직해졌다")
 
     # G07 — 사건명
     ctype = q1("SELECT COUNT(*) FROM auction_items WHERE is_active=1 AND case_type!=''")
@@ -385,10 +437,12 @@ def checks() -> list[dict]:
 
     # G13 — 웹이 안 받는 것
     unused = [f for f in ("transactions", "past_sales", "registry_search_hint") if web_uses(f) is False]
+    건물, 믿을만 = building_match_rate()
+    비율 = f"건물 매칭 {믿을만*100//건물}%({믿을만}/{건물})" if 건물 else "새 모양 없음"
     add("G13", "웹이 안 받는 payload", "B+D",
-        DONE if not unused else TODO,
-        ("웹 미사용: " + ", ".join(unused)) if unused else "모두 사용 중",
-        "실거래가는 매칭률부터 올려야 한다(B)")
+        DONE if not unused else (WIP if 건물 and 믿을만 * 3 > 건물 else TODO),
+        f"{비율} · " + (("웹 미사용: " + ", ".join(unused)) if unused else "웹이 모두 사용"),
+        "B 몫(매칭률)과 D 몫(화면 표시)이 따로다. 토지는 본질상 0%")
 
     # G14 — 위험도
     low_ok = screening_can_say_low()
@@ -399,22 +453,39 @@ def checks() -> list[dict]:
 
     # G15 — 배당요구종기공고
     notice = src_has("crawler.py", "142M01") or src_has("crawler.py", "배당요구종기공고")
+    공고 = q1("SELECT COUNT(*) FROM auction_notices") or 0
+    공고법원 = q1("SELECT COUNT(DISTINCT court) FROM auction_notices") or 0
     add("G15", "배당요구종기공고 수집", "A",
-        DONE if notice else TODO,
-        "수집 코드 있음" if notice else "화면 미수집",
-        "표본 100% 미보유 — 최대 격차", by="코드")
+        DONE if 공고 > 1000 else (WIP if notice else TODO),
+        f"공고로 받은 사건 {공고:,}건 · 법원 {공고법원}곳"
+        if 공고 else ("수집 코드 있음" if notice else "화면 미수집"),
+        "사건번호만 있다 — 기일·감정가는 아직 없다(감정평가 전)")
 
     # G16 — 제약
     add("G16", "문서 조회 창(제약)", "전체", FIXED_LIMIT,
         "명세서 기일 1주 전~ / 조사서·평가서 2주 전~", "고칠 것 없음. 알고만 있을 것", by="—")
 
     # G17 — 커버리지 경고
-    same_day = src_has("store.py", "same_day") or src_has("cli.py", "같은 날")
+    # 문구를 엉뚱한 파일에서 찾고 있었다 — '같은 날' 은 store.py 에 있다.
+    # 변수명을 한글로 쓴 코드라 영문 이름으로 grep 하면 영영 못 찾는다.
+    same_day = src_has("store.py", "최근최대")
     cyc = (ROOT / "scripts" / "cycle_value.py").exists()
+    자정 = src_has("cli.py", "_refresh_current_window")
+    들어간수 = src_has("cli.py", "들어간수")
+    고친것 = [이름 for 이름, 됨 in (("자정 넘김", 자정), ("들어간 수로 셈", 들어간수),
+                                ("같은 날 비교", same_day)) if 됨]
+    울림 = recent_coverage_warnings()
+    잰값 = " · ".join(고친것) if 고친것 else "실측 도구만 있음"
+    잰것 = False
+    if 울림 is not None:
+        경고수, 판정수 = 울림
+        잰것 = 판정수 > 0
+        잰값 += (f" · 오늘 경고 {경고수}건/판정 {판정수}회" if 잰것
+                 else " · **오늘은 판정이 안 돌았다**(quick 사이클만)")
     add("G17", "커버리지 경고 오탐", "C+A",
-        DONE if same_day else (WIP if cyc else TODO),
-        ("판정 로직 수정됨" if same_day else "실측 도구만 있음"),
-        "사이클 축소는 이 계산 뒤에", by="코드")
+        DONE if len(고친것) == 3 and 잰것 else (WIP if 고친것 or cyc else TODO),
+        잰값, "남은 것: 망가진 사이클 즉시 재시도(2번)",
+        by="측정" if 잰것 else "코드")
 
     return out
 
