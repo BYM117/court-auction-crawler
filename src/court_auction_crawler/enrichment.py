@@ -432,6 +432,7 @@ def public_auction_enrichment(item: dict[str, Any]) -> dict[str, Any]:
     minimum_bid = parse_first_money(item.get("minimum_bid"))
     minimum_bid_percent = parse_bid_percent(item.get("minimum_bid"), appraisal, minimum_bid)
     address_info = parse_property_address(item.get("address", ""))
+    요항표 = str((item.get("detail") or {}).get("appraisal_summary") or "")
     fail_count = parse_fail_count(item.get("status", ""))
     active = parse_item_active(item)
     screening = build_screening(item, appraisal, minimum_bid, minimum_bid_percent, address_info, fail_count)
@@ -555,7 +556,10 @@ def public_auction_enrichment(item: dict[str, Any]) -> dict[str, Any]:
             # 감정평가서 PDF 는 협회 서버라 못 받지만(G06), 법원이 화면에 주는 요항표
             # 요약은 받는다 — 위치·주위환경·교통·건물 구조·이용상태·설비내역이
             # 평가사가 쓴 문장 그대로다. 실측 94~1,458자.
-            "appraisal_summary": str((item.get("detail") or {}).get("appraisal_summary") or ""),
+            "appraisal_summary": 요항표,
+            # **문장이 아니라 사실을 싣는다.** 화면은 이쪽을 쓴다 — 검색·필터·비교가
+            # 되고, 평가사가 쓴 문장을 그대로 옮기지 않아도 된다.
+            "appraisal_facts": appraisal_facts(요항표),
             **build_registry_summary(item),
         },
         "price": {
@@ -823,6 +827,91 @@ def build_screening(
 # 그래서 받아 둔 파일이 있어도 내려받기 주소를 내보내지 않는다 — 재배포가 된다.
 # 화면에 보여줄 내용은 법원이 직접 공개하는 `property.appraisal_summary` 로 간다.
 RESTRICTED_DOCUMENTS = ("감정평가서",)
+
+# 요항표는 `N) 제목 내용` 이 이어 붙은 글이다. 제목 어휘 15개로 실측 94%를 맞춘다.
+# 양식이 둘이라 둘 다 담는다 — 구분건물(건물의 구조·설비내역)과 토지(형태·제시목록 외).
+_APPRAISAL_HEADINGS = (
+    "위치 및 주위환경", "교통상황", "건물의 구조", "이용상태", "설비내역",
+    "토지의 형상 및 이용상태", "형태 및 이용상태", "인접 도로상태등", "인접 도로상태",
+    "토지이용계획 및 제한상태", "제시목록 외의 물건", "공부와의 차이",
+    "부합물 및 종물", "기타참고사항", "임대관계",
+)
+_APPRAISAL_SPLIT = re.compile(r"(?:(?<=\s)|^)\d{1,2}\)\s*")
+# '비었다' 는 말이 여러 모양이다. **띄어쓰기까지 지우고** 봐야 한다 —
+# 실측에서 `없 음.` 이 120건으로 1위였고, 그걸 못 걸러 '공부와의 차이 있음' 이
+# 64%로 부풀었다. 실제로 차이가 있는 물건은 훨씬 적다.
+_BLANK_RE = re.compile(
+    r"^(?:[ㅡ\-–—~.·:：]*|없음|없슴|없습니다|해당사항없음|해당사항없습니다|"
+    r"해당없음|해당없습니다|미상|불명|알수없음)[.]?$")
+
+
+def split_appraisal_summary(text: str) -> dict[str, str]:
+    """요항표 글을 항목별로 가른다. 제목은 알려진 어휘로만 맞춘다.
+
+    번호로만 자르면 본문 속 `1) 2)` 나열까지 항목으로 오인한다. 어휘를 두면
+    못 맞춘 조각은 조용히 버려지고, 그 비율(실측 6%)이 곧 어휘를 넓힐 신호가 된다.
+    """
+    out: dict[str, str] = {}
+    for 조각 in _APPRAISAL_SPLIT.split(str(text or "")):
+        조각 = 조각.strip()
+        for 제목 in _APPRAISAL_HEADINGS:
+            if 조각.startswith(제목):
+                본문 = 조각[len(제목):].strip(" :：")
+                if 본문 and 제목 not in out:
+                    out[제목] = 본문
+                break
+    return out
+
+
+def _has_content(value: str) -> bool:
+    """'없 음.', '해당사항 없음', '-' 처럼 **비었다는 뜻의 표기**를 내용으로 세지 않는다."""
+    깎음 = re.sub(r"\s+", "", str(value or ""))
+    return bool(깎음) and not _BLANK_RE.match(깎음)
+
+
+def appraisal_facts(text: str) -> dict[str, Any]:
+    """요항표에서 **사실만** 뽑는다. 평가사가 쓴 문장은 그대로 옮기지 않는다.
+
+    사실(사용승인일·구조·형상·도로·설비)은 저작권 대상이 아니고, 무엇보다
+    **검색·필터·비교가 된다.** 1,500자 문단은 사람이 안 읽는다.
+
+    경매의 대표적 함정 셋이 이 글에 그대로 들어 있다.
+      · 제시목록 외의 물건 — 매각에서 빠지는 수목·구조물
+      · 공부와의 차이     — 장부의 지목·면적과 현황이 다름
+      · 맹지             — 도로에 안 붙은 땅
+    지금 위험도가 모든 물건에 붙이는 '권리확인 필요' 보다 훨씬 쓸모 있다(G14).
+    """
+    항목 = split_appraisal_summary(text)
+    전체 = str(text or "")
+    facts: dict[str, Any] = {}
+
+    도로 = 항목.get("인접 도로상태등") or 항목.get("인접 도로상태") or ""
+    if 도로:
+        facts["도로"] = {
+            "맹지": ("맹지" in 도로) or ("접하지" in 도로 and "않" in 도로),
+            "포장": "포장도로" in 도로,
+        }
+    facts["제시외물건"] = _has_content(항목.get("제시목록 외의 물건", "")) or _has_content(
+        항목.get("부합물 및 종물", ""))
+    facts["공부와_차이"] = _has_content(항목.get("공부와의 차이", ""))
+
+    m = re.search(r"사용승인일\s*[:：]?\s*(\d{4})[.\-/](\d{1,2})[.\-/](\d{1,2})", 전체)
+    if m:
+        facts["사용승인일"] = f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
+    m = re.search(r"((?:철근|철골|경량철골|벽돌|블록|목|연와|석)[가-힣]*(?:\s*[가-힣]+)?조)", 전체)
+    if m:
+        facts["구조"] = re.sub(r"\s+", " ", m.group(1)).strip()
+    m = re.search(r"((?:부정|정방|장방|세장|사다리|자루|삼각|가로장방|세로장방)형)", 전체)
+    if m:
+        facts["토지형상"] = m.group(1)
+    if "도시가스" in 전체:
+        facts["난방"] = "도시가스"
+    elif "개별난방" in 전체:
+        facts["난방"] = "개별난방"
+    elif "중앙난방" in 전체 or "지역난방" in 전체:
+        facts["난방"] = "중앙·지역난방"
+    facts["승강기"] = "승강기" in 전체
+    return facts
 
 
 def public_auction_detail(item: dict[str, Any]) -> dict[str, Any]:

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import html
+
 import asyncio
 import base64
 import binascii
@@ -668,7 +670,7 @@ class CourtAuctionDetailCrawler:
         await self._open_near_sales(page)
         tables = await extract_tables(page)
         sections = await extract_sections(page)
-        appraisal_summary = await extract_appraisal_summary(page)
+        appraisal_summary = html.unescape(await extract_appraisal_summary(page))
         photos = await page.evaluate(
             """
             () => [...document.querySelectorAll('img')]
