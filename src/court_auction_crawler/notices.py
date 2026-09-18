@@ -135,7 +135,9 @@ async def collect_notices(
                     else:
                         empty.add((court, dept))
                 if on_court:
-                    on_court(court, len(depts), 걸린것)
+                    # 이번 법원 몫을 넘겨 준다 — 호출자가 바로 저장할 수 있게.
+                    # 다 돌고 한 번에 쓰면 중간에 죽을 때 앞의 것을 통째로 잃는다.
+                    on_court(court, len(depts), 걸린것, rows[len(rows) - 걸린것:])
         finally:
             await browser.close()
     return rows, empty

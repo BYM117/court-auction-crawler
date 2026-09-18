@@ -550,11 +550,21 @@ def main(argv: list[str] | None = None) -> int:
         courts = _notice_courts(args.court, args.court_limit)
         print(f"배당요구종기공고 수집: 법원 {len(courts)}곳")
 
-        def 진행(court: str, depts: int, got: int) -> None:
-            print(f"  [{court}] 경매계 {depts}개 → {got}건", flush=True)
+        # **법원 하나가 끝날 때마다 쓴다.** 60곳을 다 돌고 마지막에 한 번 쓰면
+        # 55번째에서 죽을 때 앞의 54곳을 통째로 날린다. 공고는 종기가 지나면
+        # 사라지므로(실측) 날린 것을 다시 못 얻을 수도 있다.
+        누적 = {"inserted": 0, "updated": 0}
+
+        def 진행(court: str, depts: int, got: int, rows: list | None = None) -> None:
+            if rows:
+                result = store.upsert_notices(rows)
+                누적["inserted"] += result["inserted"]
+                누적["updated"] += result["updated"]
+            print(f"  [{court}] 경매계 {depts}개 → {got}건"
+                  f" (누적 신규 {누적['inserted']})", flush=True)
 
         rows, empty = collect_notices_sync(courts, headful=args.headful, on_court=진행)
-        result = store.upsert_notices(rows)
+        result = 누적
         print(f"수집 {len(rows)}건 → 신규 {result['inserted']} · 갱신 {result['updated']}")
         print(f"0건이던 (법원,계) {len(empty)}개 — 다음 회차에 건너뛸 후보")
         missing = store.notices_not_in_items()
