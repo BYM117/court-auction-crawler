@@ -995,8 +995,15 @@ class AuctionStore:
                        detail_fail_count, last_changed_at
                   FROM auction_items
                  WHERE {' AND '.join(f'({clause})' for clause in clauses)}
-                 -- 살아 있는 물건이 먼저다. 사라진 물건 훑기가 산 물건을 굶기면 안 된다.
-                 ORDER BY is_active DESC,
+                 -- **시한이 있는 것이 먼저다.** 사라진 물건은 종국 후 30일이 지나면
+                 -- 법원이 기일정보를 안 준다(함정 ⑥) — 그때 놓치면 취하·기각을
+                 -- 영영 모른다. 산 물건은 내일도 거기 있다. 만료가 임박한 훑기만
+                 -- 앞세우고 나머지는 종전대로 산 물건을 먼저 본다.
+                 --
+                 -- 2026-09-18 실측: 감정평가서 상태 교정으로 활성 32,875건이 큐에
+                 -- 들어오자 훑기 4,194건이 통째로 뒤로 밀려 종국 확인이 0건이었다.
+                 ORDER BY (is_active = 0 AND COALESCE(last_seen_at, '') < ?) DESC,
+                          is_active DESC,
                           (detail_collected_at IS NULL) DESC,
                           (REPLACE(SUBSTR(sale_date, 1, 10), '.', '-') > ?) DESC,
                           (sale_date IS NULL OR sale_date = '') ASC,
@@ -1006,7 +1013,12 @@ class AuctionStore:
                           last_seen_at DESC
                  LIMIT ?
                 """,
-                [*params, date.today().isoformat(), row_limit],
+                # `?` 는 WHERE → ORDER BY → LIMIT 순서로 소비된다. ORDER BY 것을
+                # 앞에 두면 WHERE 자리로 흘러 들어가 조용히 다른 비교가 된다.
+                # 만료 7일 전부터 급한 것으로 본다(훑기 창 30일 → 23일 이상).
+                [*params,
+                 closing_sweep_cutoff(max(closing_sweep_days - 7, 1)),
+                 date.today().isoformat(), row_limit],
             ).fetchall()
         return [dict(row) for row in rows]
 

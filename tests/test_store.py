@@ -1043,3 +1043,54 @@ class 커버리지경고Test(unittest.TestCase):
         self.store.record_court_stats({("current", "부천지원"): 130})
         경고 = self.store.record_court_stats({("current", "다른법원"): 100})
         self.assertTrue(any("부천지원" in w and "누락" in w for w in 경고))
+
+
+class 훑기우선순위Test(unittest.TestCase):
+    """시한이 있는 것이 먼저다 (G03).
+
+    사라진 물건은 종국 후 30일이 지나면 법원이 기일정보를 안 준다(함정 ⑥).
+    그때 놓치면 취하·기각을 영영 모른다. 산 물건은 내일도 거기 있다.
+
+    2026-09-18 실측: 감정평가서 상태 교정으로 활성 32,875건이 큐에 들어오자
+    훑기 4,194건이 통째로 뒤로 밀려 종국 확인이 0건이었다.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.store = AuctionStore(Path(self.tmp.name) / "t.sqlite3")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _넣기(self, key, *, active, 며칠전, 확인함=False):
+        from datetime import datetime, timedelta, timezone
+        본때 = (datetime.now(timezone.utc) - timedelta(days=며칠전)).isoformat()
+        with self.store.connect() as conn:
+            conn.execute(
+                "INSERT INTO auction_items (item_key, source, case_no, item_no, court,"
+                " address, category, raw_json, content_hash, first_seen_at, last_seen_at,"
+                " updated_at, is_active, detail_status, detail_checked_at)"
+                " VALUES (?,'진행','2025타경1','1','법원','주소','아파트','{}','h',?,?,?,?,?,?)",
+                (key, 본때, 본때, 본때, 1 if active else 0, "pending",
+                 본때 if 확인함 else None))
+
+    def test_만료_임박한_훑기가_산_물건보다_먼저다(self):
+        for i in range(30):
+            self._넣기(f"산것{i}", active=True, 며칠전=0)
+        self._넣기("곧만료", active=False, 며칠전=27)
+        큐 = [r["item_key"] for r in self.store.list_detail_targets(limit=40)]
+        self.assertIn("곧만료", 큐)
+        self.assertLess(큐.index("곧만료"), 5, "임박한 훑기가 뒤로 밀렸다")
+
+    def test_아직_여유_있는_훑기는_산_물건_뒤다(self):
+        for i in range(30):
+            self._넣기(f"산것{i}", active=True, 며칠전=0)
+        self._넣기("여유", active=False, 며칠전=3)
+        큐 = [r["item_key"] for r in self.store.list_detail_targets(limit=40)]
+        self.assertIn("여유", 큐)
+        self.assertGreater(큐.index("여유"), 5, "여유 있는 훑기가 산 물건을 굶긴다")
+
+    def test_창_밖으로_나간_것은_아예_안_잡는다(self):
+        self._넣기("너무오래", active=False, 며칠전=45)
+        큐 = [r["item_key"] for r in self.store.list_detail_targets(limit=40)]
+        self.assertNotIn("너무오래", 큐)
