@@ -55,3 +55,4 @@ DB 컬럼·코드·파일을 직접 보므로, 문서를 갱신 안 해도 틀�
 ## 함께 볼 것
 `../DATA-GAPS.md`(통합본·세션 분담) · `../SCREENING-REDESIGN.md` ·
 `../SALE-RESULT-GAP.md` · `../PRIVACY-MASKING.md` · `../DEVLOG.md`
+| 18 | [G18](G18-옥션원-상세구성-대조.md) | 옥션원 상세 구성 대조 | B+D | 갖고도 안 꺼내는 것 5종 |
