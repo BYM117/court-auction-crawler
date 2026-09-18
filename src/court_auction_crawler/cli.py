@@ -14,6 +14,7 @@ from .land_use import fetch_land_use
 from .common import RateLimitError, index_problems, self_restart, singleton_lock
 from .crawler import collect_all_sync, collect_popularity_sync, collect_results_sync, collect_sync
 from .detail_crawler import collect_details_sync
+from .notices import collect_notices_sync
 from .transactions import classify_transaction_kind, fetch_transactions
 from .web_push import apply_prune, build_uploader, plan_prune, push_once
 from .excel import save_items_to_excel
@@ -178,6 +179,18 @@ def build_parser() -> argparse.ArgumentParser:
     prune_web.add_argument("--endpoint-url", default="", help="S3 호환 엔드포인트")
     prune_web.add_argument("--delete", action="store_true", help="실제로 지웁니다(기본은 조회만).")
 
+    notices = subparsers.add_parser(
+        "collect-notices",
+        help="배당요구종기공고에서 경매개시결정된 사건번호를 수집합니다(G15). "
+             "매각공고보다 몇 달 이르지만 기일·감정가는 아직 없습니다.",
+    )
+    notices.add_argument("--db", default="data/auction.sqlite3", help="SQLite DB 경로")
+    notices.add_argument("--court", help="특정 법원명만 수집")
+    notices.add_argument("--court-limit", type=int, help="앞에서 N개 법원만 수집")
+    notices.add_argument("--headful", action="store_true", help="브라우저 창을 표시합니다.")
+    notices.add_argument("--gap", action="store_true",
+                         help="수집하지 않고, 공고에는 있는데 물건 목록에 없는 사건만 보여줍니다.")
+
     collect_results = subparsers.add_parser(
         "collect-results",
         help="법원별 매각결과(낙찰 여부·낙찰가)를 수집합니다. 사이트가 기일 직후 짧게만 제공합니다.",
@@ -283,6 +296,37 @@ def build_parser() -> argparse.ArgumentParser:
     collect_details.add_argument("--skip-documents", action="store_true", help="상세정보만 수집하고 법원 문서는 건너뜁니다.")
     collect_details.add_argument("--download-document-files", action="store_true", help="대용량 법원 문서 원본도 로컬에 저장합니다.")
     return parser
+
+
+def _notice_courts(only: str | None, limit: int | None) -> list[str]:
+    """공고 화면의 법원 목록을 그 화면에서 읽는다.
+
+    다른 화면의 목록을 빌려 쓰면 이름이 한 글자만 달라도 조용히 0건이 된다(함정 ④).
+    """
+    import asyncio  # noqa: PLC0415
+
+    from playwright.async_api import async_playwright  # noqa: PLC0415
+
+    from .notices import COURT_SELECT, NOTICE_URL  # noqa: PLC0415
+
+    async def 읽기() -> list[str]:
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            page = await browser.new_page(viewport={"width": 1440, "height": 1000})
+            await page.goto(NOTICE_URL, wait_until="domcontentloaded", timeout=30_000)
+            await page.wait_for_timeout(2000)
+            names = await page.evaluate(
+                "(sel) => { const e = document.querySelector(sel);"
+                " return e ? [...e.options].map((o) => o.text.trim()) : []; }", COURT_SELECT)
+            await browser.close()
+            return [n for n in names if n.endswith(("지방법원", "지원"))]
+
+    courts = asyncio.run(읽기())
+    if only:
+        courts = [c for c in courts if only in c]
+    if limit:
+        courts = courts[:limit]
+    return courts
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -490,6 +534,31 @@ def main(argv: list[str] | None = None) -> int:
         else:
             output.write_text(data, encoding="utf-8")
         print(f"스냅샷 저장: {output} (물건 {payload['total']}개, 생성 {payload['generated_at']})")
+        return 0
+
+    if args.command == "collect-notices":
+        store = AuctionStore(args.db)
+        if args.gap:
+            missing = store.notices_not_in_items()
+            total = store.count_notices()
+            print(f"공고로 받은 사건 {total}건 중 물건 목록에 없는 것 {len(missing)}건")
+            for row in missing[:20]:
+                print(f"  {row['case_no']}  개시 {row['opened_at']}  "
+                      f"종기 {row['dividend_deadline']}  {row['address'][:40]}")
+            return 0
+
+        courts = _notice_courts(args.court, args.court_limit)
+        print(f"배당요구종기공고 수집: 법원 {len(courts)}곳")
+
+        def 진행(court: str, depts: int, got: int) -> None:
+            print(f"  [{court}] 경매계 {depts}개 → {got}건", flush=True)
+
+        rows, empty = collect_notices_sync(courts, headful=args.headful, on_court=진행)
+        result = store.upsert_notices(rows)
+        print(f"수집 {len(rows)}건 → 신규 {result['inserted']} · 갱신 {result['updated']}")
+        print(f"0건이던 (법원,계) {len(empty)}개 — 다음 회차에 건너뛸 후보")
+        missing = store.notices_not_in_items()
+        print(f"물건 목록에 아직 없는 사건: {len(missing)}건")
         return 0
 
     if args.command == "collect-results":

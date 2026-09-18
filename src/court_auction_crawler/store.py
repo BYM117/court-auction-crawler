@@ -269,6 +269,24 @@ class AuctionStore:
                     checked_at TEXT NOT NULL
                 );
 
+                -- 배당요구종기공고(G15). 경매개시결정된 사건이 매각공고보다 몇 달 먼저
+                -- 여기 뜬다. **기일도 감정가도 없는 사건 단위**라 auction_items 에 섞으면
+                -- 웹 목록이 깨진다. 사건번호를 먼저 확보하는 것이 목적이라 따로 쌓는다.
+                CREATE TABLE IF NOT EXISTS auction_notices (
+                    court TEXT NOT NULL,
+                    case_no TEXT NOT NULL,
+                    address TEXT NOT NULL DEFAULT '',
+                    owner TEXT NOT NULL DEFAULT '',
+                    debtor TEXT NOT NULL DEFAULT '',
+                    notice_date TEXT NOT NULL DEFAULT '',
+                    dept TEXT NOT NULL DEFAULT '',
+                    opened_at TEXT NOT NULL DEFAULT '',
+                    dividend_deadline TEXT NOT NULL DEFAULT '',
+                    first_seen_at TEXT NOT NULL,
+                    last_seen_at TEXT NOT NULL,
+                    PRIMARY KEY (court, case_no)
+                );
+
                 CREATE TABLE IF NOT EXISTS auction_documents (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     item_key TEXT NOT NULL,
@@ -1446,6 +1464,65 @@ class AuctionStore:
                 """,
                 (json.dumps(detail or {}, ensure_ascii=False), status, utc_now(), utc_now(), item_key),
             )
+
+    def upsert_notices(self, rows: list[dict[str, Any]]) -> dict[str, int]:
+        """배당요구종기공고 행을 쌓는다. 이미 본 사건은 last_seen_at 만 민다.
+
+        **공고는 사라진다.** 배당요구종기일이 지나면 목록에서 빠지는 것으로 보인다.
+        그래서 지운 적이 없어도 '한 번 본 것'을 남겨 두는 것 자체가 값이다.
+        """
+        now = utc_now()
+        새로 = 갱신 = 0
+        with self.connect() as conn:
+            for row in rows:
+                court, case_no = str(row.get("court") or ""), str(row.get("case_no") or "")
+                if not court or not case_no:
+                    continue
+                cur = conn.execute(
+                    """
+                    UPDATE auction_notices
+                       SET address = ?, owner = ?, debtor = ?, notice_date = ?, dept = ?,
+                           opened_at = ?, dividend_deadline = ?, last_seen_at = ?
+                     WHERE court = ? AND case_no = ?
+                    """,
+                    (row.get("address", ""), row.get("owner", ""), row.get("debtor", ""),
+                     row.get("notice_date", ""), row.get("dept", ""), row.get("opened_at", ""),
+                     row.get("dividend_deadline", ""), now, court, case_no),
+                )
+                if cur.rowcount:
+                    갱신 += 1
+                    continue
+                conn.execute(
+                    """
+                    INSERT INTO auction_notices
+                        (court, case_no, address, owner, debtor, notice_date, dept,
+                         opened_at, dividend_deadline, first_seen_at, last_seen_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (court, case_no, row.get("address", ""), row.get("owner", ""),
+                     row.get("debtor", ""), row.get("notice_date", ""), row.get("dept", ""),
+                     row.get("opened_at", ""), row.get("dividend_deadline", ""), now, now),
+                )
+                새로 += 1
+        return {"inserted": 새로, "updated": 갱신}
+
+    def count_notices(self) -> int:
+        with self.connect() as conn:
+            return int(conn.execute("SELECT COUNT(*) FROM auction_notices").fetchone()[0])
+
+    def notices_not_in_items(self, limit: int = 0) -> list[dict[str, Any]]:
+        """공고에는 있는데 물건 목록에는 아직 없는 사건. G15 가 재는 격차 그 자체다."""
+        sql = """
+            SELECT n.court, n.case_no, n.opened_at, n.dividend_deadline, n.address
+              FROM auction_notices AS n
+             WHERE NOT EXISTS (
+                   SELECT 1 FROM auction_items AS i WHERE i.case_no = n.case_no)
+             ORDER BY n.opened_at DESC
+        """
+        if limit:
+            sql += f" LIMIT {int(limit)}"
+        with self.connect() as conn:
+            return [dict(r) for r in conn.execute(sql)]
 
     def list_missing_enrichment(
         self,
