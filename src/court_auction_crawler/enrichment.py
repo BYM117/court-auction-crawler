@@ -818,6 +818,13 @@ def build_screening(
     }
 
 
+# 감정평가서 원본은 한국감정평가사협회 서버에 있고, 그 뷰어 페이지가
+# **"무단 복제 및 링크하여 사용하는 경우 위반사항에 따라 형사처벌"** 을 명시한다.
+# 그래서 받아 둔 파일이 있어도 내려받기 주소를 내보내지 않는다 — 재배포가 된다.
+# 화면에 보여줄 내용은 법원이 직접 공개하는 `property.appraisal_summary` 로 간다.
+RESTRICTED_DOCUMENTS = ("감정평가서",)
+
+
 def public_auction_detail(item: dict[str, Any]) -> dict[str, Any]:
     summary = public_auction_summary(item)
     summary.update(
@@ -842,12 +849,20 @@ def public_auction_detail(item: dict[str, Any]) -> dict[str, Any]:
                 "fail_count": item.get("detail_fail_count", 0),
                 "error": item.get("detail_error", ""),
             },
+            # `metadata_json` 은 내보내지 않는다. 수집 당시의 원본 부스러기라 화면이
+            # 쓸 일이 없는데, 감정평가서 것에는 **한국감정평가사협회 뷰어·PDF 주소**가
+            # 들어 있다. 그 페이지가 "무단 복제 및 **링크하여** 사용하는 경우 형사처벌"
+            # 을 명시하므로, 우리 payload 에 실어 내보내는 것 자체가 그 링크 사용이다.
+            # 진단이 필요하면 DB 원본(`auction_documents.metadata_json`)을 본다.
             "documents": [
                 {
-                    **document,
+                    **{k: v for k, v in document.items()
+                       if k not in ("metadata_json", "file_path")},
                     "url": (
                         f"/api/v1/documents/{document.get('id')}"
-                        if document.get("status") == "collected" and document.get("file_size")
+                        if document.get("status") == "collected"
+                        and document.get("file_size")
+                        and document.get("document_type") not in RESTRICTED_DOCUMENTS
                         else ""
                     ),
                 }
