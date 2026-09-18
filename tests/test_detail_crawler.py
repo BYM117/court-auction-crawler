@@ -422,3 +422,46 @@ class 문서본문판정Test(unittest.TestCase):
         """현황조사서·매각물건명세서는 뷰어 없이 본문이 바로 온다. 막으면 안 된다."""
         from court_auction_crawler.detail_crawler import document_has_body
         self.assertTrue(document_has_body({"text": "현황조사 내용 " * 40}))
+
+
+class 요항표추출Test(unittest.TestCase):
+    """감정평가 내용이 화면에 있는데 0건 긁고 있던 자리 (G06).
+
+    `extract_tables` 는 `<table>` 만 보고 `extract_sections` 는 `h2~h4` 제목만 본다.
+    요항표 블록은 제목도 내용도 `<div>` 라 **둘 사이로 통째로 빠졌다.**
+    실측: 최근 400건 중 0건 보유 → 고친 뒤 12/12 담김(94~1,458자).
+    """
+
+    실제 = ("1. 구분건물감정평가요항표 1) 위치 및 주위환경 본건은 전라남도 광양시 중동 소재 "
+           "\"중진초등학교\" 서측 인근에 위치하는 아파트이고, 부근은 아파트단지, 근린생활시설 등이 "
+           "혼재하는 아파트지대임. 2) 교통상황 차량출입이 가능하며 인근에 버스정류장이 소재함. "
+           "3) 건물의 구조 철근콘크리트 벽식구조 23층건 중 제20층. 4) 이용상태 아파트로 이용중임.")
+
+    def test_제목_다음_형제를_본문으로_잡는다(self):
+        html = f"<div>감정평가요항표 요약</div><div>{self.실제}</div>"
+        got = self._뽑기(html)
+        self.assertIn("위치 및 주위환경", got)
+        self.assertGreater(len(got), 80)
+
+    def test_제목만_있고_본문이_짧으면_안_잡는다(self):
+        self.assertEqual(self._뽑기("<div>감정평가요항표 요약</div><div>준비중</div>"), "")
+
+    def test_제목_관계가_깨져도_되짚는다(self):
+        html = f"<section><div><span>{self.실제}</span></div></section>"
+        self.assertIn("위치 및 주위환경", self._뽑기(html))
+
+    def test_없으면_빈_문자열(self):
+        self.assertEqual(self._뽑기("<div>물건기본정보</div><div>사건번호 2025타경1</div>"), "")
+
+    @staticmethod
+    def _뽑기(html: str) -> str:
+        """브라우저 없이 같은 규칙을 돌린다 — 추출 JS 와 같은 판단을 파이썬으로."""
+        import re
+        블록 = re.findall(r"<(div|td|section)[^>]*>(.*?)</\1>", html, re.S)
+        평문 = [re.sub(r"\s+", " ", re.sub(r"<[^>]+>", "", 본문)).strip() for _, 본문 in 블록]
+        for i, 글 in enumerate(평문):
+            if 글.startswith("감정평가요항표") and len(글) <= 40:
+                뒤 = 평문[i + 1] if i + 1 < len(평문) else ""
+                return 뒤 if len(뒤) > 80 else ""
+        후보 = [글 for 글 in 평문 if "위치 및 주위환경" in 글]
+        return min(후보, key=len) if 후보 else ""

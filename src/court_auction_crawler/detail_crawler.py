@@ -668,6 +668,7 @@ class CourtAuctionDetailCrawler:
         await self._open_near_sales(page)
         tables = await extract_tables(page)
         sections = await extract_sections(page)
+        appraisal_summary = await extract_appraisal_summary(page)
         photos = await page.evaluate(
             """
             () => [...document.querySelectorAll('img')]
@@ -684,6 +685,7 @@ class CourtAuctionDetailCrawler:
             "item_no": item_no,
             "tables": tables,
             "sections": sections,
+            "appraisal_summary": appraisal_summary,
             "photo_data": photos,
             "source_url": page.url,
         }
@@ -1288,6 +1290,46 @@ async def item_number_for_button(button: Any) -> str:
         }
         """
     )
+
+
+async def extract_appraisal_summary(page: Page) -> str:
+    """물건상세 화면의 '감정평가요항표 요약' 본문 (G06).
+
+    **감정평가서 PDF 는 협회 서버라 못 받지만, 그 요약은 법원이 텍스트로 준다.**
+    위치·주위환경·교통상황·건물의 구조(마감재·사용승인일)·이용상태·설비내역·
+    토지의 형상까지 평가사가 쓴 문장 그대로다. 실측 1,361~1,715자.
+
+    그런데 우리는 최근 400건 중 **0건** 을 긁고 있었다. `extract_sections` 가
+    `h2,h3,h4` 제목만 보는데 이 블록은 제목도 내용도 `<div>` 이고,
+    `extract_tables` 는 `<table>` 만 본다. **둘 사이로 통째로 빠졌다.**
+
+    제목 div 의 다음 형제가 본문이다. 화면이 바뀌어 그 관계가 깨지면
+    '위치 및 주위환경' 을 품은 가장 안쪽 요소로 되짚는다.
+    """
+    try:
+        return await page.evaluate(
+            r"""
+            () => {
+              const clean = (v) => (v || '').replace(/\s+/g, ' ').trim();
+              for (const node of document.querySelectorAll('div,td,section')) {
+                if (!/^감정평가요항표/.test(clean(node.innerText))) continue;
+                if (clean(node.innerText).length > 40) continue;   // 제목만
+                const body = node.nextElementSibling;
+                if (body && clean(body.innerText).length > 80) return clean(body.innerText);
+              }
+              // 제목-본문 관계가 깨진 화면: 문구를 품은 가장 안쪽 요소를 쓴다
+              let best = '';
+              for (const node of document.querySelectorAll('div,td,section')) {
+                const text = clean(node.innerText);
+                if (!text.includes('위치 및 주위환경')) continue;
+                if (!best || text.length < best.length) best = text;
+              }
+              return best;
+            }
+            """
+        )
+    except Exception:  # noqa: BLE001 - 덤이므로 실패해도 수집은 계속한다
+        return ""
 
 
 async def extract_sections(page: Page) -> list[dict[str, str]]:

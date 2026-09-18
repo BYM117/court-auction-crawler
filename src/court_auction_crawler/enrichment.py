@@ -552,6 +552,10 @@ def public_auction_enrichment(item: dict[str, Any]) -> dict[str, Any]:
             },
             "share": parse_share_info(address_info),
             "registry_search_hint": build_registry_search_hint(address_info, item.get("category", "")),
+            # 감정평가서 PDF 는 협회 서버라 못 받지만(G06), 법원이 화면에 주는 요항표
+            # 요약은 받는다 — 위치·주위환경·교통·건물 구조·이용상태·설비내역이
+            # 평가사가 쓴 문장 그대로다. 실측 94~1,458자.
+            "appraisal_summary": str((item.get("detail") or {}).get("appraisal_summary") or ""),
             **build_registry_summary(item),
         },
         "price": {

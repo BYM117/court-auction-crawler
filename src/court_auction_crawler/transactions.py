@@ -29,6 +29,12 @@ API_SETS = {
     "villa": ("RTMSDataSvcRHTrade/getRTMSDataSvcRHTrade", "RTMSDataSvcRHRent/getRTMSDataSvcRHRent", ("mhouseNm",)),
     "officetel": ("RTMSDataSvcOffiTrade/getRTMSDataSvcOffiTrade", "RTMSDataSvcOffiRent/getRTMSDataSvcOffiRent", ("offiNm",)),
     "land": ("RTMSDataSvcLandTrade/getRTMSDataSvcLandTrade", "", ()),
+    # 단독·다가구와 상가·근린시설도 국토부가 준다. 안 부르고 있어서 활성 2,100건이
+    # '대상외' 로 빠져 있었다 — 못 맞춘 게 아니라 **묻지도 않았다**.
+    # 둘 다 `umdNm`·`jibun` 을 주므로 필지 대조가 그대로 걸린다.
+    "house": ("RTMSDataSvcSHTrade/getRTMSDataSvcSHTrade",
+              "RTMSDataSvcSHRent/getRTMSDataSvcSHRent", ()),
+    "commercial": ("RTMSDataSvcNrgTrade/getRTMSDataSvcNrgTrade", "", ("bldgNm",)),
 }
 NAME_FIELDS = ("aptNm", "offiNm", "mhouseNm", "bldgNm")
 AMOUNT_FIELDS = ("dealAmount",)
@@ -46,6 +52,12 @@ class TransactionSummary:
 
 
 def classify_transaction_kind(category: str, address: str = "") -> str:
+    """물건 종류를 실거래 API 갈래로 옮긴다. 빈 문자열이면 **실거래가 없는 물건**이다.
+
+    예전에는 아파트·빌라·오피스텔·토지 넷뿐이라 근린시설 1,545건·상가 182건·
+    단독다가구 309건이 통째로 '대상외' 였다. 못 맞춘 게 아니라 **묻지도 않았다.**
+    자동차·중기(774건)는 진짜로 부동산 실거래가 없으므로 그대로 빈 문자열이다.
+    """
     text = f"{category} {address}"
     if re.search(r"아파트", text):
         return "apart"
@@ -53,6 +65,13 @@ def classify_transaction_kind(category: str, address: str = "") -> str:
         return "officetel"
     if re.search(r"다세대|연립|빌라", text):
         return "villa"
+    # 자동차·중기·선박은 부동산이 아니다. 아래 갈래에 섞이기 전에 먼저 걸러낸다.
+    if re.search(r"자동차|중기|선박|항공기|건설기계", text):
+        return ""
+    if re.search(r"단독주택|다가구", text):
+        return "house"
+    if re.search(r"근린시설|상가|업무시설|공장|창고|숙박|판매시설", text):
+        return "commercial"
     if re.search(r"임야|대지|잡종지|과수원|목장용지|공장용지|도로|하천|구거|전\b|답\b|토지", text):
         return "land"
     return ""
