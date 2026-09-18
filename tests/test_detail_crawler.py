@@ -361,3 +361,64 @@ class GovernorFreshBrowserTests(unittest.TestCase):
         governor.record_distress()
         governor.record_distress()
         self.assertFalse(governor.wants_fresh_browser)
+
+
+class 문서본문판정Test(unittest.TestCase):
+    """'수집됨'이 거짓말을 하던 자리 (G06).
+
+    예전 판정은 iframe 에 `text`·`tables`·`resources` 가 하나라도 있으면 참이었다.
+    감정평가서 뷰어는 Adobe 안내 이미지와 "열람이 안될 경우…" 문구를 **항상** 보내므로,
+    본문을 한 글자도 못 받은 56,123건이 `collected` 로 적혔다.
+    """
+
+    껍데기 = {
+        "iframe": {
+            "resources": ["https://get.adobe.com/kr/reader/",
+                          "https://ca.kapanet.or.kr/image/getacro.gif"],
+            "tables": [{"caption": "", "rows": [["감정평가서", "(열람이 안될 경우 옆의 노란색 아이콘을 클릭하면 아크로벳을 다운받을수 있습니다.)"]]}],
+            "text": "감정평가서\t(열람이 안될 경우 옆의 노란색 아이콘을 클릭하면 아크로벳을 다운받을수 있습니다.)",
+            "url": "https://ca.kapanet.or.kr/view/000530/20240130000964/1/240126-19-0001/20240202",
+        },
+        "text": "",
+    }
+
+    def test_뷰어_껍데기는_내용이_아니다(self):
+        from court_auction_crawler.detail_crawler import document_has_body
+        self.assertFalse(document_has_body(self.껍데기))
+
+    def test_PDF_주소를_아는_것은_가진_것이_아니다(self):
+        """받아 올 실마리일 뿐이다. 주소는 metadata 에 남아 나중에 쓴다."""
+        from court_auction_crawler.detail_crawler import document_has_body
+        주소만 = {"iframe": dict(self.껍데기["iframe"])}
+        주소만["iframe"]["resources"] = self.껍데기["iframe"]["resources"] + [
+            "https://ca.kapanet.or.kr/825B2D1A/001/EF300039/000530-20240130000964-1-0000.pdf"]
+        self.assertFalse(document_has_body(주소만))
+
+    def test_내려받은_파일이_있으면_내용이다(self):
+        from court_auction_crawler.detail_crawler import document_has_body
+        self.assertTrue(document_has_body(self.껍데기, {"file_path": "data/docs/x.pdf"}))
+
+    def test_본문이_길면_내용이다(self):
+        from court_auction_crawler.detail_crawler import document_has_body
+        self.assertTrue(document_has_body({"text": "가" * 250}))
+
+    def test_짧은_본문은_내용이_아니다(self):
+        from court_auction_crawler.detail_crawler import document_has_body
+        self.assertFalse(document_has_body({"text": "감정평가서"}))
+
+    def test_뷰어가_비면_바깥_머리표는_본문이_아니다(self):
+        """실측: 감정평가서 바깥 글자는 202~324자(법원·사건번호·명령회차 머리표)라
+        길이로 가르면 반드시 샌다. 현황조사서 최소 277자와 구간이 겹친다."""
+        from court_auction_crawler.detail_crawler import document_has_body
+        머리표만 = dict(self.껍데기)
+        머리표만["text"] = ("감정평가서 법원,사건번호,명령회차,중복병합사건 "
+                        "displayed in the table 법원 제주지방법원 사건번호 2024타경964 "
+                        "명령회차 1 회 중복병합사건 -choose- " * 4)
+        # 실측 최대(324자)를 넘겨 둔다 — 길이로는 못 가른다는 것이 요점이다
+        self.assertGreater(len(머리표만["text"]), 324)
+        self.assertFalse(document_has_body(머리표만))
+
+    def test_뷰어_없이_본문만_있으면_내용이다(self):
+        """현황조사서·매각물건명세서는 뷰어 없이 본문이 바로 온다. 막으면 안 된다."""
+        from court_auction_crawler.detail_crawler import document_has_body
+        self.assertTrue(document_has_body({"text": "현황조사 내용 " * 40}))

@@ -797,11 +797,7 @@ class CourtAuctionDetailCrawler:
                                 document_type,
                                 pdf_url,
                             )
-                    has_content = len(metadata.get("text", "")) >= 200 or bool(
-                        metadata.get("iframe", {}).get("text")
-                        or metadata.get("iframe", {}).get("tables")
-                        or metadata.get("iframe", {}).get("resources")
-                    )
+                    has_content = document_has_body(metadata, resource_download)
                     self.store.save_document_status(
                         target["item_key"],
                         document_type,
@@ -1202,6 +1198,46 @@ def sniff_image_mime(content: bytes) -> str:
     if content[:4] == b"RIFF" and content[8:12] == b"WEBP":
         return "image/webp"
     return ""
+
+
+# 뷰어 껍데기가 늘 붙여 보내는 안내 문구. 이것이 '내용'으로 세어지면 안 된다.
+_VIEWER_BOILERPLATE = ("열람이 안될 경우", "아크로벳", "PDF Viewer")
+DOCUMENT_BODY_MIN_CHARS = 200
+
+
+def document_has_body(metadata: dict[str, Any], download: dict[str, Any] | None = None) -> bool:
+    """문서 본문을 **실제로** 받았는가.
+
+    예전 판정은 iframe 에 `text`·`tables`·`resources` 가 **하나라도** 있으면 참이었다.
+    그런데 감정평가서 뷰어는 Adobe 안내 이미지(`getacro.gif`)와 "열람이 안될 경우…"
+    문구를 **항상** 보낸다. 그래서 본문을 한 글자도 못 받은 56,123건이 `collected`
+    로 적혔다 — 상태가 거짓말을 하니 아무도 문제를 몰랐다.
+
+    껍데기는 내용이 아니다. **읽을 수 있는 본문이나 내려받은 파일**만 센다.
+
+    PDF 주소를 아는 것도 내용이 아니다. 주소는 받아 올 실마리일 뿐 우리가 가진 것이
+    아니므로 `metadata_only` 로 남긴다 — 주소는 metadata 에 그대로 있어 나중에 쓴다.
+
+    **글자 수로 가르려 하면 또 틀린다.** 본문이 뷰어 안에 있을 때, 바깥 법원 화면에도
+    글자가 있다 — 법원·사건번호·명령회차가 적힌 머리표다. 그것이 202~324자라
+    threshold 를 어디에 두든 감정평가서가 '본문 있음' 으로 새어 나갔다(실측: 감정평가서
+    최대 324자 · 현황조사서 최소 277자로 구간이 겹친다).
+
+    그래서 길이가 아니라 **구조**로 가른다. 본문을 뷰어에 위임한 문서는 그 뷰어가
+    비어 있으면 본문이 없는 것이다. 바깥 머리표가 몇 자든 상관없다.
+    """
+    if download and download.get("file_path"):
+        return True
+
+    iframe = metadata.get("iframe") or {}
+    안쪽 = str(iframe.get("text") or "")
+    껍데기뿐 = any(말 in 안쪽 for 말 in _VIEWER_BOILERPLATE)
+    if iframe and (껍데기뿐 or not 안쪽.strip()):
+        # 본문을 남의 뷰어에 맡겨 놓고 그 뷰어가 비었다. 바깥 글자는 머리표다.
+        return False
+    if len(안쪽) >= DOCUMENT_BODY_MIN_CHARS:
+        return True
+    return len(str(metadata.get("text") or "")) >= DOCUMENT_BODY_MIN_CHARS
 
 
 async def extract_tables(page: Page) -> list[dict[str, Any]]:
