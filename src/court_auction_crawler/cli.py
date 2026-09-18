@@ -541,7 +541,12 @@ def main(argv: list[str] | None = None) -> int:
         if args.gap:
             missing = store.notices_not_in_items()
             total = store.count_notices()
-            print(f"공고로 받은 사건 {total}건 중 물건 목록에 없는 것 {len(missing)}건")
+            깔때기 = store.notice_funnel()
+            print(f"공고로 받은 사건 {total:,}건 중 물건 목록에 없는 것 {len(missing):,}건")
+            print(f"  이미 물건으로 넘어온 것 {깔때기['arrived']:,} · 기다리는 것 {깔때기['waiting']:,}")
+            if 깔때기["opened_to_sale_days"]:
+                print(f"  개시 → 매각기일 평균 {깔때기['opened_to_sale_days']}일"
+                      f" — 공고를 안 봤으면 그만큼 늦게 알았다")
             for row in missing[:20]:
                 print(f"  {row['case_no']}  개시 {row['opened_at']}  "
                       f"종기 {row['dividend_deadline']}  {row['address'][:40]}")

@@ -335,9 +335,18 @@ def checks() -> list[dict]:
         "special_rights에 포함" if share else "없음", by="코드")
 
     # G03 — 종국결과
+    # **훑기는 `detail_checked_at` 으로 판정한다.** 예전에는 `result_checked_at`
+    # (매각결과 보충용)을 세어 '훑음 43건' 으로 찍혔다 — 실제로는 9,935건이었다.
+    # 지표가 코드와 다른 열을 보면 일한 것이 안 한 것으로 보인다.
+    sweep_done = """is_active = 0
+          AND last_seen_at >= date('now', '-30 day')
+          AND detail_checked_at IS NOT NULL AND detail_checked_at > last_seen_at"""
+    sweep_left = """is_active = 0
+          AND last_seen_at >= date('now', '-30 day')
+          AND (detail_checked_at IS NULL OR detail_checked_at < last_seen_at)"""
     closed = q1("SELECT COUNT(*) FROM auction_items WHERE closing_result NOT IN ('','미종국')")
-    scanned = q1("SELECT COUNT(*) FROM auction_items WHERE result_checked_at IS NOT NULL")
-    left = q1("SELECT COUNT(*) FROM auction_items WHERE is_active=0 AND result_checked_at IS NULL")
+    scanned = q1(f"SELECT COUNT(*) FROM auction_items WHERE {sweep_done}")
+    left = q1(f"SELECT COUNT(*) FROM auction_items WHERE {sweep_left}")
     has_code = src_has("store.py", "result_checked_at")
     add("G03", "취하·기각 파악(종국결과)", "B→A",
         DONE if (closed or 0) > 100 else (WIP if has_code else TODO),

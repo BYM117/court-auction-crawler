@@ -1510,6 +1510,41 @@ class AuctionStore:
         with self.connect() as conn:
             return int(conn.execute("SELECT COUNT(*) FROM auction_notices").fetchone()[0])
 
+    def notice_funnel(self) -> dict[str, Any]:
+        """공고로 먼저 안 사건이 실제 물건으로 넘어오는 흐름.
+
+        **이 숫자가 G15 의 값어치다.** 공고는 기일이 잡히기 몇 달 전에 뜨고,
+        기일이 잡히면 기존 매각예정 파이프라인이 알아서 받아 간다. 그 사이의
+        시간이 우리가 남보다 먼저 아는 만큼이다.
+        """
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT COUNT(*) AS total,
+                       SUM(CASE WHEN EXISTS (
+                             SELECT 1 FROM auction_items i WHERE i.case_no = n.case_no)
+                           THEN 1 ELSE 0 END) AS arrived
+                  FROM auction_notices AS n
+                """
+            ).fetchone()
+            앞선날 = conn.execute(
+                """
+                SELECT AVG(julianday(replace(i.sale_date, '.', '-'))
+                           - julianday(replace(n.opened_at, '.', '-'))) AS days
+                  FROM auction_notices AS n
+                  JOIN auction_items AS i ON i.case_no = n.case_no
+                 WHERE n.opened_at != '' AND i.sale_date != ''
+                """
+            ).fetchone()
+        total = int(row["total"] or 0)
+        arrived = int(row["arrived"] or 0)
+        return {
+            "total": total,
+            "arrived": arrived,
+            "waiting": total - arrived,
+            "opened_to_sale_days": round(앞선날["days"], 1) if 앞선날 and 앞선날["days"] else None,
+        }
+
     def notices_not_in_items(self, limit: int = 0) -> list[dict[str, Any]]:
         """공고에는 있는데 물건 목록에는 아직 없는 사건. G15 가 재는 격차 그 자체다."""
         sql = """
