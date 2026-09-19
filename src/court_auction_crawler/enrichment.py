@@ -536,6 +536,12 @@ def public_auction_enrichment(item: dict[str, Any]) -> dict[str, Any]:
             # 받아 두고 안 꺼내던 것들(G18) — 청구금액·배당요구종기·개시일·
             # 임차인·가압류·지상권 유무. 새로 긁지 않고 상세 표에서 뽑는다.
             **build_case_basics(item.get("detail") or {}, parties),
+            # 다음 기일·최저가 **추정**(G18). 법원별 실측 체감률을 받아서 쓴다 —
+            # 일률적으로 30%를 깎으면 전체의 24%(서울남부·광주 등 80% 법원)에서
+            # 틀린 금액을 사실처럼 보여준다. 각 줄에 `estimated`·`basis` 가 붙는다.
+            "projected_sales": project_future_sales(
+                minimum_bid, item.get("sale_date", ""),
+                item.get("court_reduction_rate")) if active else [],
             # 법원 사이트의 다수조회·다수관심 화면에서 받은 인기도. 상위 물건에만 값이 있다.
             "popularity": {
                 "view_count": item.get("view_count") or (item.get("popularity") or {}).get("view_count"),
@@ -915,6 +921,59 @@ def build_case_basics(detail: dict[str, Any], parties: Any = None) -> dict[str, 
     out["has_seizure"] = 있나("가압류", "압류")
     # 법정지상권은 건물만 낙찰받고 땅을 못 쓰는 대표적 함정이다.
     out["has_surface_right"] = 있나("지상권")
+    return out
+
+
+# 기일 간격 중앙 35일(실측 44,524쌍, 25~75%가 35~42일).
+NEXT_SALE_GAP_DAYS = 35
+DEFAULT_REDUCTION_RATE = 70   # 전국 최빈. 법원별 실측값이 있으면 그것을 쓴다.
+
+
+def project_future_sales(
+    minimum_bid: int | None,
+    sale_date: str,
+    reduction_rate: int | None = None,
+    rounds: int = 3,
+) -> list[dict[str, Any]]:
+    """다음 기일과 최저가를 **추정**한다. 사실이 아니라 계산이다.
+
+    옥션원은 아직 안 잡힌 3차·4차를 계산해서 보여준다. 입찰자가 '얼마까지
+    기다릴까' 를 판단하는 정보라 값은 크다. 다만 **틀리면 비용도 크다.**
+
+    그래서 일률적으로 30%를 깎지 않는다. 실측 44,524쌍에서 70%가 75%·80%가 24%인데
+    **법원마다 갈린다**(인천·수원·부산 70% · 서울남부·광주 80%). 0.7 을 일괄
+    적용하면 전체의 24%에서 틀린 금액을 사실처럼 보여준다.
+    `store.court_reduction_rates()` 가 법원별 실측값을 준다.
+
+    돌려주는 각 줄에 `estimated: True` 와 `basis` 를 붙인다. **화면은 이것을
+    반드시 '예상' 으로 표시해야 한다** — 법원이 정한 값이 아니다.
+    """
+    from datetime import date as _date, timedelta as _td  # noqa: PLC0415
+
+    if not minimum_bid or minimum_bid <= 0:
+        return []
+    m = re.search(r"(\d{4})[.\-](\d{1,2})[.\-](\d{1,2})", str(sale_date or ""))
+    if not m:
+        return []
+    try:
+        시작 = _date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+    except ValueError:
+        return []
+    # **정수로 곱하고 나눈다.** 실수로 하면 254,100,000 × 0.7 이 177,869,999 가
+    # 되어 법원 금액과 1원씩 어긋난다(옥션원 표시값과 대조해 확인).
+    비율 = int(reduction_rate or DEFAULT_REDUCTION_RATE)
+    out: list[dict[str, Any]] = []
+    값 = int(minimum_bid)
+    날 = 시작
+    for _ in range(max(rounds, 0)):
+        값 = 값 * 비율 // 100
+        날 = 날 + _td(days=NEXT_SALE_GAP_DAYS)
+        out.append({
+            "sale_date": 날.strftime("%Y.%m.%d"),
+            "minimum_bid": 값,
+            "estimated": True,
+            "basis": f"유찰 시 {비율}% · 기일 간격 {NEXT_SALE_GAP_DAYS}일(실측 중앙)",
+        })
     return out
 
 

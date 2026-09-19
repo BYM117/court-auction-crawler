@@ -228,7 +228,26 @@ class PushSummary:
 
 
 def _snapshot_page(store: AuctionStore, **filters: Any) -> list[dict[str, Any]]:
-    return [public_auction_summary(row) for row in store.iter_public_rows(**filters)]
+    요율 = _reduction_rates(store)
+    return [public_auction_summary({**row, "court_reduction_rate": 요율.get(row.get("court", ""))})
+            for row in store.iter_public_rows(**filters)]
+
+
+_요율캐시: dict[str, dict[str, int]] = {}
+
+
+def _reduction_rates(store: AuctionStore) -> dict[str, int]:
+    """법원별 실측 유찰 체감률. 한 번만 재고 이 프로세스 동안 돌려 쓴다.
+
+    매각결과 전수를 훑는 계산이라 물건마다 부르면 푸시가 못 끝난다.
+    하루에 몇 %씩 바뀌는 값도 아니다.
+    """
+    if "값" not in _요율캐시:
+        try:
+            _요율캐시["값"] = store.court_reduction_rates()
+        except Exception:  # noqa: BLE001 - 없으면 전국 최빈으로 간다
+            _요율캐시["값"] = {}
+    return _요율캐시["값"]
 
 
 def build_snapshot(store: AuctionStore) -> dict[str, Any]:
@@ -293,6 +312,8 @@ def push_items(
                 item = store.get_item(item_key)
                 if item is None:
                     continue
+                item["court_reduction_rate"] = _reduction_rates(store).get(
+                    item.get("court", ""))
                 payload = public_auction_detail(item)
                 digest = payload_digest(payload)
                 key = item_object_key(item_key)

@@ -1522,6 +1522,39 @@ class AuctionStore:
         with self.connect() as conn:
             return int(conn.execute("SELECT COUNT(*) FROM auction_notices").fetchone()[0])
 
+    def court_reduction_rates(self, min_samples: int = 200) -> dict[str, int]:
+        """법원별 **실측** 유찰 체감률(%). 표본이 적으면 빼고 전국 최빈으로 받는다.
+
+        일률적으로 30%를 깎으면 틀린다. 실측 44,524쌍에서 70%가 75%·80%가 24%인데,
+        **법원마다 갈린다** — 인천·수원·부산은 70%, 서울남부·광주는 80%다.
+        24%를 틀리게 보여주면서 입찰가 판단에 쓰게 할 수는 없다.
+        """
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT court, sale_date, minimum_bid, item_key
+                  FROM auction_sale_results
+                 WHERE minimum_bid > 0 AND sale_date != ''
+                 ORDER BY item_key, sale_date
+                """
+            ).fetchall()
+        from collections import Counter, defaultdict  # noqa: PLC0415
+
+        직전: dict[str, tuple[str, int]] = {}
+        표: defaultdict[str, Counter] = defaultdict(Counter)
+        for row in rows:
+            key = row["item_key"]
+            앞 = 직전.get(key)
+            직전[key] = (row["court"], row["minimum_bid"])
+            if not 앞 or 앞[1] <= 0 or row["minimum_bid"] <= 0:
+                continue
+            if row["minimum_bid"] >= 앞[1]:
+                continue
+            표[앞[0]][round(row["minimum_bid"] / 앞[1] * 100)] += 1
+        out = {court: cnt.most_common(1)[0][0]
+               for court, cnt in 표.items() if sum(cnt.values()) >= min_samples}
+        return out
+
     def notice_funnel(self) -> dict[str, Any]:
         """공고로 먼저 안 사건이 실제 물건으로 넘어오는 흐름.
 

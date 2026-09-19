@@ -153,3 +153,54 @@ class 받아두고안꺼내던것Test(unittest.TestCase):
         """있고 없고만 판단에 필요하다. 실명은 마스킹 정책 대상이다."""
         got = self._뽑기({"counts": {"임차인": 1}, "names": ["김철수"]})
         self.assertNotIn("김철수", str(got))
+
+
+class 미래기일예측Test(unittest.TestCase):
+    """다음 기일·최저가 **추정** (G18).
+
+    옥션원은 아직 안 잡힌 3차·4차를 계산해 보여준다. '얼마까지 기다릴까' 를
+    판단하는 정보라 값은 크지만 **틀리면 비용도 크다.**
+
+    실측 44,524쌍: 70% 체감이 75% · 80% 체감이 24%인데 **법원마다 갈린다**
+    (인천·수원·부산 70% · 서울남부·광주 80%). 0.7 을 일괄 적용하면 전체의 24%에서
+    틀린 금액을 사실처럼 보여준다. 기일 간격은 중앙 35일.
+    """
+
+    def _예측(self, **kw):
+        from court_auction_crawler.enrichment import project_future_sales
+        기본 = dict(minimum_bid=254_100_000, sale_date="2026.10.02", reduction_rate=70)
+        기본.update(kw)
+        return project_future_sales(**기본)
+
+    def test_옥션원_표시값과_일치한다(self):
+        """실제 샘플(수원 2025타경56189)의 3차·4차와 맞춘다."""
+        got = self._예측(rounds=2)
+        self.assertEqual(got[0]["minimum_bid"], 177_870_000)
+        self.assertEqual(got[1]["minimum_bid"], 124_509_000)
+
+    def test_정수로_계산한다(self):
+        """실수로 하면 254,100,000 × 0.7 이 177,869,999 가 되어 1원씩 어긋난다."""
+        self.assertEqual(self._예측(rounds=1)[0]["minimum_bid"] % 1000, 0)
+
+    def test_법원마다_체감률이_다르다(self):
+        칠십 = self._예측(reduction_rate=70, rounds=1)[0]["minimum_bid"]
+        팔십 = self._예측(reduction_rate=80, rounds=1)[0]["minimum_bid"]
+        self.assertNotEqual(칠십, 팔십)
+        self.assertEqual(팔십, 203_280_000)
+
+    def test_기일은_35일_간격이다(self):
+        got = self._예측(rounds=2)
+        self.assertEqual(got[0]["sale_date"], "2026.11.06")
+        self.assertEqual(got[1]["sale_date"], "2026.12.11")
+
+    def test_추정임을_반드시_밝힌다(self):
+        """법원이 정한 값이 아니다. 화면이 '예상'으로 못 쓰면 거짓이 된다."""
+        for 줄 in self._예측(rounds=3):
+            self.assertTrue(줄["estimated"])
+            self.assertIn("유찰 시", 줄["basis"])
+
+    def test_재료가_없으면_안_만든다(self):
+        self.assertEqual(self._예측(minimum_bid=0), [])
+        self.assertEqual(self._예측(minimum_bid=None), [])
+        self.assertEqual(self._예측(sale_date=""), [])
+        self.assertEqual(self._예측(sale_date="날짜아님"), [])
