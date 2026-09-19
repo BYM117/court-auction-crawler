@@ -100,3 +100,56 @@ class 사실뽑기Test(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class 받아두고안꺼내던것Test(unittest.TestCase):
+    """옥션원이 한 장에 싣는데 우리는 받아 두고도 안 꺼내던 것들 (G18).
+
+    실측 활성 3,000건 기준 채워지는 비율:
+      배당요구종기 100% · 사건접수 100% · 경매개시일 97% · 입찰방법 97% ·
+      청구금액 94% · 임차인 42% · 가압류 63% · **지상권 17%**
+
+    **새로 긁지 않는다.** 이미 상세 표에 있던 것을 뽑을 뿐이다.
+    """
+
+    상세 = {"tables": [{"caption": "물건기본정보", "rows": [
+        ["사건접수", "2024.12.19", "경매개시일", "2024.12.23"],
+        ["배당요구종기", "2025.03.06", "청구금액", "206,074,821원"],
+    ]}, {"caption": "물건 기본정보", "rows": [
+        ["입찰방법", "기일입찰", "물건번호", "1"],
+    ]}]}
+
+    def _뽑기(self, parties=None):
+        from court_auction_crawler.enrichment import build_case_basics
+        return build_case_basics(self.상세, parties)
+
+    def test_표에서_날짜와_금액을_뽑는다(self):
+        got = self._뽑기()
+        self.assertEqual(got["dividend_deadline"], "2025.03.06")
+        self.assertEqual(got["opened_at"], "2024.12.23")
+        self.assertEqual(got["filed_at"], "2024.12.19")
+        self.assertEqual(got["bid_method"], "기일입찰")
+        self.assertEqual(got["claim_amount"], 206074821)
+
+    def test_당사자는_counts_모양이다(self):
+        """리스트가 아니라 {'counts': {...}} 다. 모양을 가정하면 전부 False 가 된다."""
+        got = self._뽑기({"counts": {"임차인": 1, "가압류권자": 2, "지상권자": 1}})
+        self.assertTrue(got["has_tenant"])
+        self.assertTrue(got["has_seizure"])
+        self.assertTrue(got["has_surface_right"])
+
+    def test_없으면_False(self):
+        got = self._뽑기({"counts": {"채권자": 1, "소유자": 1}})
+        self.assertFalse(got["has_tenant"])
+        self.assertFalse(got["has_seizure"])
+        self.assertFalse(got["has_surface_right"])
+
+    def test_당사자가_없어도_안_터진다(self):
+        for 값 in (None, {}, [], "이상한값"):
+            got = self._뽑기(값)
+            self.assertFalse(got["has_tenant"])
+
+    def test_이름은_싣지_않는다(self):
+        """있고 없고만 판단에 필요하다. 실명은 마스킹 정책 대상이다."""
+        got = self._뽑기({"counts": {"임차인": 1}, "names": ["김철수"]})
+        self.assertNotIn("김철수", str(got))

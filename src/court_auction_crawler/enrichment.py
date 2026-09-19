@@ -533,6 +533,9 @@ def public_auction_enrichment(item: dict[str, Any]) -> dict[str, Any]:
             # 직전 낙찰가는 시세의 강한 단서다. 법원은 실효된 낙찰가를 지우므로
             # 우리가 그때 받아둔 것이 유일한 기록이다.
             "past_sales": build_past_sales(item, appraisal),
+            # 받아 두고 안 꺼내던 것들(G18) — 청구금액·배당요구종기·개시일·
+            # 임차인·가압류·지상권 유무. 새로 긁지 않고 상세 표에서 뽑는다.
+            **build_case_basics(item.get("detail") or {}, parties),
             # 법원 사이트의 다수조회·다수관심 화면에서 받은 인기도. 상위 물건에만 값이 있다.
             "popularity": {
                 "view_count": item.get("view_count") or (item.get("popularity") or {}).get("view_count"),
@@ -867,6 +870,52 @@ def _has_content(value: str) -> bool:
     """'없 음.', '해당사항 없음', '-' 처럼 **비었다는 뜻의 표기**를 내용으로 세지 않는다."""
     깎음 = re.sub(r"\s+", "", str(value or ""))
     return bool(깎음) and not _BLANK_RE.match(깎음)
+
+
+def detail_key_values(detail: dict[str, Any]) -> dict[str, str]:
+    """상세 표의 `라벨 | 값` 쌍을 한 사전으로 모은다.
+
+    법원 표는 `라벨,값,라벨,값` 이 한 줄에 들어가는 모양이라 두 칸씩 짚어야 한다.
+    **이미 받아 두고 안 꺼내던 것들이다** — 실측 200건에서 배당요구종기·청구금액·
+    사건접수·경매개시일·입찰방법이 전부 100% 들어 있었다(G18).
+    """
+    out: dict[str, str] = {}
+    for table in (detail or {}).get("tables") or []:
+        for row in table.get("rows") or []:
+            cells = [str(c).strip() for c in row]
+            for i in range(len(cells) - 1):
+                label, value = cells[i], cells[i + 1]
+                if 2 <= len(label) <= 12 and value and label not in out:
+                    out[label] = value
+    return out
+
+
+def build_case_basics(detail: dict[str, Any], parties: Any = None) -> dict[str, Any]:
+    """옥션원이 한 장에 싣는 것 중 **우리가 받아 두고 안 꺼내던 것**(G18).
+
+    청구금액은 그 자체로 신호다 — 감정가보다 크면 남는 게 없을 수 있다.
+    배당요구종기는 지났는지 여부가 임차인 대항력 판단에 걸린다.
+    """
+    kv = detail_key_values(detail)
+    out: dict[str, Any] = {
+        "filed_at": kv.get("사건접수", ""),
+        "opened_at": kv.get("경매개시일", ""),
+        "dividend_deadline": kv.get("배당요구종기", ""),
+        "bid_method": kv.get("입찰방법", ""),
+        "claim_amount": parse_first_money(kv.get("청구금액", "")),
+    }
+    # 임차인이 있는지는 당사자 내역이 말한다. **이름은 싣지 않는다** — 있고 없고만이
+    # 판단에 필요하고, 실명은 마스킹 정책의 대상이다(PRIVACY-MASKING.md).
+    # `parties` 는 리스트가 아니라 `{"counts": {"임차인": 1, ...}}` 모양이다.
+    종류 = (parties or {}).get("counts") if isinstance(parties, dict) else None
+    종류 = 종류 if isinstance(종류, dict) else {}
+    def 있나(*말들: str) -> bool:
+        return any(any(말 in 이름 for 말 in 말들) and 수 for 이름, 수 in 종류.items())
+    out["has_tenant"] = 있나("임차인")
+    out["has_seizure"] = 있나("가압류", "압류")
+    # 법정지상권은 건물만 낙찰받고 땅을 못 쓰는 대표적 함정이다.
+    out["has_surface_right"] = 있나("지상권")
+    return out
 
 
 def appraisal_facts(text: str) -> dict[str, Any]:
