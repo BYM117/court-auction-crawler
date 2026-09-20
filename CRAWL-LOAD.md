@@ -45,6 +45,31 @@
 5. **밤에 몰아치지 않는다.** 자정을 넘긴 사이클은 진행 수집을 통째로 날린다(G17).
    헛돌면서 부하만 준다.
 
+## 밀려나기 시작하면 — 단계별 대응
+
+거절률이 오르면 **약한 것부터** 쓴다. 아래로 갈수록 확실하지만 손실도 크다.
+
+| 단계 | 방법 | 효과 |
+|---|---|---|
+| 1 | 대량 재큐를 멈추고 큐가 빠지길 기다린다 | 근본 원인 제거. 며칠 |
+| 2 | 워커 3 → 2 (동시성↓) | **요청 간격(지연)보다 이게 지렛대다** |
+| 3 | 워커 2 → 1 (보수 모드와 같음) | 더 느리지만 발자국이 최소 |
+| 4 | **수집을 하루이틀 멈춘다** | 가장 확실. 손님이 끊기면 사이트가 우리를 잊는다 |
+
+**4번(중단)은 겁낼 필요 없다.** 잃는 것은 **신선도**뿐이다 —
+- 매각결과는 사이클마다 7일치를 통째로 다시 긁으니 이틀 늦어도 창 안(함정 ⑥)
+- 문서는 기일 2주 전부터 열리니 이틀은 여유(함정 ⑦)
+- 낙찰가만 7일 창이라, **중단은 낙찰 없는 조용한 날(주말 등)에 건다**
+
+중단하는 법:
+```bash
+launchctl bootout gui/$(id -u)/com.court-auction.collect
+launchctl bootout gui/$(id -u)/com.court-auction.collect-details
+# 다시 켜기
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.court-auction.collect.plist
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.court-auction.collect-details.plist
+```
+
 ## 부하를 올려야 할 때
 
 값이 분명할 때만 올리고, **올린 뒤 거절률을 반드시 다시 잰다.**
