@@ -14,5 +14,8 @@ export PLAYWRIGHT_BROWSERS_PATH=.playwright-browsers
 exec .venv/bin/python -m court_auction_crawler.cli collect-details \
   --db data/auction.sqlite3 \
   --asset-dir data/auction-assets \
-  --delay 2.0 \
+  # 2026-09-20: 2.0 -> 3.0. 감정평가서 상태 교정으로 3만 건이 한꺼번에 큐에
+  # 들어가자 법원이 세션을 거절하기 시작했다(거절 2% -> 11%, 차단 의심 66 -> 212회).
+  # **영구 차단이 가장 큰 사업 위험이다.** 조금 느려도 거절을 줄이는 쪽이 낫다.
+  --delay 3.0 \
   --loop
