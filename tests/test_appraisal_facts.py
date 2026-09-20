@@ -11,6 +11,7 @@
 """
 from __future__ import annotations
 
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -204,3 +205,71 @@ class 미래기일예측Test(unittest.TestCase):
         self.assertEqual(self._예측(minimum_bid=None), [])
         self.assertEqual(self._예측(sale_date=""), [])
         self.assertEqual(self._예측(sale_date="날짜아님"), [])
+
+
+class 점유인추출Test(unittest.TestCase):
+    """현황조사서의 점유인(임차인) 내역 (G18).
+
+    **전입일자·확정일자가 대항력 판단의 핵심이다.** 말소기준권리보다 전입이 빠르면
+    낙찰자가 보증금을 떠안는다. 옥션원의 '세대열람내역서' 탭도 원본 문서가 아니라
+    이것으로 보인다 — 원본은 주민등록법상 열람 자격이 제한된다.
+
+    실측 1,500건: 42%에서 점유인 2,900명. 그중 전입일자 99% · 보증금 71%.
+    """
+
+    표 = {"caption": ",점유인,당사자구분,점유부분,용도,점유기간,보증(전세)금,차임,전입일자,확정일자", "rows": [
+        ["[소재지] 1. 제주특별자치도 서귀포시"],
+        ["1", "점유인", "김미성", "당사자구분", "임차인"],
+        ["점유부분", "101동 2층201호", "용도", "주거"],
+        ["점유기간", "미상"],
+        ["보증(전세)금", "5,000만원", "차임", "미상"],
+        ["전입일자", "2023.2.9.", "확정일자", "2023.2.10."],
+        ["2", "점유인", "제주올래건설(주) 대표자 고태엽", "당사자구분", "임차인"],
+        ["점유부분", "401호", "용도", "기타 - 사무실"],
+        ["전입일자", "2017.2.1.", "확정일자", "미상"],
+    ]}
+
+    def _문서(self):
+        return [{"document_type": "현황조사서",
+                 "metadata_json": json.dumps({"tables": [self.표]}, ensure_ascii=False)}]
+
+    def test_점유인을_한_명씩_묶는다(self):
+        from court_auction_crawler.enrichment import parse_occupants
+        got = parse_occupants(self._문서())
+        self.assertEqual(len(got), 2)
+        self.assertEqual(got[0]["name"], "김미성")
+        self.assertEqual(got[0]["role"], "임차인")
+        self.assertEqual(got[0]["전입일자"], "2023.2.9.")
+        self.assertEqual(got[0]["확정일자"], "2023.2.10.")
+        self.assertEqual(got[0]["보증(전세)금"], "5,000만원")
+
+    def test_다음_사람의_값을_끌어오지_않는다(self):
+        from court_auction_crawler.enrichment import parse_occupants
+        got = parse_occupants(self._문서())
+        self.assertEqual(got[1]["전입일자"], "2017.2.1.")
+        self.assertNotEqual(got[1]["전입일자"], got[0]["전입일자"])
+
+    def test_낙찰이_끝나면_이름을_가린다(self):
+        """진행 중에는 누가 점유하는지가 입찰 판단에 필요하고, 끝나면 그 필요가
+        사라진다. 중지·재매각으로 살아나면 `is_active` 가 1이 되어 다시 보인다."""
+        from court_auction_crawler.enrichment import parse_occupants
+        got = parse_occupants(self._문서(), mask_names=True)
+        self.assertEqual(got[0]["name"], "김○○")
+        self.assertEqual(got[0]["전입일자"], "2023.2.9.", "날짜까지 가리면 안 된다")
+
+    def test_법인은_가리지_않는다(self):
+        """개인정보가 아니고, 누가 점유하는지가 판단에 걸린다."""
+        from court_auction_crawler.enrichment import parse_occupants
+        got = parse_occupants(self._문서(), mask_names=True)
+        self.assertIn("제주올래건설", got[1]["name"])
+
+    def test_현황조사서가_아니면_안_본다(self):
+        from court_auction_crawler.enrichment import parse_occupants
+        문서 = [{"document_type": "감정평가서",
+                "metadata_json": json.dumps({"tables": [self.표]}, ensure_ascii=False)}]
+        self.assertEqual(parse_occupants(문서), [])
+
+    def test_깨진_문서에_안_터진다(self):
+        from court_auction_crawler.enrichment import parse_occupants
+        for 나쁜값 in (None, [], [{}], [{"document_type": "현황조사서", "metadata_json": "{{"}]):
+            self.assertEqual(parse_occupants(나쁜값), [])

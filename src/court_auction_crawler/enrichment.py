@@ -565,6 +565,11 @@ def public_auction_enrichment(item: dict[str, Any]) -> dict[str, Any]:
             # 감정평가서 PDF 는 협회 서버라 못 받지만(G06), 법원이 화면에 주는 요항표
             # 요약은 받는다 — 위치·주위환경·교통·건물 구조·이용상태·설비내역이
             # 평가사가 쓴 문장 그대로다. 실측 94~1,458자.
+            # 점유인(임차인) 내역 — 전입일자·확정일자가 대항력 판단의 핵심이다.
+            # **이름은 낙찰이 끝나면 가린다.** 진행 중에는 누가 점유하는지가 입찰
+            # 판단에 필요하고, 끝나면 그 필요가 사라진다. 중지·재매각으로 다시
+            # 살아나면 `is_active` 가 1이 되어 자연히 다시 보인다(사용자 방침).
+            "occupants": parse_occupants(item.get("documents"), mask_names=not active),
             "appraisal_summary": 요항표,
             # **문장이 아니라 사실을 싣는다.** 화면은 이쪽을 쓴다 — 검색·필터·비교가
             # 되고, 평가사가 쓴 문장을 그대로 옮기지 않아도 된다.
@@ -974,6 +979,71 @@ def project_future_sales(
             "estimated": True,
             "basis": f"유찰 시 {비율}% · 기일 간격 {NEXT_SALE_GAP_DAYS}일(실측 중앙)",
         })
+    return out
+
+
+_OCCUPANT_KEYS = ("점유부분", "용도", "점유기간", "보증(전세)금", "차임",
+                 "전입일자", "확정일자", "당사자구분")
+
+
+def mask_person_name(name: str) -> str:
+    """가운데를 가린다. 법원이 목록에서 쓰는 방식과 같다(`김○○`).
+
+    법인·단체는 가리지 않는다 — 개인정보가 아니고, 누가 점유하는지가 판단에 걸린다.
+    """
+    글 = str(name or "").strip()
+    if not 글:
+        return ""
+    if any(말 in 글 for 말 in ("주식회사", "(주)", "㈜", "유한회사", "법인", "조합", "은행", "공사")):
+        return 글
+    if len(글) <= 1:
+        return 글
+    return 글[0] + "○" * (len(글) - 1)
+
+
+def parse_occupants(documents: Any, mask_names: bool = False) -> list[dict[str, Any]]:
+    """현황조사서에서 점유인(임차인) 내역을 뽑는다.
+
+    **전입일자·확정일자가 대항력 판단의 핵심이다.** 말소기준권리보다 전입이 빠르면
+    낙찰자가 보증금을 떠안는다. 옥션원이 '세대열람내역서' 탭에서 보여주는 내용도
+    원본 문서가 아니라 이것으로 보인다 — 원본은 주민등록법상 열람 자격이 제한된다.
+
+    표는 `[소재지]` 줄 뒤에 `번호 | 점유인 | 이름 | 당사자구분 | 구분` 이 오고,
+    그 아래로 `라벨 | 값 | 라벨 | 값` 이 이어지는 모양이다.
+
+    `mask_names` 는 **낙찰이 끝난 물건**에 쓴다. 진행 중에는 누가 점유하는지가
+    입찰 판단에 필요하고, 끝나면 그 필요가 사라진다. 중지·재매각으로 다시 살아나면
+    자연히 다시 보인다(호출자가 `is_active` 로 판단한다).
+    """
+    out: list[dict[str, Any]] = []
+    for document in documents or []:
+        if str((document or {}).get("document_type") or "") != "현황조사서":
+            continue
+        try:
+            meta = json.loads(document.get("metadata_json") or "{}")
+        except Exception:  # noqa: BLE001 - 깨진 JSON 은 없는 것으로 본다
+            continue
+        for table in meta.get("tables") or []:
+            if "확정일자" not in str(table.get("caption") or ""):
+                continue
+            현재: dict[str, Any] | None = None
+            for row in table.get("rows") or []:
+                cells = [str(c).strip() for c in row]
+                if len(cells) >= 3 and cells[1] == "점유인":
+                    if 현재:
+                        out.append(현재)
+                    이름 = cells[2]
+                    현재 = {"name": mask_person_name(이름) if mask_names else 이름}
+                    if len(cells) >= 5 and cells[3] == "당사자구분":
+                        현재["role"] = cells[4]
+                    continue
+                if 현재 is None:
+                    continue
+                for i in range(len(cells) - 1):
+                    if cells[i] in _OCCUPANT_KEYS and cells[i + 1]:
+                        현재.setdefault(cells[i], cells[i + 1])
+            if 현재:
+                out.append(현재)
     return out
 
 
