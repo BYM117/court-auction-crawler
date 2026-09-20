@@ -504,6 +504,76 @@ ICON = {DONE: "✅", WIP: "🔸", TODO: "⬜", FIXED_LIMIT: "📌", UNKNOWN: "�
 ORDER = [TODO, WIP, DONE, FIXED_LIMIT, UNKNOWN]
 
 
+def live_status() -> list[str]:
+    """**지금 벌어지는 일**을 실시간으로 보여준다. DEVLOG 는 사람이 기억해서 쓰는
+    통로라 놓치기 쉽다(09-19/20 을 이틀 놓쳤다). 이건 자동으로 재므로 안 놓친다.
+
+    새 세션이 붙자마자 '데몬이 최신인가 · 밀려나고 있나 · 백필이 얼마나 남았나' 를
+    한눈에 본다. 값이 조용하면 이 칸도 조용하다(문제 없을 땐 짧다).
+    """
+    out: list[str] = ["## 지금 벌어지는 일", ""]
+
+    # 1) 데몬이 지금 코드로 도는가 (함정 ①)
+    try:
+        r = subprocess.run(["python3", str(ROOT / "scripts" / "check_daemon_fresh.py")],
+                           cwd=ROOT, capture_output=True, text=True, timeout=20)
+        낡음 = [l.strip() for l in r.stdout.splitlines() if "낡음" in l]
+        if 낡음:
+            out.append(f"- ⚠ **데몬이 낡았다**(함정 ①): {' / '.join(낡음)[:120]}")
+            out.append("  → `python3 scripts/check_daemon_fresh.py --fix`")
+        else:
+            out.append("- 데몬: 모두 최신 코드로 돌고 있다")
+    except Exception:
+        pass
+
+    # 2) 수집 부하 — 밀려나고 있나 (CRAWL-LOAD.md)
+    log = ROOT / "logs" / "collect-details.log"
+    if log.exists():
+        try:
+            text = log.read_text(encoding="utf-8", errors="replace")
+            import re  # noqa: PLC0415
+            완료 = sum(int(m) for m in re.findall(r"완료 (\d+)개", text))
+            실패 = sum(int(m) for m in re.findall(r"실패 (\d+)개", text))
+            거절 = text.count("세션 거절")
+            합 = 완료 + 실패
+            if 합 > 50:
+                율 = 실패 * 100 // 합
+                신호 = " ⚠ 거절률이 높다(CRAWL-LOAD.md 참고)" if 율 >= 30 else ""
+                out.append(f"- 수집 부하(오늘): 완료 {완료:,} · 실패 {실패:,} "
+                           f"(실패율 {율}%) · 세션거절 {거절:,}{신호}")
+        except Exception:
+            pass
+
+    # 3) 백필이 얼마나 남았나
+    if DB is not None:
+        try:
+            con = sqlite3.connect(f"file:{DB}?mode=ro", uri=True, timeout=10)
+            def n(sql: str) -> int:
+                try:
+                    return int(con.execute(sql).fetchone()[0])
+                except sqlite3.Error:
+                    return -1
+            활성 = n("SELECT COUNT(*) FROM auction_items WHERE is_active=1")
+            실거래큐 = n("SELECT COUNT(*) FROM auction_items "
+                       "WHERE is_active=1 AND transactions_status=''")
+            훑기 = n("SELECT COUNT(*) FROM auction_items WHERE is_active=0 "
+                    "AND last_seen_at >= date('now','-30 day') "
+                    "AND (detail_checked_at IS NULL OR detail_checked_at < last_seen_at)")
+            con.close()
+            부분 = []
+            if 실거래큐 > 0:
+                부분.append(f"실거래 재조회 {실거래큐:,}")
+            if 훑기 > 0:
+                부분.append(f"종국 훑기 {훑기:,}")
+            if 부분:
+                out.append(f"- 남은 백필: {' · '.join(부분)} (활성 {활성:,} 기준)")
+        except Exception:
+            pass
+
+    out.append("")
+    return out
+
+
 def render(rows: list[dict]) -> str:
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
     try:
@@ -526,6 +596,8 @@ def render(rows: list[dict]) -> str:
     if head:
         L.append(f"마지막 커밋 `{head}`")
         L.append("")
+    for line in live_status():
+        L.append(line)
     L.append(f"**{DONE} {tally[DONE]} · {WIP} {tally[WIP]} · {TODO} {tally[TODO]} · {FIXED_LIMIT} {tally[FIXED_LIMIT]}**")
     L.append("")
     L.append("| | 번호 | 제목 | 담당 | 지금 잰 값 | 근거 |")
