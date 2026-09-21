@@ -148,7 +148,11 @@ def singleton_lock(lock_path: str | Path) -> Iterator[bool]:
 
 def self_restart(message: str = "") -> None:
     """프로세스를 자가재시작 코드로 즉시 종료한다. launchd가 깨끗하게 되살린다.
-    좀비(DB 핸들 깨짐)·정체 등 in-process로 회복 불가한 상태의 최후 수단."""
-    if message:
-        print(message, flush=True)
+    좀비(DB 핸들 깨짐)·정체 등 in-process로 회복 불가한 상태의 최후 수단.
+
+    재시작은 이 한 길목을 지난다. 여기서 **시각과 이유**를 함께 남겨야 나중에
+    '언제·왜 죽었는지'를 짚는다 — 로그 줄엔 시각이 안 붙고, 재시작 줄만 봐서는
+    근거를 못 찾던 문제(2026-09-21). `SELF-RESTART` 로 greppable 하게 고정한다.
+    구체 근거(마지막 DB 오류·최초 트리거)는 호출부가 message 에 실어 준다."""
+    print(f"[{utc_now()}] SELF-RESTART {message}".rstrip(), flush=True)
     os._exit(RESTART_EXIT_CODE)

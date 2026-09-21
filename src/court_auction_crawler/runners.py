@@ -230,6 +230,7 @@ class DbHealthWatchdog:
         self.fail_limit = fail_limit
         self.on_unhealthy = on_unhealthy or self_restart
         self.consecutive_failures = 0
+        self.last_error = ""
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
@@ -238,9 +239,10 @@ class DbHealthWatchdog:
             self.store.healthcheck()
         except Exception as exc:
             self.consecutive_failures += 1
+            self.last_error = str(exc)[:150]
             print(
                 f"!! DB 헬스체크 실패 {self.consecutive_failures}/{self.fail_limit}: "
-                f"{str(exc)[:150]}",
+                f"{self.last_error}",
                 flush=True,
             )
             return False
@@ -266,6 +268,7 @@ class DbHealthWatchdog:
             self.check_once()
             if self.should_abort():
                 self.on_unhealthy(
-                    "!! DB 접근 불가 지속 -> 서버를 종료합니다. launchd가 재시작합니다"
+                    f"DB 접근 불가 {self.fail_limit}회 연속(마지막 오류: "
+                    f"{self.last_error or '알 수 없음'}) -> 서버 종료, launchd 재시작"
                 )
                 return

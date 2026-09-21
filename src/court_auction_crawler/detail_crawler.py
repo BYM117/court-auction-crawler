@@ -391,6 +391,7 @@ class CourtAuctionDetailCrawler:
                 # 중단시켜 새 브라우저로 재시작하고, 워커가 그마저 못 멈추면
                 # 프로세스를 종료해 launchd가 깨끗하게 되살리게 한다.
                 hard_deadline: float | None = None
+                reason = ""  # 최초 트리거. 하드 데드라인 재시작 줄에 그대로 실어 준다.
                 while True:
                     await asyncio.sleep(15)
                     now = time.monotonic()
@@ -412,7 +413,10 @@ class CourtAuctionDetailCrawler:
                                 f"!! 자가 복구: {reason} -> 이번 패스를 중단하고 브라우저를 새로 엽니다"
                             )
                     if hard_deadline is not None and now > hard_deadline:
-                        self_restart("!! 자가 복구 실패(워커 미응답) -> 프로세스를 종료합니다. launchd가 재시작합니다")
+                        self_restart(
+                            f"자가 복구 실패(워커가 180초 내 미정지, 최초 트리거: "
+                            f"{reason or '알 수 없음'}) -> 프로세스 종료, launchd 재시작"
+                        )
 
             watchdog_task = asyncio.create_task(watchdog())
             try:

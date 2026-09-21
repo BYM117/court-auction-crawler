@@ -348,6 +348,8 @@ class WebApiTests(unittest.TestCase):
         self.assertFalse(watchdog.check_once())
         self.assertFalse(watchdog.check_once())
         self.assertTrue(watchdog.should_abort())
+        # 재시작 줄이 '왜'를 실을 수 있도록 마지막 DB 오류를 붙잡아 둔다.
+        self.assertIn("unable to open database file", watchdog.last_error)
 
     def test_healthcheck_watchdog_resets_on_recovery(self):
         class FlakyStore:
