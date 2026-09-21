@@ -9,17 +9,21 @@ export PYTHONUNBUFFERED=1
 export PYTHONPATH=src
 export PLAYWRIGHT_BROWSERS_PATH=.playwright-browsers
 
-# 단일 실행 보장은 CLI가 data/collect-details.pid 락으로 처리한다.
-# --loop: 백로그를 다 비워도 종료하지 않고 신건·재시도 도래분을 계속 수집한다.
+# ⚠ 주석을 exec 의 인자 줄 사이에 끼우지 말 것. `\` 로 이어지는 명령 중간의 `#` 은
+#   그 뒤 인자를 통째로 잘라먹는다. 2026-09-20 에 이렇게 망가져 --workers·--delay·
+#   --loop 이 전부 안 먹었고(데몬은 기본값 워커 3·지연 1.5·loop 없음으로 돎), 그것도
+#   모르고 '지연/워커를 바꿔도 효과 없다' 고 잘못 결론냈다. 주석은 여기 위에만 둔다.
+#
+# 설정 근거(CRAWL-LOAD.md):
+#   --workers 2  법원이 세션을 거절해서 동시성을 3 → 2 로 낮춘다. 요청 간격(delay)이
+#                아니라 동시 세션 수가 지렛대다.
+#   --delay 3.0  사건 사이 대기. 영구 차단이 가장 큰 위험이라 조금 느려도 안전하게.
+#   --loop       백로그를 다 비워도 종료하지 않고 신건·재시도를 계속 수집한다.
+#
+# 단일 실행 보장은 CLI 가 data/collect-details.pid 락으로 처리한다.
 exec .venv/bin/python -m court_auction_crawler.cli collect-details \
   --db data/auction.sqlite3 \
   --asset-dir data/auction-assets \
-  # 2026-09-20: 2.0 -> 3.0. 감정평가서 상태 교정으로 3만 건이 한꺼번에 큐에
-  # 들어가자 법원이 세션을 거절하기 시작했다(거절 2% -> 11%, 차단 의심 66 -> 212회).
-  # **영구 차단이 가장 큰 사업 위험이다.** 조금 느려도 거절을 줄이는 쪽이 낫다.
-  # 2026-09-20 23:15: 워커 3 -> 2. 지연 2.0 -> 3.0 은 실패율을 45% -> 44% 로
-  # 못 낮췄다(효과 없음). 거절의 76%가 '있는 활성 사건을 없다고 함' = 소프트
-  # 차단이고 연속 오류로 몰린다(버스트). 요청 간격이 아니라 **동시성**이 지렛대다.
   --workers 2 \
   --delay 3.0 \
   --loop
