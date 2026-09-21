@@ -236,3 +236,60 @@ from court_auction_crawler.enrichment import public_auction_summary, public_auct
 
 **세션 D 는 이것을 화면에서 갈라 보여야 한다.** 토지에 `sigungu` 평균을 '실거래'
 라고 붙이면 건물보다 더 크게 오해된다.
+
+---
+
+## 2026-09-21 — 세션 D 표시 지침 (실거래 신뢰도 4단계)
+
+세션 B 쪽 매칭은 크게 올랐다. **새 로직으로 다시 받은 3,131건 기준
+`sales.match_level` 분포:**
+
+| match_level | 뜻 | 비중 | `matched` |
+|---|---|---|---|
+| `parcel` | **이 땅(동+지번)의 바로 그 실거래** | 16% | true |
+| `name` | **같은 건물명의 실거래** | 7% | true |
+| `dong` | 같은 동(洞)의 다른 물건 평균 | 33% | false |
+| `sigungu` | 시·군·구 평균 | 43% | false |
+
+옛 로직 `matched` 3.5% → **parcel+name 23%.** 나머지 35,747건은 아직 옛 스키마
+(match_level 없음)라 안전한 속도로 다시 받는 중이다 — 이 비중은 백필이 끝나며 바뀐다.
+
+### payload 경로
+
+`public_auction_detail` → `transactions` (없으면 `{}`):
+
+```json
+{ "type":"villa", "building":"대성타워", "parcel":"본오동 935-11",
+  "sales": { "matched":false, "match_level":"dong",
+             "count":199,"min":2200,"avg":16724,"max":43000,
+             "recent":[{"name":"풍경채A,B동","area":39.33,"floor":"2",
+                        "amount":15200,"monthly":0,"date":"2026-09-15","build_year":"2017"}, ...] },
+  "rent":  { 같은 모양, monthly>0 이면 월세 } }
+```
+
+`sales`·`rent` 각각 독립이고 `null`일 수 있다. 금액 단위는 **만원**.
+
+### 화면 규칙 — 딱 세 가지
+
+1. **`match_level`을 뱃지로 항상 드러낸다.** 숫자만 보이면 전부 '이 물건 실거래'로 읽힌다.
+
+   | level | 뱃지 문구(안) | 톤 |
+   |---|---|---|
+   | `parcel` | `이 땅 실거래` | 강조(초록) |
+   | `name` | `같은 건물 실거래` | 강조(초록) |
+   | `dong` | `같은 동 평균 · 이 물건 아님` | 회색 |
+   | `sigungu` | `시·군·구 평균 · 참고용` | 회색 |
+
+2. **`matched:false`면 `building`·`recent[].name`을 이 물건과 나란히 붙이지 않는다.**
+   `matched:false`일 때 `recent[]`의 `name`은 **동네의 남의 건물들**이다(위 예: 풍경채·리움하우스…).
+   경매 물건 옆에 그대로 얹으면 "이 물건이 저 가격에 팔렸다"로 오독된다. 목록으로
+   보여줄 거면 "인근 거래"라고 명시하고 물건 카드와 시각적으로 분리한다.
+
+3. **토지(`type:"land"`)는 parcel/name이 거의 0이다.** 특정 지번이 최근 거래될 확률이
+   낮은 것이라 정상이다(위 09-18 절). 토지에 `sigungu` 숫자를 '실거래'로 붙이면
+   건물보다 더 크게 오해되니, 토지는 `dong`/`sigungu`도 반드시 '평균·참고용'으로만 쓴다.
+
+### 입찰가 판단에 쓸 값
+
+`matched:true`(parcel·name)일 때만 "이 물건 시세"라고 부를 수 있다. 그 외에는
+**동네 분포**다 — `min`/`avg`/`max`로 범위를 보여주되 단일 '시세'로 확정하지 않는다.
