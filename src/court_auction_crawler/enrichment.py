@@ -42,6 +42,19 @@ SPECIAL_RIGHT_KEYWORDS: tuple[tuple[str, str], ...] = (
     ("제시외", "제시외건물"),
 )
 
+# 위험도(screening)는 **권리상 함정만** 본다(2026-09-21 사용자 결정 — 유찰·최저가율·
+# 주소·가격은 값·데이터품질이지 권리 위험이 아니라 뺐다). 아래 두 묶음이 등급을 만든다.
+# 근거: `SCREENING-REDESIGN.md`. **심각도 배정은 표준 경매지식 기반 제안**이라 세션 E·
+# 사용자가 조정할 수 있다. 여기 없는 라벨(일괄매각·공유자우선매수 등)은 절차·구조 사항
+# 이라 등급에 반영하지 않는다 — `special_rights` 에는 정보로 그대로 남는다.
+_TRAP_HIGH = frozenset({   # 낙찰자가 권리를 인수하거나 목적물을 온전히 못 쓰는 함정
+    "유치권", "법정지상권", "대항력있는임차인", "선순위임차인",
+    "별도등기", "지분매각", "분묘기지권",
+})
+_TRAP_MEDIUM = frozenset({  # 흠이지만 인수·상실로 바로 이어지진 않는 주의 항목
+    "맹지", "농지취득자격증명", "위반건축물", "제시외건물", "재매각", "형식적경매",
+})
+
 
 def to_pyeong(sqm: float | None) -> float | None:
     if not sqm or sqm <= 0:
@@ -435,7 +448,6 @@ def public_auction_enrichment(item: dict[str, Any]) -> dict[str, Any]:
     요항표 = str((item.get("detail") or {}).get("appraisal_summary") or "")
     fail_count = parse_fail_count(item.get("status", ""))
     active = parse_item_active(item)
-    screening = build_screening(item, appraisal, minimum_bid, minimum_bid_percent, address_info, fail_count)
     area = parse_area_info(address_info)
     # 평당가는 전용(건물)면적 기준이 관례다. 토지만 있는 물건은 토지면적으로 잡는다.
     unit_sqm = area.get("building_sqm") or area.get("land_sqm") or area.get("total_sqm")
@@ -487,6 +499,9 @@ def public_auction_enrichment(item: dict[str, Any]) -> dict[str, Any]:
     # 형식적경매다 — 이름만 보면 놓친다(실측 83건).
     if any(mark in case_type for mark in FORMAL_AUCTION_MARKS) and "형식적경매" not in flags:
         flags.append("형식적경매")
+
+    # 위험도는 권리상 함정만 본다 — 위에서 뽑은 특수권리 목록(flags)에서 파생한다.
+    screening = build_screening(flags)
 
     return {
         "case": {
@@ -795,44 +810,31 @@ def infer_registry_realty_type(category: str, detail: str) -> str:
     return "확인 필요"
 
 
-def build_screening(
-    item: dict[str, Any],
-    appraisal: int | None,
-    minimum_bid: int | None,
-    minimum_bid_percent: float | None,
-    address_info: dict[str, Any],
-    fail_count: int,
-) -> dict[str, Any]:
-    flags: list[str] = []
-    score = 50
-    if fail_count:
-        flags.append(f"유찰 {fail_count}회")
-        score -= min(fail_count * 4, 24)
-    if minimum_bid_percent is not None:
-        flags.append(f"최저가율 {minimum_bid_percent:g}%")
-        if minimum_bid_percent <= 30:
-            score -= 12
-        elif minimum_bid_percent <= 50:
-            score -= 6
-    share = parse_share_info(address_info)
-    if share["is_share_sale"]:
-        flags.append("지분 매각 의심")
-        score -= 15
-    if not address_info.get("clean"):
-        flags.append("주소 확인 필요")
-        score -= 10
-    if not appraisal or not minimum_bid:
-        flags.append("가격 정보 확인 필요")
-        score -= 8
-    if any(keyword in str(item.get("status", "")) for keyword in TERMINAL_STATUS_KEYWORDS):
-        flags.append("종료성 상태")
-        score -= 20
-    flags.append("권리확인 필요")
-    risk_level = "낮음" if score >= 65 else "보통" if score >= 40 else "높음"
+def build_screening(rights_flags: list[str]) -> dict[str, Any]:
+    """권리상 함정만으로 등급을 낸다(2026-09-21 사용자 결정).
+
+    입력은 이미 뽑아 둔 특수권리·지분·재매각·형식적경매 목록(`special_rights`)이다.
+    등급을 만든 함정을 `flags` 로 함께 돌려줘 화면이 '왜' 를 보일 수 있게 한다
+    (`SCREENING-REDESIGN` 원칙 ⑤). 함정이 없으면 `낮음` 이다 — 이전 설계에서
+    도달 불가능했던 분기가 이제 자연히 나온다(가점 없는 -= 산식을 걷어냈다).
+
+    옛 설계가 섞던 유찰·최저가율·주소·가격은 여기서 뺐다. 잃는 값은 없다 —
+    각각 `fail_count`·`price.minimum_bid_percent`·`coordinate_quality`·`price` 에
+    이미 따로 있다. 종료성 상태도 `auction.closing`(종국결과)에 있다.
+    """
+    reasons = [f for f in rights_flags if f in _TRAP_HIGH or f in _TRAP_MEDIUM]
+    if any(f in _TRAP_HIGH for f in reasons):
+        risk_level = "높음"
+    elif reasons:
+        risk_level = "보통"
+    else:
+        risk_level = "낮음"
+    # score 는 등급에서 파생한다. 옛 payload 모양(3키)을 지켜 웹이 안 깨지게 한다.
+    score = {"낮음": 80, "보통": 50, "높음": 20}[risk_level]
     return {
-        "score": max(0, min(100, score)),
+        "score": score,
         "risk_level": risk_level,
-        "flags": flags,
+        "flags": reasons,
     }
 
 

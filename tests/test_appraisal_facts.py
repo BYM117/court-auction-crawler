@@ -273,3 +273,50 @@ class 점유인추출Test(unittest.TestCase):
         from court_auction_crawler.enrichment import parse_occupants
         for 나쁜값 in (None, [], [{}], [{"document_type": "현황조사서", "metadata_json": "{{"}]):
             self.assertEqual(parse_occupants(나쁜값), [])
+
+
+class ScreeningTests(unittest.TestCase):
+    """위험도는 권리상 함정만 본다(2026-09-21 결정). 세 단계가 실제로 갈리고,
+    '낮음'이 도달 가능하며, 정보성 라벨(일괄매각 등)은 등급을 올리지 않는다."""
+
+    def _level(self, flags):
+        from court_auction_crawler.enrichment import build_screening
+        return build_screening(flags)
+
+    def test_함정없으면_낮음(self):
+        # 옛 설계에선 구조적으로 불가능했던 분기다(최대 50점인데 65 요구).
+        r = self._level([])
+        self.assertEqual(r["risk_level"], "낮음")
+        self.assertEqual(r["flags"], [])
+
+    def test_정보성_라벨은_등급을_안_올린다(self):
+        # 일괄매각·공유자우선매수는 절차·구조 사항이지 권리 함정이 아니다.
+        r = self._level(["일괄매각", "공유자우선매수"])
+        self.assertEqual(r["risk_level"], "낮음")
+        self.assertEqual(r["flags"], [])
+
+    def test_주의항목은_보통(self):
+        r = self._level(["맹지"])
+        self.assertEqual(r["risk_level"], "보통")
+        self.assertIn("맹지", r["flags"])
+
+    def test_인수함정은_높음(self):
+        for trap in ("유치권", "법정지상권", "대항력있는임차인", "선순위임차인",
+                     "별도등기", "지분매각", "분묘기지권"):
+            self.assertEqual(self._level([trap])["risk_level"], "높음", trap)
+
+    def test_근거는_등급을_만든_함정만_담는다(self):
+        # 높음 함정 + 정보성 라벨이 섞이면 등급은 높음, 근거엔 정보성은 안 들어간다.
+        r = self._level(["대항력있는임차인", "일괄매각"])
+        self.assertEqual(r["risk_level"], "높음")
+        self.assertEqual(r["flags"], ["대항력있는임차인"])
+
+    def test_payload_모양은_3키_그대로(self):
+        # 웹이 읽는 모양(score·risk_level·flags)을 지킨다.
+        r = self._level(["유치권"])
+        self.assertEqual(set(r), {"score", "risk_level", "flags"})
+        self.assertIsInstance(r["score"], int)
+
+
+if __name__ == "__main__":
+    unittest.main()
