@@ -17,15 +17,22 @@ from datetime import datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-# 데몬 이름 → 그 데몬이 실제로 읽는 소스
+# 데몬 이름 → 그 데몬이 실제로 읽는 소스. 여기 빠진 파일은 고쳐도 '최신' 으로 잡혀
+# 거짓 음성이 된다(2026-09-21: common.py 가 빠져 self_restart 변경을 놓쳤다).
+# **모든 데몬이 import 하는 common.py 를 반드시 포함한다.** 감시는 '쉬지 않고 도는'
+# 장수 데몬만 대상이다 — baseline·logrotate·notices 는 매 실행마다 새로 떠서 함정 ①
+# 이 없다(그걸 넣으면 실행 사이에 '실행 중 아님' 으로 잘못 뜬다).
+_COMMON = "src/court_auction_crawler/common.py"
 WATCHED = {
     "collect": ("src/court_auction_crawler/cli.py", "src/court_auction_crawler/crawler.py",
                 "src/court_auction_crawler/store.py", "src/court_auction_crawler/enrichment.py",
                 "src/court_auction_crawler/web_push.py", "src/court_auction_crawler/geocoder.py",
-                "src/court_auction_crawler/transactions.py"),
+                "src/court_auction_crawler/transactions.py", _COMMON),
     "collect-details": ("src/court_auction_crawler/detail_crawler.py",
                         "src/court_auction_crawler/store.py",
-                        "src/court_auction_crawler/cli.py"),
+                        "src/court_auction_crawler/cli.py", _COMMON),
+    "server": ("src/court_auction_crawler/web.py", "src/court_auction_crawler/runners.py",
+               "src/court_auction_crawler/store.py", _COMMON),
 }
 
 
