@@ -99,10 +99,6 @@ class 사실뽑기Test(unittest.TestCase):
         self.assertNotIn("구조", f)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class 받아두고안꺼내던것Test(unittest.TestCase):
     """옥션원이 한 장에 싣는데 우리는 받아 두고도 안 꺼내던 것들 (G18).
 
@@ -318,6 +314,42 @@ class ScreeningTests(unittest.TestCase):
         self.assertEqual(r["flags"], [])
         self.assertEqual(set(r), {"score", "risk_level", "flags", "reasons"})
         self.assertIsInstance(r["score"], int)
+
+
+class 대항력포기Tests(unittest.TestCase):
+    """HUG 등이 '대항력을 포기' 한 문구는 안전에 가깝다 — 높음이 아니라 보통(2026-09-23).
+    글자만 보던 때 활성 1,814건이 '위험 높음' 헛경고였다(Jev 세션 발견)."""
+
+    HUG = ("신청채권자인 주택도시보증공사가 '임차보증금에 대하여 우선변제권만 주장하고 "
+           "대항력은 포기하며, 전액을 변제받지 못하더라도 임차권등기를 말소함에 동의한다.'")
+
+    def _rights(self, text):
+        from court_auction_crawler.enrichment import parse_special_rights
+        return parse_special_rights(text)
+
+    def _level(self, text):
+        from court_auction_crawler.enrichment import build_screening
+        return build_screening(self._rights(text))["risk_level"]
+
+    def test_포기_문구만_있으면_대항력포기_보통(self):
+        self.assertEqual(self._rights(self.HUG), ["대항력포기"])
+        self.assertEqual(self._level(self.HUG), "보통")
+
+    def test_비고가_같은_문장을_되풀이해도_보통(self):
+        # 법원 비고는 같은 문장을 두 번 싣는 일이 흔하다 — 횟수로 가르면 안 된다.
+        self.assertEqual(self._level(self.HUG + " " + self.HUG), "보통")
+
+    def test_포기조건_매각도_보통(self):
+        self.assertEqual(self._level("서울보증보험 주식회사의 매수인에 대한 대항력 포기조건 매각"), "보통")
+
+    def test_포기와_별개로_대항력_언급이_남으면_높음(self):
+        # '포기한 임차인 말고 다른 미상 임차인' — 가장 위험한 유형을 놓치지 않는다.
+        text = self.HUG + " 2. 대항력 여지 있는 임대차관계 미상"
+        self.assertIn("대항력있는임차인", self._rights(text))
+        self.assertEqual(self._level(text), "높음")
+
+    def test_포기_없는_대항력은_그대로_높음(self):
+        self.assertEqual(self._level("대항력 있는 임차인 있음(임대차보증금 1억)"), "높음")
 
 
 if __name__ == "__main__":

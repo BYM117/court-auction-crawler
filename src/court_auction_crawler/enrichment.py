@@ -53,7 +53,15 @@ _TRAP_HIGH = frozenset({   # 낙찰자가 권리를 인수하거나 목적물을
 })
 _TRAP_MEDIUM = frozenset({  # 흠이지만 인수·상실로 바로 이어지진 않는 주의 항목
     "맹지", "농지취득자격증명", "위반건축물", "제시외건물", "재매각", "형식적경매",
+    "대항력포기",
 })
+
+# "주택도시보증공사가 … 우선변제권만 주장하고 대항력은 포기" · "매수인에 대한 대항력 포기조건
+# 매각" 은 낙찰자가 그 보증금을 안 떠안는다는 **안전에 가까운** 신호다. 글자만 보면
+# `대항력있는임차인`(높음)으로 찍혀 활성 1,814건이 헛경고였다(2026-09-23, Jev 세션 발견).
+# 포기 문구를 걷어낸 뒤에도 '대항력' 이 따로 남으면(25건 — "대항력 여지 있는 임대차관계
+# 미상" 등) 포기와 별개의 임차인이 있을 수 있어 그대로 높음에 둔다.
+_WAIVER_RE = re.compile(r"대항력\s*(?:은|을|의)?\s*포기")
 
 
 def to_pyeong(sqm: float | None) -> float | None:
@@ -221,6 +229,9 @@ def parse_special_rights(*texts: Any) -> list[str]:
     for keyword, label in SPECIAL_RIGHT_KEYWORDS:
         if keyword in haystack and label not in found:
             found.append(label)
+    if ("대항력있는임차인" in found and _WAIVER_RE.search(haystack)
+            and "대항력" not in _WAIVER_RE.sub("", haystack)):
+        found[found.index("대항력있는임차인")] = "대항력포기"
     return found
 
 
