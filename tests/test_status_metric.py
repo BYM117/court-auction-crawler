@@ -240,5 +240,48 @@ class 무엇과대조하나Test(unittest.TestCase):
                              "교정 도구가 status 와 다른 것을 잡는다")
 
 
+
+class 부하창Test(unittest.TestCase):
+    """차단 신호는 최근 창의 '세션 거절' 비율이다(2026-09-23).
+
+    하루 합계는 나쁜 새벽과 좋은 낮을 섞어 지금 상태를 가린다. 그리고 2026-09-22 에
+    공식이 다른 숫자(진입 대비·패스 요약 줄 수·패스 집계)를 섞어 차단 원인을 오판했다.
+    """
+
+    def setUp(self):
+        self.load_window = _load().load_window
+
+    @staticmethod
+    def _pass(ok, fail, rej=0, new=0):
+        return (["  !! 상세 수집 실패: 사건검색 거절: X 받아둔 적 있는 사건을 '없다'고 함(세션 거절)"] * rej
+                + ["  !! 상세 수집 실패: 사건 검색 결과 없음: X 2026타경1"] * new
+                + [f"상세 수집 완료: 대상 9999개, 사건 10건, 완료 {ok}개, 실패 {fail}개, 조회불가 0개"])
+
+    def test_나쁜_새벽이_최근_창을_오염시키지_않는다(self):
+        lines = self._pass(5, 20, rej=15) * 4 + self._pass(380, 20, rej=3)
+        창, 전체 = self.load_window(lines)
+        self.assertEqual(창[:3], [380, 20, 3])      # 최근 400건만
+        self.assertEqual(전체, [400, 100, 63])      # 하루 합계는 따로
+
+    def test_창은_300건이_찰_때까지_거슬러_모은다(self):
+        lines = self._pass(100, 0, rej=1) * 5
+        창, _ = self.load_window(lines)
+        self.assertEqual(창[0], 300)
+
+    def test_새_물건_검색_전은_거절로_세지_않는다(self):
+        창, _ = self.load_window(self._pass(290, 20, rej=2, new=15))
+        self.assertEqual(창[2], 2)
+        self.assertEqual(창[3], 15)
+
+    def test_요약_줄이_없으면_None(self):
+        self.assertIsNone(self.load_window(["[상세 1/10] 서울중앙지방법원 2026타경1 (1개 물건)"]))
+
+
+class 위험도탐침Test(unittest.TestCase):
+    def test_세_단계가_다_나오면_참(self):
+        # 옛 6인자 시그니처로 부르다 예외를 삼켜 '낮음 안 나옴' 으로 오보한 적 있다.
+        self.assertIs(_load().screening_can_say_low(), True)
+
+
 if __name__ == "__main__":
     unittest.main()

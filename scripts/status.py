@@ -256,23 +256,23 @@ def building_match_rate() -> tuple[int, int]:
 
 
 def screening_can_say_low() -> bool | None:
-    """위험도가 '낮음'을 낼 수 있는지 **실제로 호출해서** 본다.
+    """위험도가 세 단계를 다 낼 수 있는지 **실제로 호출해서** 본다.
 
-    grep 으로 '가점이 있나'를 보는 것은 원인이다. 최선 조건을 넣고 돌려서
-    '낮음'이 나오는지가 결과다.
+    grep 으로 '가점이 있나'를 보는 것은 원인이다. 불러서 등급이 나오는지가 결과다.
+    2026-09-21 재설계로 입력이 권리상 함정 목록 하나가 됐다 — 함정 없음·주의·
+    인수함정을 넣어 낮음·보통·높음이 다 나오는지 본다.
+
+    **시그니처가 바뀌면 이 탐침도 같이 고칠 것.** 2026-09-23 까지 옛 6인자로
+    부르다 예외를 삼켜 None 을 냈고, 그걸 '낮음이 안 나온다' 로 오보했다.
+    None 은 '측정 실패' 이지 '고장' 이 아니다 — 호출부가 따로 표시한다.
     """
     try:
         sys.path.insert(0, str(ROOT / "src"))
         from court_auction_crawler.enrichment import build_screening  # noqa: PLC0415
+        levels = {build_screening(f)["risk_level"] for f in ([], ["맹지"], ["유치권"])}
     except Exception:
         return None
-    try:
-        best = build_screening(
-            {"status": "신건"}, 100_000_000, 100_000_000, 100.0,
-            {"clean": "서울특별시 중구 1-1"}, 0)
-        return best.get("risk_level") == "낮음"
-    except Exception:
-        return None
+    return levels == {"낮음", "보통", "높음"}
 
 
 def past_sales_shown() -> bool | None:
@@ -453,12 +453,15 @@ def checks() -> list[dict]:
         f"{비율} · " + (("웹 미사용: " + ", ".join(unused)) if unused else "웹이 모두 사용"),
         "B 몫(매칭률)과 D 몫(화면 표시)이 따로다. 토지는 본질상 0%")
 
-    # G14 — 위험도
+    # G14 — 위험도. 코드가 세 단계를 내도 라이브(R2)는 collect 재시작·재푸시 전까지
+    # 옛 위험도다(함정 ②). 그래서 코드가 되면 '진행 중' 이지 '해결됨' 이 아니다.
     low_ok = screening_can_say_low()
     add("G14", "위험도 재설계", "E",
-        DONE if low_ok else TODO,
-        "최선 조건에서 '낮음' 나옴" if low_ok else "최선 조건에서도 '낮음'이 안 나온다",
-        "SCREENING-REDESIGN.md 에서 기준부터", by="시험")
+        WIP if low_ok else TODO,
+        ("코드 완료 — 낮음·보통·높음 다 나옴 · 라이브 반영 대기" if low_ok
+         else "탐침이 못 쟀다 — scripts/status.py 확인" if low_ok is None
+         else "세 단계가 다 안 나온다"),
+        "라이브 반영 전에 웹 칩 중복 확인 — gaps/G14 '아직 안 한 것'", by="시험")
 
     # G15 — 배당요구종기공고
     notice = src_has("crawler.py", "142M01") or src_has("crawler.py", "배당요구종기공고")
@@ -504,6 +507,35 @@ ICON = {DONE: "✅", WIP: "🔸", TODO: "⬜", FIXED_LIMIT: "📌", UNKNOWN: "�
 ORDER = [TODO, WIP, DONE, FIXED_LIMIT, UNKNOWN]
 
 
+def load_window(lines: list[str], min_attempts: int = 300):
+    """상세 수집 로그에서 (최근 창, 오늘 전체) 부하를 낸다. 요약 줄이 없으면 None.
+
+    창 = [완료, 실패, 세션거절, 검색전] — 끝에서부터 패스를 min_attempts 건이 찰
+    때까지 모은 것. 전체 = [완료, 실패, 세션거절]. 세션거절·검색전은 그 패스의
+    요약 줄 **앞**에 찍힌 실패 줄을 센다. 아직 요약이 안 난 진행 중 패스는 뺀다.
+    """
+    import re  # noqa: PLC0415
+    passes: list[tuple[int, int, int, int]] = []
+    거절 = 검색전 = 0
+    for line in lines:
+        if "세션 거절" in line:
+            거절 += 1
+        elif "사건 검색 결과 없음" in line:
+            검색전 += 1
+        m = re.search(r"상세 수집 완료: .*?완료 (\d+)개, 실패 (\d+)개", line)
+        if m:
+            passes.append((int(m.group(1)), int(m.group(2)), 거절, 검색전))
+            거절 = 검색전 = 0
+    if not passes:
+        return None
+    창 = [0, 0, 0, 0]
+    for p in reversed(passes):
+        창 = [a + b for a, b in zip(창, p)]
+        if 창[0] + 창[1] >= min_attempts:
+            break
+    return 창, [sum(p[i] for p in passes) for i in range(3)]
+
+
 def live_status() -> list[str]:
     """**지금 벌어지는 일**을 실시간으로 보여준다. DEVLOG 는 사람이 기억해서 쓰는
     통로라 놓치기 쉽다(09-19/20 을 이틀 놓쳤다). 이건 자동으로 재므로 안 놓친다.
@@ -527,20 +559,23 @@ def live_status() -> list[str]:
         pass
 
     # 2) 수집 부하 — 밀려나고 있나 (CRAWL-LOAD.md)
+    # 차단 신호는 '세션 거절'(받아둔 사건을 없다고 함)의 **비율**이다. 하루 합계는
+    # 나쁜 새벽과 좋은 낮을 섞어 둘 다 가리므로, 최근 300건 창을 먼저 보인다.
+    # '실패' 에는 '사건 검색 결과 없음'(목록엔 떴는데 법원 검색엔 아직 안 잡힌 새
+    # 물건 — 재시도로 거의 다 성공)이 많아 그것만으로는 차단을 뜻하지 않는다.
+    # 2026-09-22 에 이 셋(공식이 다른 숫자)을 섞어 비교해 차단 원인을 오판했다.
     log = ROOT / "logs" / "collect-details.log"
     if log.exists():
         try:
-            text = log.read_text(encoding="utf-8", errors="replace")
-            import re  # noqa: PLC0415
-            완료 = sum(int(m) for m in re.findall(r"완료 (\d+)개", text))
-            실패 = sum(int(m) for m in re.findall(r"실패 (\d+)개", text))
-            거절 = text.count("세션 거절")
-            합 = 완료 + 실패
-            if 합 > 50:
-                율 = 실패 * 100 // 합
-                신호 = " ⚠ 거절률이 높다(CRAWL-LOAD.md 참고)" if 율 >= 30 else ""
-                out.append(f"- 수집 부하(오늘): 완료 {완료:,} · 실패 {실패:,} "
-                           f"(실패율 {율}%) · 세션거절 {거절:,}{신호}")
+            got = load_window(log.read_text(encoding="utf-8", errors="replace").splitlines())
+            if got and got[0][0] + got[0][1] > 50:
+                창, 전체 = got
+                합 = 창[0] + 창[1]
+                율 = 창[2] * 100 // 합
+                신호 = " ⚠ 5% 넘음 — 법원이 밀어내는 중(CRAWL-LOAD.md)" if 율 >= 5 else ""
+                out.append(f"- 수집 부하(최근 {합:,}건): **세션거절률 {율}%**(기준 5%){신호} · "
+                           f"실패 {창[1]:,} 중 새 물건 검색 전 {창[3]:,}")
+                out.append(f"  (오늘 전체: 완료 {전체[0]:,} · 실패 {전체[1]:,} · 세션거절 {전체[2]:,})")
         except Exception:
             pass
 
