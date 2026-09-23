@@ -453,15 +453,20 @@ def checks() -> list[dict]:
         f"{비율} · " + (("웹 미사용: " + ", ".join(unused)) if unused else "웹이 모두 사용"),
         "B 몫(매칭률)과 D 몫(화면 표시)이 따로다. 토지는 본질상 0%")
 
-    # G14 — 위험도. 코드가 세 단계를 내도 라이브(R2)는 collect 재시작·재푸시 전까지
-    # 옛 위험도다(함정 ②). 그래서 코드가 되면 '진행 중' 이지 '해결됨' 이 아니다.
+    # G14 — 위험도. 코드가 세 단계를 내도 라이브(R2)는 재업로드 전까지 옛 위험도다
+    # (함정 ②). 2026-09-23 에 item web_sync 의 pushed_at 을 비워 전량 재업로드를 걸었다
+    # — 다시 올라가면 채워지므로, 활성 중 pushed_at='' 가 0 이면 라이브다.
     low_ok = screening_can_say_low()
+    남음 = q1("SELECT COUNT(*) FROM web_sync w JOIN auction_items i ON i.item_key = w.ref "
+             "WHERE w.kind = 'item' AND w.pushed_at = '' AND i.is_active = 1")
     add("G14", "위험도 재설계", "E",
-        WIP if low_ok else TODO,
-        ("코드 완료 — 낮음·보통·높음 다 나옴 · 라이브 반영 대기" if low_ok
+        DONE if low_ok and 남음 == 0 else (WIP if low_ok else TODO),
+        ("세 단계 다 나옴 · 활성 전부 라이브 반영" if low_ok and 남음 == 0
+         else f"세 단계 다 나옴 · 라이브 재업로드 남음(활성) {남음:,}건" if low_ok and 남음 is not None
+         else "세 단계 다 나옴 · 재업로드 현황을 못 쟀다" if low_ok
          else "탐침이 못 쟀다 — scripts/status.py 확인" if low_ok is None
          else "세 단계가 다 안 나온다"),
-        "라이브 반영 전에 웹 칩 중복 확인 — gaps/G14 '아직 안 한 것'", by="시험")
+        "재업로드는 사이클당 1만 건·활성 먼저(함정 ②) — gaps/G14", by="측정")
 
     # G15 — 배당요구종기공고
     notice = src_has("crawler.py", "142M01") or src_has("crawler.py", "배당요구종기공고")
