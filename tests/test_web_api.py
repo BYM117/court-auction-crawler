@@ -255,10 +255,11 @@ class WebApiTests(unittest.TestCase):
         self.assertEqual(payload["property"]["registry_search_hint"]["dong"], "101동")
         self.assertEqual(payload["property"]["registry_search_hint"]["ho"], "201호")
         # 위험도는 권리상 함정만 본다(2026-09-21). 권리함정 없는 물건이라 '낮음'이고
-        # 무조건 붙던 '권리확인 필요' 잡음은 사라졌다. 모양(3키)은 그대로다.
+        # 무조건 붙던 '권리확인 필요' 잡음은 사라졌다. 옛 키는 지키고 reasons 를 더했다.
         self.assertEqual(payload["screening"]["risk_level"], "낮음")
         self.assertEqual(payload["screening"]["flags"], [])
-        self.assertEqual(set(payload["screening"]), {"score", "risk_level", "flags"})
+        self.assertEqual(payload["screening"]["reasons"], [])
+        self.assertEqual(set(payload["screening"]), {"score", "risk_level", "flags", "reasons"})
         self.assertIn("raw", payload)
         self.assertIn("events", payload)
         self.assertEqual(payload["detail_collection"]["status"], "collected")

@@ -814,8 +814,8 @@ def build_screening(rights_flags: list[str]) -> dict[str, Any]:
     """권리상 함정만으로 등급을 낸다(2026-09-21 사용자 결정).
 
     입력은 이미 뽑아 둔 특수권리·지분·재매각·형식적경매 목록(`special_rights`)이다.
-    등급을 만든 함정을 `flags` 로 함께 돌려줘 화면이 '왜' 를 보일 수 있게 한다
-    (`SCREENING-REDESIGN` 원칙 ⑤). 함정이 없으면 `낮음` 이다 — 이전 설계에서
+    등급을 만든 함정은 `reasons` 로 돌려준다(`SCREENING-REDESIGN` 원칙 ⑤ — 화면에서는
+    옆의 특수권리 칩이 그 '왜' 를 보여준다). 함정이 없으면 `낮음` 이다 — 이전 설계에서
     도달 불가능했던 분기가 이제 자연히 나온다(가점 없는 -= 산식을 걷어냈다).
 
     옛 설계가 섞던 유찰·최저가율·주소·가격은 여기서 뺐다. 잃는 값은 없다 —
@@ -829,12 +829,18 @@ def build_screening(rights_flags: list[str]) -> dict[str, Any]:
         risk_level = "보통"
     else:
         risk_level = "낮음"
-    # score 는 등급에서 파생한다. 옛 payload 모양(3키)을 지켜 웹이 안 깨지게 한다.
+    # score 는 등급에서 파생한다. 옛 payload 키를 지켜 웹이 안 깨지게 한다.
     score = {"낮음": 80, "보통": 50, "높음": 20}[risk_level]
     return {
         "score": score,
         "risk_level": risk_level,
-        "flags": reasons,
+        # flags 는 비운다. 웹이 special_rights(노랑)와 screening.flags(회색)를 **같은
+        # 줄**에 그리는데, 이유는 전부 special_rights 의 부분집합이라 넣으면 칩이
+        # 겹친다([유치권][유치권]). 이유는 옆의 특수권리 칩이 이미 보여준다.
+        "flags": [],
+        # 등급을 만든 함정. 새 필드라 웹은 아직 안 쓴다 — 어느 특수권리 칩이 등급을
+        # 올렸는지 강조할 때 쓸 수 있다(2026-09-23 사용자 결정).
+        "reasons": reasons,
     }
 
 

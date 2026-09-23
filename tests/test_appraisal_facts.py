@@ -287,18 +287,18 @@ class ScreeningTests(unittest.TestCase):
         # 옛 설계에선 구조적으로 불가능했던 분기다(최대 50점인데 65 요구).
         r = self._level([])
         self.assertEqual(r["risk_level"], "낮음")
-        self.assertEqual(r["flags"], [])
+        self.assertEqual(r["reasons"], [])
 
     def test_정보성_라벨은_등급을_안_올린다(self):
         # 일괄매각·공유자우선매수는 절차·구조 사항이지 권리 함정이 아니다.
         r = self._level(["일괄매각", "공유자우선매수"])
         self.assertEqual(r["risk_level"], "낮음")
-        self.assertEqual(r["flags"], [])
+        self.assertEqual(r["reasons"], [])
 
     def test_주의항목은_보통(self):
         r = self._level(["맹지"])
         self.assertEqual(r["risk_level"], "보통")
-        self.assertIn("맹지", r["flags"])
+        self.assertIn("맹지", r["reasons"])
 
     def test_인수함정은_높음(self):
         for trap in ("유치권", "법정지상권", "대항력있는임차인", "선순위임차인",
@@ -309,12 +309,14 @@ class ScreeningTests(unittest.TestCase):
         # 높음 함정 + 정보성 라벨이 섞이면 등급은 높음, 근거엔 정보성은 안 들어간다.
         r = self._level(["대항력있는임차인", "일괄매각"])
         self.assertEqual(r["risk_level"], "높음")
-        self.assertEqual(r["flags"], ["대항력있는임차인"])
+        self.assertEqual(r["reasons"], ["대항력있는임차인"])
 
-    def test_payload_모양은_3키_그대로(self):
-        # 웹이 읽는 모양(score·risk_level·flags)을 지킨다.
-        r = self._level(["유치권"])
-        self.assertEqual(set(r), {"score", "risk_level", "flags"})
+    def test_깃발은_비워_칩_중복을_막는다(self):
+        # 웹이 special_rights 와 flags 를 같은 줄에 그린다. 이유를 flags 에 넣으면
+        # [유치권][유치권] 으로 겹친다(2026-09-23). 옛 키는 지키고 reasons 를 더한다.
+        r = self._level(["유치권", "맹지"])
+        self.assertEqual(r["flags"], [])
+        self.assertEqual(set(r), {"score", "risk_level", "flags", "reasons"})
         self.assertIsInstance(r["score"], int)
 
 
