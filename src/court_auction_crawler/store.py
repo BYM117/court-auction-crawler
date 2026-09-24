@@ -80,6 +80,11 @@ ITEM_LIST_SELECT = """
                        json_extract(NULLIF(building_detail, ''), '$.hhld_cnt') AS building_hhld_cnt,
                        json_extract(NULLIF(building_detail, ''), '$.grnd_flr_cnt') AS building_grnd_flr_cnt,
                        json_extract(NULLIF(land_use_detail, ''), '$.zone') AS land_use_zone,
+                       -- 권리 판정 요약. 실명·메모는 상세에만 — 스냅샷엔 필터에 쓸 값만.
+                       json_extract(NULLIF(rights_json, ''), '$.opposability.summary') AS rights_opposable,
+                       json_extract(NULLIF(rights_json, ''), '$.lien') AS rights_lien,
+                       json_extract(NULLIF(rights_json, ''), '$.survey.confirmed') AS rights_occupant_met,
+                       json_extract(NULLIF(rights_json, ''), '$.survey.label_unverified') AS rights_label_unverified,
                        sold_amount, sold_date
                   FROM auction_items
                 """
@@ -363,6 +368,10 @@ class AuctionStore:
                 ("land_use_detail", "TEXT NOT NULL DEFAULT ''"),
                 ("land_use_status", "TEXT NOT NULL DEFAULT ''"),
                 ("land_use_at", "TEXT"),
+                # 권리 판정(`rights.compute_rights`) — 최선순위·대항력·유치권 해소·점유 확인·실명.
+                # 목록 스냅샷은 문서 본문을 안 읽으므로 여기 적어야 목록 필터가 된다.
+                ("rights_json", "TEXT NOT NULL DEFAULT ''"),
+                ("rights_at", "TEXT"),
             ):
                 if land_col not in columns:
                     conn.execute(f"ALTER TABLE auction_items ADD COLUMN {land_col} {land_ddl}")
@@ -1463,6 +1472,45 @@ class AuctionStore:
                 (json.dumps(detail or {}, ensure_ascii=False), status, utc_now(), utc_now(), item_key),
             )
 
+    def list_rights_targets(self, *, version: int, limit: int = 2000) -> list[dict[str, Any]]:
+        """권리 판정을 (다시) 할 물건. 처음이거나, 문서·비고가 그 뒤에 바뀌었거나, 규칙 버전이
+        올라간 것. 진행 중 먼저 — 끝난 물건은 이름 가리기에만 쓰이므로 뒤로."""
+        with self.connect() as conn:
+            keys = [row[0] for row in conn.execute(
+                """
+                SELECT item_key FROM auction_items
+                 WHERE rights_at IS NULL
+                    OR rights_at < COALESCE(detail_collected_at, '')
+                    OR rights_at < COALESCE(updated_at, '')
+                    OR COALESCE(json_extract(NULLIF(rights_json, ''), '$.v'), 0) < ?
+                 ORDER BY is_active DESC, (rights_at IS NULL) DESC, updated_at DESC
+                 LIMIT ?
+                """,
+                (version, self._push_limit(limit)),
+            )]
+            out = []
+            for key in keys:
+                row = conn.execute(
+                    "SELECT item_key, item_note, raw_json, rights_json, is_active FROM auction_items WHERE item_key = ?",
+                    (key,),
+                ).fetchone()
+                docs = conn.execute(
+                    """SELECT document_type, metadata_json FROM auction_documents
+                        WHERE item_key = ? AND status = 'collected'
+                          AND document_type IN ('현황조사서', '매각물건명세서')""",
+                    (key,),
+                ).fetchall()
+                out.append({**dict(row), "documents": [dict(d) for d in docs]})
+        return out
+
+    def update_rights(self, item_key: str, rights: dict[str, Any]) -> None:
+        """판정을 저장한다. updated_at 은 건드리지 않는다 — rights_at 이 푸시 후보를 만든다."""
+        with self.connect() as conn:
+            conn.execute(
+                "UPDATE auction_items SET rights_json = ?, rights_at = ? WHERE item_key = ?",
+                (json.dumps(rights, ensure_ascii=False), utc_now(), item_key),
+            )
+
     def update_land_use(
         self, item_key: str, *, detail: dict[str, Any] | None, status: str
     ) -> None:
@@ -1704,7 +1752,7 @@ class AuctionStore:
     _PUSH_FRESHNESS_SQL = (
         "MAX(COALESCE(i.updated_at,''), COALESCE(i.detail_collected_at,''), "
         "COALESCE(i.geocoded_at,''), COALESCE(i.official_price_at,''), "
-        "COALESCE(i.building_at,''), COALESCE(i.transactions_at,''))"
+        "COALESCE(i.building_at,''), COALESCE(i.transactions_at,''), COALESCE(i.rights_at,''))"
     )
 
     @staticmethod

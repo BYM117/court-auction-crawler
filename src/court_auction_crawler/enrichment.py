@@ -11,6 +11,7 @@ from typing import Any, Iterator
 from urllib.parse import urlparse
 
 from . import __version__
+from . import rights as _rights
 from .common import TERMINAL_STATUS_KEYWORDS, asset_object_name
 
 BRACKET_RE = re.compile(r"\[([^\]]+)]")
@@ -53,7 +54,7 @@ _TRAP_HIGH = frozenset({   # 낙찰자가 권리를 인수하거나 목적물을
 })
 _TRAP_MEDIUM = frozenset({  # 흠이지만 인수·상실로 바로 이어지진 않는 주의 항목
     "맹지", "농지취득자격증명", "위반건축물", "제시외건물", "재매각", "형식적경매",
-    "대항력포기",
+    "대항력포기", "유치권해소",
 })
 
 # "주택도시보증공사가 … 우선변제권만 주장하고 대항력은 포기" · "매수인에 대한 대항력 포기조건
@@ -61,7 +62,7 @@ _TRAP_MEDIUM = frozenset({  # 흠이지만 인수·상실로 바로 이어지진
 # `대항력있는임차인`(높음)으로 찍혀 활성 1,814건이 헛경고였다(2026-09-23, Jev 세션 발견).
 # 포기 문구를 걷어낸 뒤에도 '대항력' 이 따로 남으면(25건 — "대항력 여지 있는 임대차관계
 # 미상" 등) 포기와 별개의 임차인이 있을 수 있어 그대로 높음에 둔다.
-_WAIVER_RE = re.compile(r"대항력\s*(?:은|을|의)?\s*포기")
+_WAIVER_RE = _rights.WAIVER_RE
 
 
 def to_pyeong(sqm: float | None) -> float | None:
@@ -229,8 +230,11 @@ def parse_special_rights(*texts: Any) -> list[str]:
     for keyword, label in SPECIAL_RIGHT_KEYWORDS:
         if keyword in haystack and label not in found:
             found.append(label)
+    # 포기 문구를 지우고도 '대항력' 이 남는 건 대개 같은 임차인의 되풀이다("대항력 있는 임차인
+    # 있음 … 단, 보증공사가 포기"). 여지·있을 수·미상·주의처럼 **다른** 임차인을 암시할 때만
+    # 높음에 둔다 — 정답지 90건: 이 규칙 90/90, '남으면 높음' 85/90(Jev 세션, 2026-09-23).
     if ("대항력있는임차인" in found and _WAIVER_RE.search(haystack)
-            and "대항력" not in _WAIVER_RE.sub("", haystack)):
+            and not _rights.waiver_leaves_other_tenant(haystack)):
         found[found.index("대항력있는임차인")] = "대항력포기"
     return found
 
@@ -511,6 +515,20 @@ def public_auction_enrichment(item: dict[str, Any]) -> dict[str, Any]:
     if any(mark in case_type for mark in FORMAL_AUCTION_MARKS) and "형식적경매" not in flags:
         flags.append("형식적경매")
 
+    # 권리 판정(`rights` 단계가 rights_json 에 저장). 목록 스냅샷엔 요약 칸만 온다.
+    rights_full = _load_json(item.get("rights_json"))
+    rights_brief = {
+        "opposable": (rights_full.get("opposability") or {}).get("summary") or item.get("rights_opposable") or "",
+        "lien": rights_full.get("lien") if rights_full else item.get("rights_lien"),
+        "occupant_met": (rights_full.get("survey") or {}).get("confirmed") if rights_full
+                        else _json_bool(item.get("rights_occupant_met")),
+        "label_unverified": bool((rights_full.get("survey") or {}).get("label_unverified") if rights_full
+                                 else _json_bool(item.get("rights_label_unverified"))),
+    }
+    # 취하·철회·부존재 확정된 유치권은 높음이 아니라 보통(정답지 67건 중 66, 틀린 1건도 헛경고 쪽).
+    if rights_brief["lien"] == "해소" and "유치권" in flags:
+        flags[flags.index("유치권")] = "유치권해소"
+
     # 위험도는 권리상 함정만 본다 — 위에서 뽑은 특수권리 목록(flags)에서 파생한다.
     screening = build_screening(flags)
 
@@ -628,7 +646,52 @@ def public_auction_enrichment(item: dict[str, Any]) -> dict[str, Any]:
             "geocoded_at": item.get("geocoded_at", ""),
         },
         "screening": screening,
+        "rights": rights_brief,
     }
+
+
+def _load_json(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    try:
+        loaded = json.loads(value or "{}")
+    except (TypeError, ValueError):
+        return {}
+    return loaded if isinstance(loaded, dict) else {}
+
+
+def _json_bool(value: Any) -> bool | None:
+    return None if value is None else bool(value)
+
+
+def public_rights_detail(item: dict[str, Any], active: bool) -> dict[str, Any]:
+    """상세 화면용 권리 판정. **진행 중이면 실명 그대로, 끝나면 가린다**(옥션원 방식).
+
+    끝난 물건인데 Jev 가 문장 속 이름을 아직 못 봤으면 현황조사 메모는 **싣지 않는다** —
+    표 칸 이름만 가리고 내보내면 "허범이 유치권신고" 같은 문장 속 이름이 샌다."""
+    rights = _load_json(item.get("rights_json"))
+    if not rights:
+        return {}
+    opp = rights.get("opposability") or {}
+    survey = dict(rights.get("survey") or {})
+    names = rights.get("names") or {}
+    out = {
+        "senior": rights.get("senior"),
+        "opposable": opp.get("summary", ""),
+        "tenants": opp.get("tenants") or [],
+        "lien": rights.get("lien"),
+        "survey": survey,
+        "parties": names,
+    }
+    if active:
+        return out
+    hidden = _rights.all_names(rights)
+    jev_seen = bool((rights.get("jev") or {}).get("names", {}).get("fp"))
+    out["tenants"] = [{**t, "name": _rights.mask_person_name(str(t.get("name") or ""))} for t in out["tenants"]]
+    out["parties"] = {role: [_rights.mask_person_name(n) for n in group] for role, group in names.items()}
+    survey["memo"] = _rights.mask_text(survey.get("memo") or "", hidden) if jev_seen else ""
+    out["survey"] = survey
+    return out
 
 
 def normalize_case_number(case_no: str, court: str) -> str:
@@ -1113,6 +1176,16 @@ def appraisal_facts(text: str) -> dict[str, Any]:
 
 def public_auction_detail(item: dict[str, Any]) -> dict[str, Any]:
     summary = public_auction_summary(item)
+    active = parse_item_active(item)
+    rights_detail = public_rights_detail(item, active)
+    if rights_detail:
+        summary["rights"] = {**summary.get("rights", {}), **rights_detail}
+    if not active:
+        # 법원 사건 화면의 물건비고 원문 등에 문장 속 실명이 섞여 있다("유치권 신고인 ○○○").
+        # 표 칸 이름만 가리던 것을, 규칙·Jev 가 거둔 이름 전부로 넓힌다.
+        hidden = _rights.all_names(_load_json(item.get("rights_json")))
+        item = {**item, "detail": _rights.mask_payload(item.get("detail", {}), hidden),
+                "raw": _rights.mask_payload(item.get("raw", {}), hidden)}
     summary.update(
         {
             "first_seen_at": item.get("first_seen_at", ""),

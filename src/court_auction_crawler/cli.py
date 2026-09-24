@@ -11,6 +11,8 @@ from typing import Any
 
 from .building_registry import fetch_building_registry
 from .land_use import fetch_land_use
+from . import jev as jev_api
+from . import rights as rights_rules
 from .common import RateLimitError, index_problems, self_restart, singleton_lock
 from .crawler import collect_all_sync, collect_popularity_sync, collect_results_sync, collect_sync
 from .detail_crawler import collect_details_sync
@@ -202,6 +204,15 @@ def build_parser() -> argparse.ArgumentParser:
     collect_results.add_argument("--headful", action="store_true", help="브라우저 창을 표시합니다.")
     collect_results.add_argument("--max-pages", type=int, default=200, help="법원당 최대 페이지 수")
     collect_results.add_argument("--delay", type=float, default=1.5, help="페이지 사이 대기 시간, 초 단위")
+
+    enrich_rights = subparsers.add_parser(
+        "enrich-rights", help="문서를 읽어 최선순위·대항력·유치권 해소·점유 확인·실명을 판정합니다(규칙 + Jev 꼬리)."
+    )
+    enrich_rights.add_argument("--db", default="data/auction.sqlite3", help="SQLite DB 경로")
+    enrich_rights.add_argument("--limit", type=int, default=5000, help="이번 실행의 최대 물건 수(0=전부)")
+    enrich_rights.add_argument("--jev-budget", type=int, default=1500, help="이번 실행에서 Jev 를 부를 최대 물건 수")
+    enrich_rights.add_argument("--no-jev", action="store_true", help="규칙만 돌린다")
+    enrich_rights.add_argument("--quiet", action="store_true", help="진행 로그를 줄입니다.")
 
     enrich_land_use = subparsers.add_parser(
         "enrich-land-use", help="PNU가 있는 물건의 토지이용계획(용도지역·지구)을 채웁니다."
@@ -671,6 +682,13 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
 
+    if args.command == "enrich-rights":
+        store = AuctionStore(args.db)
+        result = run_enrich_rights(store, limit=args.limit, jev_budget=0 if args.no_jev else args.jev_budget,
+                                   quiet=args.quiet)
+        print(format_rights_result(result))
+        return 0
+
     if args.command == "enrich-land-use":
         store = AuctionStore(args.db)
         result = run_enrich_land_use(
@@ -878,6 +896,10 @@ def run_collect_cycle(
         deals = run_enrich_transactions(store, limit=max(price_limit // 3, 50), quiet=True)
         if not deals.get("no_key"):
             print(f"실거래가: 확보 {deals['ok']}개, 대상 {deals['targets']}개")
+    try:
+        print(format_rights_result(run_enrich_rights(store, quiet=True)))
+    except Exception as exc:  # noqa: BLE001 - 판정 실패로 사이클을 멈추지 않는다(규칙 판정은 다음에 다시)
+        print(f"!! 권리 판정 건너뜀: {str(exc)[:150]}")
     return {"items": items, "totals": totals}
 
 
@@ -1367,6 +1389,118 @@ def run_enrich_buildings(
         "ok": counts.get("ok", 0),
         "counts": counts,
     }
+
+
+def _doc_text(documents: list[dict[str, Any]], kind: str) -> str:
+    for doc in documents:
+        if doc.get("document_type") == kind:
+            try:
+                return str(json.loads(doc.get("metadata_json") or "{}").get("text") or "")
+            except (TypeError, ValueError):
+                return ""
+    return ""
+
+
+def run_enrich_rights(store: AuctionStore, *, limit: int = 5000, jev_budget: int = 1500,
+                      quiet: bool = False) -> dict[str, Any]:
+    """문서를 읽어 권리를 판정한다. 규칙은 전부, Jev 는 예산만큼 — 못 채운 것은 다음에.
+
+    Jev 가 하는 일 셋: ① 정규식이 못 뽑은 최선순위 날짜를 후보 중 고르기 ② 끝나면 가릴
+    문장 속 실명 찾기 ③ 규칙이 '안전' 이라 한 것(대항력 포기·유치권 해소)에 두 번째 의견 —
+    엇갈리면 `review` 에 남겨 정답지 후보가 된다(`scripts/jev_review.py`). 답은 입력 지문으로
+    저장해 같은 글이면 다시 묻지 않는다. **실패는 사이클을 안 멈추고 세기만 한다.**"""
+    from .enrichment import parse_occupants
+
+    rows = store.list_rights_targets(version=rights_rules.RIGHTS_VERSION, limit=limit)
+    use_jev = jev_budget > 0 and jev_api.available()
+    counts = {"targets": len(rows), "saved": 0, "jev_items": 0, "jev_calls": 0, "jev_errors": 0,
+              "jev_pending": 0, "review": 0, "senior_rule": 0, "senior_jev": 0}
+    for index, row in enumerate(rows, start=1):
+        documents = row["documents"]
+        spec, survey = _doc_text(documents, "매각물건명세서"), _doc_text(documents, "현황조사서")
+        try:
+            raw = json.loads(row.get("raw_json") or "{}")
+        except (TypeError, ValueError):
+            raw = {}
+        note = " ".join(t for t in (str(raw.get("비고") or ""), str(row.get("item_note") or "")) if t)
+        occupants = parse_occupants(documents)
+        prev = rights_rules_load(row.get("rights_json"))
+        state = dict(prev.get("jev") or {})
+
+        def answers() -> dict[str, Any]:
+            return {"senior": state.get("senior") or {}, "names": (state.get("names") or {}).get("found") or []}
+
+        result = rights_rules.compute_rights(spec_text=spec, survey_text=survey, note=note,
+                                             occupants=occupants, jev=answers())
+        review: list[dict[str, Any]] = list(prev.get("review") or [])
+        pending = False
+        if use_jev and counts["jev_items"] < jev_budget:
+            counts["jev_items"] += 1
+            try:
+                senior = result.get("senior")
+                if senior is None or senior.get("source") == "jev":
+                    window, cands = rights_rules.senior_candidates(spec)
+                    fp = jev_api.fingerprint(jev_api.QUESTIONS["senior"]["version"], window)
+                    if cands and (state.get("senior") or {}).get("fp") != fp:
+                        state["senior"] = {"fp": fp, **(jev_api.pick_senior(window, cands) or {})}
+                        counts["jev_calls"] += 1
+                text = " ".join(t for t in (result["survey"]["memo"], note) if t)
+                fp = jev_api.fingerprint(jev_api.QUESTIONS["name"]["version"], text)
+                if (state.get("names") or {}).get("fp") != fp:
+                    known = {n for group in result["names"].values() for n in group}
+                    cands = [c for c in rights_rules.name_candidates(text) if c not in known]
+                    state["names"] = {"fp": fp, "found": jev_api.find_names(text, cands) if cands else []}
+                    counts["jev_calls"] += bool(cands)
+                for kind, rule_safe in (("waiver", result.get("waiver_other_tenant") is False),
+                                        ("lien", result.get("lien") == "해소")):
+                    if not rule_safe:
+                        continue
+                    fp = jev_api.fingerprint(jev_api.QUESTIONS[kind if kind == "waiver" else "lien_resolved"]["version"], note)
+                    if (state.get(kind) or {}).get("fp") == fp:
+                        continue
+                    opinion = jev_api.second_opinion(note, kind)
+                    state[kind] = {"fp": fp, **opinion}
+                    counts["jev_calls"] += 1
+                    risky = (opinion.get("other_tenant", 0) >= 0.5 or opinion.get("waiver", 1) < 0.5) if kind == "waiver" \
+                        else (opinion.get("lien_remaining", 0) >= 0.5 or opinion.get("lien_resolved", 1) < 0.5)
+                    if risky:
+                        review.append({"kind": kind, "rule": "안전", "jev": opinion, "fp": fp})
+                state.pop("error", None)
+            except jev_api.JevError as error:
+                state["error"] = str(error)[:200]
+                counts["jev_errors"] += 1
+                pending = True
+            result = rights_rules.compute_rights(spec_text=spec, survey_text=survey, note=note,
+                                                 occupants=occupants, jev=answers())
+        elif use_jev:
+            pending = True
+        counts["jev_pending"] += pending
+        counts["review"] += len(review) > len(prev.get("review") or [])
+        senior = result.get("senior") or {}
+        counts["senior_rule"] += senior.get("source") == "rule"
+        counts["senior_jev"] += senior.get("source") == "jev"
+        result.update({"jev": state, "review": review[-5:], "jev_pending": pending})
+        store.update_rights(row["item_key"], result)
+        counts["saved"] += 1
+        if not quiet and index % 500 == 0:
+            print(f"  진행 {index}/{len(rows)} · Jev 호출 {counts['jev_calls']} · 오류 {counts['jev_errors']}")
+    counts["jev_on"] = use_jev
+    return counts
+
+
+def rights_rules_load(value: Any) -> dict[str, Any]:
+    try:
+        loaded = json.loads(value or "{}")
+    except (TypeError, ValueError):
+        return {}
+    return loaded if isinstance(loaded, dict) else {}
+
+
+def format_rights_result(r: dict[str, Any]) -> str:
+    jev = (f"Jev 물건 {r['jev_items']} · 호출 {r['jev_calls']} · 오류 {r['jev_errors']} · 다음으로 미룸 {r['jev_pending']}"
+           if r.get("jev_on") else "Jev 꺼짐(TYPESAFE_API_KEY 없음 또는 --no-jev)")
+    return (f"권리 판정: 저장 {r['saved']}개 / 대상 {r['targets']}개 · 최선순위 규칙 {r['senior_rule']} Jev {r['senior_jev']}"
+            f" · 엇갈림 새로 {r['review']}건 · {jev}")
 
 
 def run_enrich_land_use(
