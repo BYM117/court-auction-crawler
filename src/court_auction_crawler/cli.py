@@ -1417,18 +1417,22 @@ def run_enrich_rights(store: AuctionStore, *, limit: int = 5000, jev_budget: int
               "jev_pending": 0, "review": 0, "senior_rule": 0, "senior_jev": 0, "locked_skip": 0}
     total = limit if limit and limit > 0 else 10**9
     seen: set[str] = set()
+    # 처리했는데도 조건에 계속 걸리는 것(잠겨서 못 쓴 것, Jev 가 실패해 미룬 것). 다음 묶음을 가져올 때
+    # 이만큼만 더 가져와 거른다 — 처리한 것 전부만큼 더 가져오면 처리 안 된 것을 수만 건씩 문서째 읽고
+    # 500건만 쓰는 꼴이 된다(2026-09-24 백필이 뒤로 갈수록 느려졌다).
+    sticky: set[str] = set()
 
     def batches():
         # 500건씩 끊는다 — 6만 건의 문서 본문을 한꺼번에 올리면 수백 MB 이고, 다 읽는 동안
         # 첫 저장이 늦어져 잠금에 걸렸다(2026-09-24 백필이 한 건도 못 쓰고 멈췄다).
         while counts["targets"] < total:
             want = min(500, total - counts["targets"])
-            rows = store.list_rights_targets(version=rights_rules.RIGHTS_VERSION, limit=want + len(seen),
+            rows = store.list_rights_targets(version=rights_rules.RIGHTS_VERSION, limit=want + len(sticky),
                                              exclude=seen)[:want]
             if use_jev and len(rows) < want and counts["jev_items"] < jev_budget:
                 # 규칙만 먼저 백필한 물건도 언젠가 Jev 를 받아야 한다 — 남는 예산으로 채운다.
                 rows += store.list_rights_targets(version=rights_rules.RIGHTS_VERSION,
-                                                  limit=want - len(rows) + len(seen), jev_missing=True,
+                                                  limit=want - len(rows) + len(sticky), jev_missing=True,
                                                   exclude=seen | {r["item_key"] for r in rows})[:want - len(rows)]
             if not rows:
                 return
@@ -1447,6 +1451,7 @@ def run_enrich_rights(store: AuctionStore, *, limit: int = 5000, jev_budget: int
                     break
                 time.sleep(wait)
         counts["locked_skip"] += 1   # 이 건만 다음으로 — 판정 전체를 멈추지 않는다
+        sticky.add(key)
         return False
 
     rows = (row for batch in batches() for row in batch)
@@ -1512,6 +1517,8 @@ def run_enrich_rights(store: AuctionStore, *, limit: int = 5000, jev_budget: int
         elif use_jev:
             pending = True
         counts["jev_pending"] += pending
+        if pending:
+            sticky.add(row["item_key"])
         counts["review"] += len(review) > len(prev.get("review") or [])
         senior = result.get("senior") or {}
         counts["senior_rule"] += senior.get("source") == "rule"

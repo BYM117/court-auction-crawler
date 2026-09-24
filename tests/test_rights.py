@@ -207,6 +207,7 @@ class 백필루프(unittest.TestCase):
                 self.saved = {}
 
             def list_rights_targets(self, *, version, limit, jev_missing=False, exclude=None):
+                self.asked = max(getattr(self, "asked", 0), limit)
                 if jev_missing:
                     return []
                 keys = [f"k{n}" for n in range(1200) if f"k{n}" not in self.saved and f"k{n}" not in (exclude or set())]
@@ -224,6 +225,8 @@ class 백필루프(unittest.TestCase):
         self.assertEqual(len(store.saved), 1199)
         self.assertEqual(got["locked_skip"], 1)
         self.assertEqual(got["targets"], 1200)
+        # 한 번에 500 + (잠긴 1건) 만 가져온다 — 처리한 것만큼 불어나면 안 된다
+        self.assertLessEqual(store.asked, 501)
 
 
 if __name__ == "__main__":
