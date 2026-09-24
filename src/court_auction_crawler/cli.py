@@ -1479,11 +1479,13 @@ def run_enrich_rights(store: AuctionStore, *, limit: int = 5000, jev_budget: int
                     if cands and (state.get("senior") or {}).get("fp") != fp:
                         state["senior"] = {"fp": fp, **(jev_api.pick_senior(window, cands) or {})}
                         counts["jev_calls"] += 1
-                text = " ".join(t for t in (result["survey"]["memo"], note) if t)
+                # 메모·비고 + 명세서 문장 속 '소유자 ○○○' 자리의 앞뒤 글. 표 칸 이름은 이미 확실하니 빼고 묻는다.
+                text = " … ".join(t for t in (result["survey"]["memo"], note, *result["name_windows"]) if t)
                 fp = jev_api.fingerprint(jev_api.QUESTIONS["name"]["version"], text)
                 if (state.get("names") or {}).get("fp") != fp:
                     known = {n for group in result["names"].values() for n in group}
-                    cands = [c for c in rights_rules.name_candidates(text) if c not in known]
+                    cands = list(dict.fromkeys(
+                        c for c in [*result["name_candidates"], *rights_rules.name_candidates(text)] if c not in known))
                     state["names"] = {"fp": fp, "found": jev_api.find_names(text, cands) if cands else []}
                     counts["jev_calls"] += bool(cands)
                 for kind, rule_safe in (("waiver", result.get("waiver_other_tenant") is False),

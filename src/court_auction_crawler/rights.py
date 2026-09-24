@@ -236,7 +236,14 @@ _NOT_NAME = frozenset(
     "민원 정확 정도 장소 장비 강제 경매 정리 한편 우선 우측 좌측 배당 배우자 소재 소재지 구조 지목 도로 "
     "목록 명의 명도 계약 표시 표지 반환 변제 변경 연락 연락처 제시 제출 제외 채권 위반 유선 유무 인근 인접 "
     "지하 지상 오피스텔 원룸 상가 주택 주식 한국 공사 문서 서류 송달 방문시 전화 사장 직원 대표 대표이사 "
-    "전용 전용허가 허가 신축 준공 사용승인".split())
+    "전용 전용허가 허가 신축 준공 사용승인 "
+    # 실데이터에서 이름으로 잘못 거둔 것(2026-09-24): 조사·어미가 붙은 낱말, 용도어
+    "소유 소유로 소유의 소유임 이고 이며 이자 이외 이외에 이상의 이하의 이내 주거 점포 사무실 공장 창고 "
+    "영업 영업장 공실 한명 전원 정도 각자 각각 공동 단독 유일 동일 최고 최저 이미 이번 이사 임의로 "
+    "조사불가 조사불능 현재 현재까지 주택도 주택도시 소유라고 명의의 지분을 진술에".split())
+# 이름 뒤에 붙은 조사를 뗀다. 네 글자면 끝 한 글자 조사, 두 글자 조사는 남는 게 두 글자 이상일 때.
+_NAME_TAIL_1 = tuple("은는이가의과와외에도")
+_NAME_TAIL_2 = ("으로", "에게", "로부터", "으로부터", "에서", "께서")
 _SURNAMES = set("김이박최정강조윤장임한오서신권황안송류유전홍고문양손배백허남심노하곽성차주우구민진지엄채원천방"
                 "공현함변염여추도소석선설마길연위표명기반왕금옥육인맹제모탁국어은편용")
 
@@ -246,26 +253,52 @@ def _looks_like_name(word: str) -> bool:
             and not any(c in word for c in _CORP))
 
 
-def harvest_names(documents: list[dict[str, Any]], occupants: list[dict[str, Any]] | None = None) -> dict[str, list[str]]:
-    """역할별 실명. {'소유자': [...], '채무자': [...], '임차인': [...], ...}"""
-    found: dict[str, list[str]] = {}
+def _clean_name(name: str) -> str:
+    """조사를 떼고 이름꼴이면 돌려준다, 아니면 ''. 떼기 전 모양도 제외어로 본다('조사불가' → '조사불')."""
+    if name in _NOT_NAME:
+        return ""
+    for tail in _NAME_TAIL_2:
+        if name.endswith(tail) and len(name) - len(tail) >= 2:
+            name = name[: -len(tail)]
+            break
+    else:
+        if len(name) == 4 and name.endswith(_NAME_TAIL_1):
+            name = name[:-1]
+    return name if _looks_like_name(name) else ""
 
-    def add(role: str, name: str) -> None:
+
+def harvest_names(documents: list[dict[str, Any]], occupants: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    """이름을 두 갈래로 거둔다.
+
+    - `table`: 현황조사서 표의 '점유인' 칸 — 법원이 이름 칸이라고 정한 자리라 그대로 쓴다.
+    - `prose`: 문장 속 "소유자 ○○○"·"○○○(채무자)" — **후보일 뿐**이다. 실데이터에서 '소유로'·'이며'·
+      '현재'·'조사불(가)' 를 이름으로 집었다(2026-09-24). Jev 가 사람 이름이라 확인한 것만 쓴다.
+    - `windows`: prose 후보 앞뒤 글 — Jev 에게 문맥으로 준다."""
+    table: dict[str, list[str]] = {}
+    prose: dict[str, list[str]] = {}
+    windows: list[str] = []
+
+    def add(bucket: dict[str, list[str]], role: str, raw: str) -> str:
         role = "채무자겸소유자" if "겸" in role else role.replace(" ", "")
-        if _looks_like_name(name) and name not in found.setdefault(role, []):
-            found[role].append(name)
+        name = _clean_name(raw)
+        if name and name not in bucket.setdefault(role, []):
+            bucket[role].append(name)
+        return name
 
     for occ in occupants or []:
-        add(str(occ.get("role") or "점유인"), str(occ.get("name") or ""))
+        add(table, str(occ.get("role") or "점유인"), str(occ.get("name") or ""))
     for doc in documents or []:
         if str(doc.get("document_type") or "") not in ("현황조사서", "매각물건명세서"):
             continue
         text = str((doc.get("metadata") or {}).get("text") or "")
-        for role, name in _ROLE_BEFORE.findall(text):
-            add(role, name)
-        for name, role in _ROLE_AFTER.findall(text):
-            add(role, name)
-    return {role: names for role, names in found.items() if names}
+        for m in _ROLE_BEFORE.finditer(text):
+            if add(prose, m.group(1), m.group(2)):
+                windows.append(text[max(0, m.start() - 40): m.end() + 40])
+        for m in _ROLE_AFTER.finditer(text):
+            if add(prose, m.group(2), m.group(1)):
+                windows.append(text[max(0, m.start() - 40): m.end() + 40])
+    return {"table": {r: n for r, n in table.items() if n}, "prose": {r: n for r, n in prose.items() if n},
+            "windows": windows[:30]}
 
 
 def mask_person_name(name: str) -> str:
@@ -322,7 +355,7 @@ def mask_payload(node: Any, names: list[str]) -> Any:
     return node
 
 
-RIGHTS_VERSION = 2   # 2: 남의 호실 임차인을 뺀다
+RIGHTS_VERSION = 4   # 4: 문장 속 이름은 Jev 확인분만 · 2: 남의 호실 임차인을 뺀다 · 3: 문장에서 거둔 이름의 조사·낱말을 걸렀다
 
 
 def compute_rights(*, spec_text: str, survey_text: str, note: str,
@@ -337,9 +370,15 @@ def compute_rights(*, spec_text: str, survey_text: str, note: str,
     if senior is None and (jev.get("senior") or {}).get("date"):
         senior = {**jev["senior"], "source": "jev"}
     memo = survey_memo(survey_text)
-    rule_names = harvest_names(
+    harvested = harvest_names(
         [{"document_type": "현황조사서", "metadata": {"text": survey_text}},
          {"document_type": "매각물건명세서", "metadata": {"text": spec_text}}], occupants)
+    confirmed = set(jev.get("names") or [])
+    names = {role: list(group) for role, group in harvested["table"].items()}
+    for role, group in harvested["prose"].items():
+        for name in group:   # 문장에서 거둔 것은 Jev 가 사람 이름이라 한 것만
+            if name in confirmed and name not in names.setdefault(role, []):
+                names[role].append(name)
     return {
         "v": RIGHTS_VERSION,
         "senior": senior,
@@ -347,8 +386,10 @@ def compute_rights(*, spec_text: str, survey_text: str, note: str,
         "lien": lien_status(note),
         "waiver_other_tenant": waiver_leaves_other_tenant(note) if WAIVER_RE.search(note) else None,
         "survey": {**occupancy_check(memo), "memo": memo},
-        "names": rule_names,
-        "jev_names": list(jev.get("names") or []),
+        "names": {role: group for role, group in names.items() if group},
+        "name_candidates": sorted({n for group in harvested["prose"].values() for n in group}),
+        "name_windows": harvested["windows"],
+        "jev_names": sorted(confirmed),
     }
 
 

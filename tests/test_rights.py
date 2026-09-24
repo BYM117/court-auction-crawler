@@ -137,6 +137,19 @@ class 실명(unittest.TestCase):
     def test_두_글자_이름은_다른_낱말_속에서_안_가린다(self):
         self.assertEqual(R.mask_text("정원이 신고. 정원수 식재. 정원(임차인)", ["정원"]), "정○이 신고. 정원수 식재. 정○(임차인)")
 
+    def test_문장_속_이름은_Jev가_확인해야_쓴다(self):
+        survey = "소유자 김정년 세대만 전입. 채권자 이며 소유자 명의로 등기"
+        base = dict(spec_text="", survey_text=survey, note="", occupants=[])
+        self.assertEqual(R.compute_rights(**base)["names"], {})
+        self.assertIn("김정년", R.compute_rights(**base)["name_candidates"])
+        self.assertNotIn("이며", R.compute_rights(**base)["name_candidates"])
+        self.assertEqual(R.compute_rights(**base, jev={"names": ["김정년"]})["names"], {"소유자": ["김정년"]})
+
+    def test_표_칸_이름도_낱말은_거른다(self):
+        got = R.harvest_names([], [{"name": "조사불가", "role": "임차인"}, {"name": "주거", "role": "임차인"},
+                                   {"name": "홍길동", "role": "임차인"}])
+        self.assertEqual(got["table"], {"임차인": ["홍길동"]})
+
     def _item(self, active: bool, jev_seen: bool) -> dict:
         rights = R.compute_rights(
             spec_text="최선순위 / 별지 기재와 같음 2020.1.1. 근저당권 배당요구종기",
