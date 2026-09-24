@@ -130,10 +130,14 @@ class 실명(unittest.TestCase):
         return {"item_key": "t", "case_no": "2025타경1", "court": "가나지원", "address": "서울",
                 "is_active": 1 if active else 0, "status": "" if active else "매각",
                 "rights_json": __import__("json").dumps(rights, ensure_ascii=False),
-                "detail": {"물건비고": "박영희로부터 유치권신고"}, "raw": {}}
+                "detail": {"물건비고": "박영희로부터 유치권신고"}, "raw": {},
+                "documents": [{"id": 1, "document_type": "현황조사서", "status": "collected",
+                               "metadata": {"text": "유치권자 박영희가 공사대금을 주장. 임차인 홍길동 면담"}}]}
 
     def test_진행_중이면_실명_그대로(self):
-        got = public_auction_detail(self._item(active=True, jev_seen=True))["rights"]
+        detail = public_auction_detail(self._item(active=True, jev_seen=True))
+        self.assertIn("박영희", str(detail["documents"]))
+        got = detail["rights"]
         self.assertEqual(got["tenants"][0]["name"], "홍길동")
         self.assertEqual(got["opposable"], "있음")
         self.assertIn("박영희", got["survey"]["memo"])
@@ -144,6 +148,8 @@ class 실명(unittest.TestCase):
         self.assertEqual(got["tenants"][0]["name"], "홍○○")
         self.assertNotIn("박영희", got["survey"]["memo"])
         self.assertNotIn("박영희", str(detail["detail"]))
+        self.assertNotIn("박영희", str(detail["documents"]))
+        self.assertNotIn("홍길동", str(detail["documents"]))
 
     def test_끝났는데_Jev가_아직이면_메모를_아예_안_싣는다(self):
         got = public_auction_detail(self._item(active=False, jev_seen=False))["rights"]

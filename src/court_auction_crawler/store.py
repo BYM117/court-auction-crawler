@@ -1472,22 +1472,32 @@ class AuctionStore:
                 (json.dumps(detail or {}, ensure_ascii=False), status, utc_now(), utc_now(), item_key),
             )
 
-    def list_rights_targets(self, *, version: int, limit: int = 2000) -> list[dict[str, Any]]:
+    def list_rights_targets(self, *, version: int, limit: int = 2000, jev_missing: bool = False,
+                            exclude: set[str] | None = None) -> list[dict[str, Any]]:
         """권리 판정을 (다시) 할 물건. 처음이거나, 문서·비고가 그 뒤에 바뀌었거나, 규칙 버전이
-        올라간 것. 진행 중 먼저 — 끝난 물건은 이름 가리기에만 쓰이므로 뒤로."""
+        올라간 것 — 진행 중 먼저.
+
+        `jev_missing` 은 규칙 판정은 됐는데 Jev 가 아직 문장 속 이름을 안 본 것이다. 이쪽은
+        **끝난 물건 먼저** — 끝난 물건의 문서 본문은 이미 R2 에 있고, Jev 가 이름을 찾아야
+        문장 속 실명까지 가려진다. 진행 중 물건의 이름은 끝날 때 쓰인다."""
+        if jev_missing:
+            sql = """SELECT item_key FROM auction_items
+                      WHERE rights_json <> ''
+                        AND json_extract(rights_json, '$.jev.names.fp') IS NULL
+                      ORDER BY is_active ASC, updated_at DESC
+                      LIMIT ?"""
+            params: tuple[Any, ...] = (self._push_limit(limit),)
+        else:
+            sql = """SELECT item_key FROM auction_items
+                      WHERE rights_at IS NULL
+                         OR rights_at < COALESCE(detail_collected_at, '')
+                         OR rights_at < COALESCE(updated_at, '')
+                         OR COALESCE(json_extract(NULLIF(rights_json, ''), '$.v'), 0) < ?
+                      ORDER BY is_active DESC, (rights_at IS NULL) DESC, updated_at DESC
+                      LIMIT ?"""
+            params = (version, self._push_limit(limit))
         with self.connect() as conn:
-            keys = [row[0] for row in conn.execute(
-                """
-                SELECT item_key FROM auction_items
-                 WHERE rights_at IS NULL
-                    OR rights_at < COALESCE(detail_collected_at, '')
-                    OR rights_at < COALESCE(updated_at, '')
-                    OR COALESCE(json_extract(NULLIF(rights_json, ''), '$.v'), 0) < ?
-                 ORDER BY is_active DESC, (rights_at IS NULL) DESC, updated_at DESC
-                 LIMIT ?
-                """,
-                (version, self._push_limit(limit)),
-            )]
+            keys = [row[0] for row in conn.execute(sql, params) if row[0] not in (exclude or set())]
             out = []
             for key in keys:
                 row = conn.execute(

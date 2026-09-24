@@ -1413,6 +1413,10 @@ def run_enrich_rights(store: AuctionStore, *, limit: int = 5000, jev_budget: int
 
     rows = store.list_rights_targets(version=rights_rules.RIGHTS_VERSION, limit=limit)
     use_jev = jev_budget > 0 and jev_api.available()
+    if use_jev and len(rows) < jev_budget:
+        # 규칙만 먼저 백필한 물건도 언젠가 Jev 를 받아야 한다 — 남는 예산으로 채운다.
+        rows += store.list_rights_targets(version=rights_rules.RIGHTS_VERSION, limit=jev_budget - len(rows),
+                                          jev_missing=True, exclude={r["item_key"] for r in rows})
     counts = {"targets": len(rows), "saved": 0, "jev_items": 0, "jev_calls": 0, "jev_errors": 0,
               "jev_pending": 0, "review": 0, "senior_rule": 0, "senior_jev": 0}
     for index, row in enumerate(rows, start=1):

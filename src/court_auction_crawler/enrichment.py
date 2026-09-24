@@ -1184,8 +1184,11 @@ def public_auction_detail(item: dict[str, Any]) -> dict[str, Any]:
         # 법원 사건 화면의 물건비고 원문 등에 문장 속 실명이 섞여 있다("유치권 신고인 ○○○").
         # 표 칸 이름만 가리던 것을, 규칙·Jev 가 거둔 이름 전부로 넓힌다.
         hidden = _rights.all_names(_load_json(item.get("rights_json")))
+        # 문서 본문(documents[].metadata)도 그대로 실려 나간다 — 웹의 가림은 '이름 칸' 만 거두므로
+        # "허범이 유치권신고" 같은 문장 속 이름은 여기서 가려 둔다. R2 에는 가린 것만 올라간다.
         item = {**item, "detail": _rights.mask_payload(item.get("detail", {}), hidden),
-                "raw": _rights.mask_payload(item.get("raw", {}), hidden)}
+                "raw": _rights.mask_payload(item.get("raw", {}), hidden),
+                "documents": _rights.mask_payload(item.get("documents", []), hidden)}
     summary.update(
         {
             "first_seen_at": item.get("first_seen_at", ""),
