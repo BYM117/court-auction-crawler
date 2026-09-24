@@ -1,0 +1,92 @@
+{
+ "source": "auction_items.item_note",
+ "label": "name_hashes: 실명의 sha256('jev-name:'+이름) 앞 16자 — 저장소에 실명을 두지 않는다",
+ "rule": "(없음 — 규칙은 문장 속 이름을 못 잡는다)",
+ "jev": [
+  "name"
+ ],
+ "items": [
+  {
+   "key": "auction:서울동부지방법원:2024타경447:4",
+   "text_fp": "195735bdf0fda78e",
+   "name_hashes": [
+    "56401e75a6da4b38"
+   ]
+  },
+  {
+   "key": "auction:통영지원:2025타경21174:1",
+   "text_fp": "88cac6b3c384ec45",
+   "name_hashes": [
+    "21e235b68cf909bc"
+   ]
+  },
+  {
+   "key": "auction:안산지원:2024타경3131:3",
+   "text_fp": "682034669b4ccd89",
+   "name_hashes": [
+    "db8543c7d7dc3517"
+   ]
+  },
+  {
+   "key": "auction:대구지방법원:2025타경637:1",
+   "text_fp": "9823abd67a03cd49",
+   "name_hashes": []
+  },
+  {
+   "key": "auction:수원지방법원:2024타경97460:1",
+   "text_fp": "4e91a4f69ed65ef2",
+   "name_hashes": [
+    "7d64f6d39368ebc2",
+    "c29c37f80d9c07f1",
+    "eb36901e4e75c5d4"
+   ]
+  },
+  {
+   "key": "auction:여주지원:2024타경36904:2",
+   "text_fp": "4fc42ff13a352032",
+   "name_hashes": []
+  },
+  {
+   "key": "auction:서산지원:2023타경5828:1",
+   "text_fp": "5a1298674161499a",
+   "name_hashes": [
+    "8a9a8bf73263b636"
+   ]
+  },
+  {
+   "key": "auction:성남지원:2025타경52769:1",
+   "text_fp": "92b43dbcb5b7c8a6",
+   "name_hashes": [
+    "7dd9d3e7795b323f"
+   ]
+  },
+  {
+   "key": "auction:대전지방법원:2026타경600070:1",
+   "text_fp": "a74155ffe2a0e908",
+   "name_hashes": [
+    "e39468413a5a4004"
+   ]
+  },
+  {
+   "key": "auction:천안지원:2025타경420:1",
+   "text_fp": "cbb6d84e5c80aa54",
+   "name_hashes": [
+    "2b3456126e3e2ae9"
+   ]
+  },
+  {
+   "key": "auction:평택지원:2024타경56987:6",
+   "text_fp": "3964bd1f1290748e",
+   "name_hashes": [
+    "3c07d45e2d1fa375"
+   ]
+  },
+  {
+   "key": "auction:창원지방법원:2025타경12044:1",
+   "text_fp": "c3a7b8b9c18b96ba",
+   "name_hashes": [
+    "8745e37df52c0ba9"
+   ]
+  }
+ ]
+}

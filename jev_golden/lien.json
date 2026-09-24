@@ -1,0 +1,413 @@
+{
+ "source": "auction_items.item_note",
+ "label": "status: 해소 | 남음",
+ "rule": "rights.lien_status",
+ "jev": [
+  "lien_resolved",
+  "lien_remaining"
+ ],
+ "items": [
+  {
+   "key": "auction:서울동부지방법원:2024타경447:4",
+   "text_fp": "195735bdf0fda78e",
+   "status": "해소",
+   "tag": "1차"
+  },
+  {
+   "key": "auction:진주지원:2018타경2768:1",
+   "text_fp": "2c5dfbb80b3d3211",
+   "status": "남음",
+   "tag": "1차"
+  },
+  {
+   "key": "auction:고양지원:2026타경60822:2",
+   "text_fp": "7b7a1e0ebcc665c2",
+   "status": "남음",
+   "tag": "1차"
+  },
+  {
+   "key": "auction:제주지방법원:2023타경10315:1",
+   "text_fp": "6d1de64fb7c97e36",
+   "status": "남음",
+   "tag": "1차"
+  },
+  {
+   "key": "auction:수원지방법원:2025타경56267:1",
+   "text_fp": "12e1d2b20104718b",
+   "status": "남음",
+   "tag": "1차"
+  },
+  {
+   "key": "auction:통영지원:2025타경21174:1",
+   "text_fp": "88cac6b3c384ec45",
+   "status": "남음",
+   "tag": "1차"
+  },
+  {
+   "key": "auction:천안지원:2025타경542:2",
+   "text_fp": "20f6a55ec6b31af0",
+   "status": "남음",
+   "tag": "1차"
+  },
+  {
+   "key": "auction:안산지원:2024타경3131:3",
+   "text_fp": "682034669b4ccd89",
+   "status": "남음",
+   "tag": "1차"
+  },
+  {
+   "key": "auction:부산지방법원:2024타경66756:6",
+   "text_fp": "58808fb084e794a1",
+   "status": "해소",
+   "tag": "1차"
+  },
+  {
+   "key": "auction:대구지방법원:2025타경637:1",
+   "text_fp": "9823abd67a03cd49",
+   "status": "남음",
+   "tag": "1차"
+  },
+  {
+   "key": "auction:수원지방법원:2024타경97460:1",
+   "text_fp": "4e91a4f69ed65ef2",
+   "status": "남음",
+   "tag": "1차"
+  },
+  {
+   "key": "auction:남양주지원:2025타경423:1",
+   "text_fp": "f8a855f90308191c",
+   "status": "남음",
+   "tag": "1차"
+  },
+  {
+   "key": "auction:안산지원:2025타경52940:1",
+   "text_fp": "2d9e735471a6046f",
+   "status": "남음",
+   "tag": "1차"
+  },
+  {
+   "key": "auction:여주지원:2024타경36904:2",
+   "text_fp": "4fc42ff13a352032",
+   "status": "남음",
+   "tag": "1차"
+  },
+  {
+   "key": "auction:천안지원:2024타경107800:1",
+   "text_fp": "b1be5b139715de7c",
+   "status": "남음",
+   "tag": "1차"
+  },
+  {
+   "key": "auction:서산지원:2025타경51274:1",
+   "text_fp": "fc7d1ebd574b903f",
+   "status": "남음",
+   "tag": "1차"
+  },
+  {
+   "key": "auction:서산지원:2023타경5828:1",
+   "text_fp": "5a1298674161499a",
+   "status": "해소",
+   "tag": "1차"
+  },
+  {
+   "key": "auction:부산지방법원:2025타경21697:12",
+   "text_fp": "9b2ba92790b99895",
+   "status": "남음",
+   "tag": "1차"
+  },
+  {
+   "key": "auction:평택지원:2025타경43236:1",
+   "text_fp": "65554b9faff2d138",
+   "status": "남음",
+   "tag": "1차"
+  },
+  {
+   "key": "auction:성남지원:2025타경52769:1",
+   "text_fp": "92b43dbcb5b7c8a6",
+   "status": "남음",
+   "tag": "1차"
+  },
+  {
+   "key": "auction:천안지원:2024타경107800:4",
+   "text_fp": "b1be5b139715de7c",
+   "status": "남음",
+   "tag": "1차"
+  },
+  {
+   "key": "auction:대전지방법원:2026타경600070:1",
+   "text_fp": "a74155ffe2a0e908",
+   "status": "남음",
+   "tag": "1차"
+  },
+  {
+   "key": "auction:고양지원:2025타경64061:1",
+   "text_fp": "dd418616c18613b9",
+   "status": "남음",
+   "tag": "1차"
+  },
+  {
+   "key": "auction:천안지원:2025타경420:1",
+   "text_fp": "cbb6d84e5c80aa54",
+   "status": "해소",
+   "tag": "1차"
+  },
+  {
+   "key": "auction:평택지원:2024타경56987:6",
+   "text_fp": "3964bd1f1290748e",
+   "status": "남음",
+   "tag": "1차"
+  },
+  {
+   "key": "auction:대전지방법원:2025타경2491:3",
+   "text_fp": "8bec88c502c93a02",
+   "status": "남음",
+   "tag": "1차"
+  },
+  {
+   "key": "auction:고양지원:2025타경64660:1",
+   "text_fp": "92f7d19c6744911f",
+   "status": "해소",
+   "tag": "1차"
+  },
+  {
+   "key": "auction:대구지방법원:2025타경10026:1",
+   "text_fp": "34469ba8e097db3a",
+   "status": "남음",
+   "tag": "1차"
+  },
+  {
+   "key": "auction:인천지방법원:2025타경784:1",
+   "text_fp": "34dbdba962484228",
+   "status": "남음",
+   "tag": "1차"
+  },
+  {
+   "key": "auction:창원지방법원:2025타경12044:1",
+   "text_fp": "c3a7b8b9c18b96ba",
+   "status": "남음",
+   "tag": "1차"
+  },
+  {
+   "key": "auction:홍성지원:2024타경21306:1",
+   "text_fp": "425dc1308637f173",
+   "status": "해소",
+   "tag": "2차"
+  },
+  {
+   "key": "auction:포항지원:2024타경34454:1",
+   "text_fp": "78d0df8576055b60",
+   "status": "남음",
+   "tag": "2차"
+  },
+  {
+   "key": "auction:부산지방법원:2025타경21605:7",
+   "text_fp": "37f91b8457436b83",
+   "status": "해소",
+   "tag": "2차"
+  },
+  {
+   "key": "auction:광주지방법원:2025타경32224:4",
+   "text_fp": "338867c04e5474ff",
+   "status": "남음",
+   "tag": "2차"
+  },
+  {
+   "key": "auction:서울동부지방법원:2024타경447:5",
+   "text_fp": "912ca0681fce5d97",
+   "status": "해소",
+   "tag": "2차"
+  },
+  {
+   "key": "auction:부천지원:2022타경35280:1",
+   "text_fp": "6ff17e0c26811f22",
+   "status": "남음",
+   "tag": "2차"
+  },
+  {
+   "key": "auction:대구지방법원:2024타경108927:1",
+   "text_fp": "39f67b29f9cef082",
+   "status": "해소",
+   "tag": "2차"
+  },
+  {
+   "key": "auction:부산지방법원:2024타경66756:3",
+   "text_fp": "d7ecf1a7f0fb4532",
+   "status": "해소",
+   "tag": "2차"
+  },
+  {
+   "key": "auction:청주지방법원:2025타경3336:1",
+   "text_fp": "0d847c2702bd93c3",
+   "status": "해소",
+   "tag": "2차"
+  },
+  {
+   "key": "auction:인천지방법원:2023타경519799:1",
+   "text_fp": "7de5a90f3f654988",
+   "status": "남음",
+   "tag": "2차"
+  },
+  {
+   "key": "auction:평택지원:2022타경683:1",
+   "text_fp": "855d6dbdcc0a5974",
+   "status": "해소",
+   "tag": "2차"
+  },
+  {
+   "key": "auction:대전지방법원:2025타경502176:1",
+   "text_fp": "068671bfc5e060d0",
+   "status": "남음",
+   "tag": "2차"
+  },
+  {
+   "key": "auction:수원지방법원:2025타경56267:2",
+   "text_fp": "12e1d2b20104718b",
+   "status": "남음",
+   "tag": "2차"
+  },
+  {
+   "key": "auction:평택지원:2024타경56987:1",
+   "text_fp": "72d001f34f04392e",
+   "status": "남음",
+   "tag": "2차"
+  },
+  {
+   "key": "auction:제천지원:2025타경123:1",
+   "text_fp": "2b40b5cc6fa8020f",
+   "status": "남음",
+   "tag": "2차"
+  },
+  {
+   "key": "auction:통영지원:2025타경383:1",
+   "text_fp": "5b1019ecd60a83ac",
+   "status": "남음",
+   "tag": "2차"
+  },
+  {
+   "key": "auction:정읍지원:2025타경30179:14",
+   "text_fp": "96adece13c839817",
+   "status": "남음",
+   "tag": "2차"
+  },
+  {
+   "key": "auction:남양주지원:2024타경75574:1",
+   "text_fp": "debe69262fe97bf3",
+   "status": "남음",
+   "tag": "2차"
+  },
+  {
+   "key": "auction:진주지원:2019타경7289:1",
+   "text_fp": "7aa1430a6dd107db",
+   "status": "남음",
+   "tag": "2차"
+  },
+  {
+   "key": "auction:부산서부지원:2022타경2422:1",
+   "text_fp": "0a31127b78f029bb",
+   "status": "해소",
+   "tag": "2차"
+  },
+  {
+   "key": "auction:정읍지원:2025타경30179:13",
+   "text_fp": "96adece13c839817",
+   "status": "남음",
+   "tag": "2차"
+  },
+  {
+   "key": "auction:원주지원:2018타경3078:1",
+   "text_fp": "16edf6a4f72a443e",
+   "status": "남음",
+   "tag": "2차"
+  },
+  {
+   "key": "auction:천안지원:2024타경115269:1",
+   "text_fp": "823c62e6b197289e",
+   "status": "해소",
+   "tag": "깨끗한검증"
+  },
+  {
+   "key": "auction:부산지방법원:2024타경66756:2",
+   "text_fp": "39603c534997c3e7",
+   "status": "해소",
+   "tag": "깨끗한검증"
+  },
+  {
+   "key": "auction:진주지원:2024타경5478:1",
+   "text_fp": "5ae8fd29f7ca8be7",
+   "status": "남음",
+   "tag": "깨끗한검증"
+  },
+  {
+   "key": "auction:성남지원:2024타경56684:1",
+   "text_fp": "632c67b8f47b30e1",
+   "status": "남음",
+   "tag": "깨끗한검증"
+  },
+  {
+   "key": "auction:홍성지원:2021타경1318:1",
+   "text_fp": "bff5dadd189b8682",
+   "status": "해소",
+   "tag": "깨끗한검증"
+  },
+  {
+   "key": "auction:홍성지원:2025타경1081:1",
+   "text_fp": "3b0a4e5b21d4ec87",
+   "status": "해소",
+   "tag": "깨끗한검증"
+  },
+  {
+   "key": "auction:부산지방법원:2024타경66756:5",
+   "text_fp": "58808fb084e794a1",
+   "status": "해소",
+   "tag": "깨끗한검증"
+  },
+  {
+   "key": "auction:전주지방법원:2023타경5002:1",
+   "text_fp": "3a4840be8d6fcc7d",
+   "status": "남음",
+   "tag": "깨끗한검증"
+  },
+  {
+   "key": "auction:인천지방법원:2021타경526137:1",
+   "text_fp": "d9930c55fd3efa12",
+   "status": "해소",
+   "tag": "깨끗한검증"
+  },
+  {
+   "key": "auction:대전지방법원:2024타경6298:1",
+   "text_fp": "f5618e43ecd22c53",
+   "status": "해소",
+   "tag": "깨끗한검증"
+  },
+  {
+   "key": "auction:부산지방법원:2025타경21605:1",
+   "text_fp": "37f91b8457436b83",
+   "status": "해소",
+   "tag": "깨끗한검증"
+  },
+  {
+   "key": "auction:안동지원:2024타경1876:1",
+   "text_fp": "10af1669db5cd6f2",
+   "status": "남음",
+   "tag": "깨끗한검증"
+  },
+  {
+   "key": "auction:영월지원:2023타경12140:1",
+   "text_fp": "987de4617388355b",
+   "status": "남음",
+   "tag": "깨끗한검증"
+  },
+  {
+   "key": "auction:안양지원:2025타경101098:1",
+   "text_fp": "373769675ae45135",
+   "status": "남음",
+   "tag": "깨끗한검증"
+  },
+  {
+   "key": "auction:성남지원:2022타경59122:1",
+   "text_fp": "dc67a1f9eb9cfd12",
+   "status": "해소",
+   "tag": "깨끗한검증"
+  }
+ ]
+}

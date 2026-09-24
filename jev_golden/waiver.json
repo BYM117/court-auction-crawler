@@ -1,0 +1,551 @@
+{
+ "source": "auction_items.item_note",
+ "label": "risk: 포기와 별개로 낙찰자가 보증금을 떠안을 위험이 남는가",
+ "rule": "rights.waiver_leaves_other_tenant (포기 문구 있을 때) / 대항력 언급 있고 포기 없으면 위험",
+ "jev": [
+  "waiver",
+  "other_tenant"
+ ],
+ "items": [
+  {
+   "key": "auction:김천지원:2025타경398:1",
+   "text_fp": "a74e50fc5f1a2d45",
+   "risk": true,
+   "tag": "층별"
+  },
+  {
+   "key": "auction:대전지방법원:2025타경502914:1",
+   "text_fp": "e11637279af0bac8",
+   "risk": false,
+   "tag": "층별"
+  },
+  {
+   "key": "auction:춘천지방법원:2025타경3001:1",
+   "text_fp": "c663e7d8762253b9",
+   "risk": true,
+   "tag": "층별"
+  },
+  {
+   "key": "auction:진주지원:2024타경5393:1",
+   "text_fp": "8aab3fa44a3d911e",
+   "risk": true,
+   "tag": "층별"
+  },
+  {
+   "key": "auction:대구지방법원:2026타경100212:1",
+   "text_fp": "bc63381bd78bd1c6",
+   "risk": true,
+   "tag": "층별"
+  },
+  {
+   "key": "auction:의정부지방법원:2025타경73411:1",
+   "text_fp": "69f00dad317bf9bf",
+   "risk": false,
+   "tag": "층별"
+  },
+  {
+   "key": "auction:대구서부지원:2024타경41533:8",
+   "text_fp": "bf60c6b97214478d",
+   "risk": true,
+   "tag": "층별"
+  },
+  {
+   "key": "auction:고양지원:2026타경61159:1",
+   "text_fp": "1603e48c804c1439",
+   "risk": false,
+   "tag": "층별"
+  },
+  {
+   "key": "auction:수원지방법원:2025타경56690:1",
+   "text_fp": "660770f750e7893d",
+   "risk": true,
+   "tag": "층별"
+  },
+  {
+   "key": "auction:춘천지방법원:2025타경2848:1",
+   "text_fp": "d867f3b4895debbe",
+   "risk": true,
+   "tag": "층별"
+  },
+  {
+   "key": "auction:수원지방법원:2025타경56803:1",
+   "text_fp": "482082a946950d25",
+   "risk": true,
+   "tag": "층별"
+  },
+  {
+   "key": "auction:춘천지방법원:2025타경2961:1",
+   "text_fp": "d434cc267b723b45",
+   "risk": true,
+   "tag": "층별"
+  },
+  {
+   "key": "auction:서울남부지방법원:2025타경12418:1",
+   "text_fp": "cc8ee5f4906e20e1",
+   "risk": false,
+   "tag": "층별"
+  },
+  {
+   "key": "auction:대전지방법원:2024타경124745:1",
+   "text_fp": "b61e53d4a21c3dca",
+   "risk": false,
+   "tag": "층별"
+  },
+  {
+   "key": "auction:충주지원:2025타경30470:1",
+   "text_fp": "23411cd83dfcca86",
+   "risk": true,
+   "tag": "층별"
+  },
+  {
+   "key": "auction:진주지원:2025타경30948:1",
+   "text_fp": "1329c81fc2189822",
+   "risk": true,
+   "tag": "층별"
+  },
+  {
+   "key": "auction:고양지원:2026타경60831:1",
+   "text_fp": "64035d4cea53f6c3",
+   "risk": false,
+   "tag": "층별"
+  },
+  {
+   "key": "auction:부산지방법원:2025타경23188:1",
+   "text_fp": "c9124ef613077fcf",
+   "risk": false,
+   "tag": "층별"
+  },
+  {
+   "key": "auction:서울중앙지방법원:2025타경104399:1",
+   "text_fp": "edec735a251d57bf",
+   "risk": false,
+   "tag": "층별"
+  },
+  {
+   "key": "auction:안양지원:2025타경101174:1",
+   "text_fp": "bbdc78f042c53138",
+   "risk": false,
+   "tag": "층별"
+  },
+  {
+   "key": "auction:서울남부지방법원:2025타경13963:1",
+   "text_fp": "0676341ab7d77785",
+   "risk": false,
+   "tag": "층별"
+  },
+  {
+   "key": "auction:대구서부지원:2026타경3229:1",
+   "text_fp": "d8ef03c5dc7e3eab",
+   "risk": true,
+   "tag": "층별"
+  },
+  {
+   "key": "auction:홍성지원:2025타경16093:1",
+   "text_fp": "70a954d1cf37a0bc",
+   "risk": false,
+   "tag": "층별"
+  },
+  {
+   "key": "auction:창원지방법원:2024타경112724:1",
+   "text_fp": "788a64cd322385cb",
+   "risk": true,
+   "tag": "층별"
+  },
+  {
+   "key": "auction:천안지원:2025타경12844:1",
+   "text_fp": "556ada354dbf0223",
+   "risk": true,
+   "tag": "층별"
+  },
+  {
+   "key": "auction:안양지원:2025타경101003:1",
+   "text_fp": "c214b6ac3298a7fa",
+   "risk": false,
+   "tag": "층별"
+  },
+  {
+   "key": "auction:서울남부지방법원:2026타경4868:1",
+   "text_fp": "b0f214fee6f47c73",
+   "risk": false,
+   "tag": "층별"
+  },
+  {
+   "key": "auction:서울남부지방법원:2025타경13745:1",
+   "text_fp": "cc8ee5f4906e20e1",
+   "risk": false,
+   "tag": "층별"
+  },
+  {
+   "key": "auction:창원지방법원:2025타경11873:1",
+   "text_fp": "788a64cd322385cb",
+   "risk": true,
+   "tag": "층별"
+  },
+  {
+   "key": "auction:서울중앙지방법원:2025타경103256:1",
+   "text_fp": "5c942c2707886190",
+   "risk": true,
+   "tag": "층별"
+  },
+  {
+   "key": "auction:여주지원:2025타경31536:1",
+   "text_fp": "2dfb560628f5f794",
+   "risk": true,
+   "tag": "층별"
+  },
+  {
+   "key": "auction:통영지원:2025타경21195:2",
+   "text_fp": "ea8cdd7f21ef4abb",
+   "risk": true,
+   "tag": "층별"
+  },
+  {
+   "key": "auction:청주지방법원:2025타경51602:1",
+   "text_fp": "24d5d2eddc84cd1f",
+   "risk": true,
+   "tag": "층별"
+  },
+  {
+   "key": "auction:속초지원:2025타경10411:1",
+   "text_fp": "9c2db18317cc698b",
+   "risk": true,
+   "tag": "층별"
+  },
+  {
+   "key": "auction:평택지원:2025타경42477:1",
+   "text_fp": "fc9797563f2e9c3b",
+   "risk": false,
+   "tag": "층별"
+  },
+  {
+   "key": "auction:수원지방법원:2025타경54739:1",
+   "text_fp": "85202bc537885c90",
+   "risk": true,
+   "tag": "층별"
+  },
+  {
+   "key": "auction:대전지방법원:2025타경502206:1",
+   "text_fp": "b09cc031c6d79545",
+   "risk": false,
+   "tag": "층별"
+  },
+  {
+   "key": "auction:마산지원:2025타경349:1",
+   "text_fp": "3192432bb327df10",
+   "risk": true,
+   "tag": "층별"
+  },
+  {
+   "key": "auction:통영지원:2025타경22001:1",
+   "text_fp": "55d60e263ec427f2",
+   "risk": false,
+   "tag": "층별"
+  },
+  {
+   "key": "auction:대구서부지원:2026타경3423:5",
+   "text_fp": "a762c268ef97a75b",
+   "risk": true,
+   "tag": "층별"
+  },
+  {
+   "key": "auction:김천지원:2025타경11182:1",
+   "text_fp": "7eec80a129aac22e",
+   "risk": true,
+   "tag": "층별"
+  },
+  {
+   "key": "auction:고양지원:2026타경60424:1",
+   "text_fp": "5807497ef9c6dd43",
+   "risk": false,
+   "tag": "층별"
+  },
+  {
+   "key": "auction:서울중앙지방법원:2025타경102737:1",
+   "text_fp": "3770d16a72845d51",
+   "risk": false,
+   "tag": "층별"
+  },
+  {
+   "key": "auction:서울남부지방법원:2026타경3890:1",
+   "text_fp": "63fee3402e790c27",
+   "risk": false,
+   "tag": "층별"
+  },
+  {
+   "key": "auction:창원지방법원:2025타경11833:1",
+   "text_fp": "58966561f22c8155",
+   "risk": true,
+   "tag": "층별"
+  },
+  {
+   "key": "auction:목포지원:2025타경51709:1",
+   "text_fp": "0510ac44363350e9",
+   "risk": false,
+   "tag": "까다로움"
+  },
+  {
+   "key": "auction:목포지원:2026타경50013:1",
+   "text_fp": "4088ebd44a7e176e",
+   "risk": false,
+   "tag": "까다로움"
+  },
+  {
+   "key": "auction:창원지방법원:2025타경12422:1",
+   "text_fp": "6a2dca5c9854176e",
+   "risk": true,
+   "tag": "까다로움"
+  },
+  {
+   "key": "auction:창원지방법원:2025타경11567:1",
+   "text_fp": "d9443fd3042874cb",
+   "risk": false,
+   "tag": "까다로움"
+  },
+  {
+   "key": "auction:창원지방법원:2025타경11668:1",
+   "text_fp": "f1f7c5b9de448222",
+   "risk": false,
+   "tag": "까다로움"
+  },
+  {
+   "key": "auction:창원지방법원:2025타경12022:1",
+   "text_fp": "ceaaa56d189dcf81",
+   "risk": false,
+   "tag": "까다로움"
+  },
+  {
+   "key": "auction:안양지원:2025타경101546:1",
+   "text_fp": "381c187716cf71ff",
+   "risk": false,
+   "tag": "까다로움"
+  },
+  {
+   "key": "auction:안산지원:2025타경51992:1",
+   "text_fp": "a28c1c0ab8b77c56",
+   "risk": false,
+   "tag": "까다로움"
+  },
+  {
+   "key": "auction:서울동부지방법원:2025타경51318:1",
+   "text_fp": "51e6552647ffd722",
+   "risk": false,
+   "tag": "까다로움"
+  },
+  {
+   "key": "auction:통영지원:2025타경22371:1",
+   "text_fp": "d2c36599fd279594",
+   "risk": false,
+   "tag": "까다로움"
+  },
+  {
+   "key": "auction:천안지원:2025타경11596:1",
+   "text_fp": "21b8d7e51d82c4d7",
+   "risk": false,
+   "tag": "까다로움"
+  },
+  {
+   "key": "auction:천안지원:2025타경11649:1",
+   "text_fp": "b0b7b9200c733a06",
+   "risk": false,
+   "tag": "까다로움"
+  },
+  {
+   "key": "auction:천안지원:2025타경11792:1",
+   "text_fp": "bd6e572eeb288835",
+   "risk": false,
+   "tag": "까다로움"
+  },
+  {
+   "key": "auction:천안지원:2025타경11961:1",
+   "text_fp": "955f45adf632e3cd",
+   "risk": false,
+   "tag": "까다로움"
+  },
+  {
+   "key": "auction:천안지원:2024타경4833:3",
+   "text_fp": "ac789a69a8f8684e",
+   "risk": true,
+   "tag": "까다로움"
+  },
+  {
+   "key": "auction:창원지방법원:2025타경11795:1",
+   "text_fp": "903093e1f75aabbb",
+   "risk": false,
+   "tag": "까다로움"
+  },
+  {
+   "key": "auction:창원지방법원:2025타경12020:1",
+   "text_fp": "d3c68d4b2b19a574",
+   "risk": false,
+   "tag": "까다로움"
+  },
+  {
+   "key": "auction:통영지원:2025타경22001:1",
+   "text_fp": "55d60e263ec427f2",
+   "risk": false,
+   "tag": "까다로움"
+  },
+  {
+   "key": "auction:통영지원:2025타경22162:1",
+   "text_fp": "057600db4358cb1c",
+   "risk": false,
+   "tag": "까다로움"
+  },
+  {
+   "key": "auction:통영지원:2025타경22370:1",
+   "text_fp": "4f16d22e798f132e",
+   "risk": false,
+   "tag": "까다로움"
+  },
+  {
+   "key": "auction:목포지원:2025타경51504:1",
+   "text_fp": "a82c7e99c3ed47f5",
+   "risk": false,
+   "tag": "까다로움"
+  },
+  {
+   "key": "auction:청주지방법원:2025타경51341:1",
+   "text_fp": "0c0343f9c54ecc87",
+   "risk": true,
+   "tag": "새표본"
+  },
+  {
+   "key": "auction:서울중앙지방법원:2026타경100181:1",
+   "text_fp": "3770d16a72845d51",
+   "risk": false,
+   "tag": "새표본"
+  },
+  {
+   "key": "auction:천안지원:2025타경11483:1",
+   "text_fp": "d9579ab7614a6e05",
+   "risk": true,
+   "tag": "새표본"
+  },
+  {
+   "key": "auction:수원지방법원:2026타경51233:1",
+   "text_fp": "54f8e966e7e3c2f5",
+   "risk": false,
+   "tag": "새표본"
+  },
+  {
+   "key": "auction:수원지방법원:2025타경54878:1",
+   "text_fp": "482082a946950d25",
+   "risk": true,
+   "tag": "새표본"
+  },
+  {
+   "key": "auction:고양지원:2024타경81776:1",
+   "text_fp": "896f58fcd616a5b5",
+   "risk": false,
+   "tag": "새표본"
+  },
+  {
+   "key": "auction:부산지방법원:2025타경23293:1",
+   "text_fp": "64aa595c0148bba7",
+   "risk": false,
+   "tag": "새표본"
+  },
+  {
+   "key": "auction:천안지원:2024타경116163:1",
+   "text_fp": "a088c37bdfaa3cc3",
+   "risk": true,
+   "tag": "새표본"
+  },
+  {
+   "key": "auction:대구서부지원:2025타경31636:5",
+   "text_fp": "d7efb94644fc2fc7",
+   "risk": true,
+   "tag": "새표본"
+  },
+  {
+   "key": "auction:고양지원:2024타경87637:1",
+   "text_fp": "69c9525713a6712c",
+   "risk": false,
+   "tag": "새표본"
+  },
+  {
+   "key": "auction:여주지원:2024타경40637:14",
+   "text_fp": "778bbec0b05f621b",
+   "risk": true,
+   "tag": "새표본"
+  },
+  {
+   "key": "auction:천안지원:2025타경12903:1",
+   "text_fp": "c8412a8bd2e49717",
+   "risk": true,
+   "tag": "새표본"
+  },
+  {
+   "key": "auction:평택지원:2025타경43213:1",
+   "text_fp": "47dbcc99618daa27",
+   "risk": false,
+   "tag": "새표본"
+  },
+  {
+   "key": "auction:창원지방법원:2024타경7884:1",
+   "text_fp": "2fedd001199308c5",
+   "risk": true,
+   "tag": "새표본"
+  },
+  {
+   "key": "auction:서울동부지방법원:2025타경51404:1",
+   "text_fp": "8cbee63e134abe4a",
+   "risk": false,
+   "tag": "새표본"
+  },
+  {
+   "key": "auction:평택지원:2025타경42368:1",
+   "text_fp": "2ce2b23e8add1058",
+   "risk": false,
+   "tag": "새표본"
+  },
+  {
+   "key": "auction:의정부지방법원:2025타경71928:1",
+   "text_fp": "09163097d2eea8cd",
+   "risk": false,
+   "tag": "새표본"
+  },
+  {
+   "key": "auction:김천지원:2025타경11368:1",
+   "text_fp": "a4b7e75723224cd9",
+   "risk": true,
+   "tag": "새표본"
+  },
+  {
+   "key": "auction:서울남부지방법원:2025타경14153:1",
+   "text_fp": "58e7432f1a02fd47",
+   "risk": false,
+   "tag": "새표본"
+  },
+  {
+   "key": "auction:통영지원:2024타경4430:1",
+   "text_fp": "7bec3568dd1e4f8e",
+   "risk": true,
+   "tag": "새표본"
+  },
+  {
+   "key": "auction:대구서부지원:2025타경2740:1",
+   "text_fp": "ebd583c202ceb260",
+   "risk": true,
+   "tag": "새표본"
+  },
+  {
+   "key": "auction:서울동부지방법원:2025타경51465:1",
+   "text_fp": "0150215539759a3a",
+   "risk": false,
+   "tag": "새표본"
+  },
+  {
+   "key": "auction:안양지원:2025타경101312:1",
+   "text_fp": "bd5e5b19befef648",
+   "risk": false,
+   "tag": "새표본"
+  },
+  {
+   "key": "auction:창원지방법원:2025타경630:1",
+   "text_fp": "2752272b5e5c0c5e",
+   "risk": true,
+   "tag": "새표본"
+  }
+ ]
+}

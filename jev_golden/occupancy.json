@@ -1,0 +1,248 @@
+{
+ "source": "auction_documents(현황조사서).text → rights.survey_memo",
+ "label": "met: 조사관이 점유자를 직접 만나거나 통화했나(관리사무소·이웃은 아님)",
+ "rule": "rights.occupancy_check",
+ "items": [
+  {
+   "key": "auction:통영지원:2025타경21876:8",
+   "text_fp": "ec7083948d962834",
+   "met": false,
+   "tag": "1차"
+  },
+  {
+   "key": "auction:부산서부지원:2025타경101690:1",
+   "text_fp": "0667bd1e1392f91c",
+   "met": false,
+   "tag": "1차"
+  },
+  {
+   "key": "auction:진주지원:2023타경39481:7",
+   "text_fp": "6a0dea2a99fffe40",
+   "met": true,
+   "tag": "1차"
+  },
+  {
+   "key": "auction:춘천지방법원:2025타경2671:1",
+   "text_fp": "d9dd01ddd95acf6f",
+   "met": false,
+   "tag": "1차"
+  },
+  {
+   "key": "auction:부산지방법원:2025타경22976:1",
+   "text_fp": "e501a0121e1f10ff",
+   "met": true,
+   "tag": "1차"
+  },
+  {
+   "key": "auction:동부지원:2025타경5752:1",
+   "text_fp": "93b49a3bcd805702",
+   "met": true,
+   "tag": "1차"
+  },
+  {
+   "key": "auction:서울남부지방법원:2024타경3241:1",
+   "text_fp": "2d64bad68e17d8ce",
+   "met": false,
+   "tag": "1차"
+  },
+  {
+   "key": "auction:통영지원:2024타경24397:1",
+   "text_fp": "7ffe763bb298d573",
+   "met": true,
+   "tag": "1차"
+  },
+  {
+   "key": "auction:서울중앙지방법원:2026타경71:1",
+   "text_fp": "f18396be10fc4e9f",
+   "met": false,
+   "tag": "1차"
+  },
+  {
+   "key": "auction:인천지방법원:2025타경1320:1",
+   "text_fp": "47a3f712055d358a",
+   "met": false,
+   "tag": "1차"
+  },
+  {
+   "key": "auction:제주지방법원:2025타경1590:1",
+   "text_fp": "1f0a676cc78ecfcc",
+   "met": false,
+   "tag": "1차"
+  },
+  {
+   "key": "auction:남양주지원:2025타경71594:1",
+   "text_fp": "f548c8d225e53e85",
+   "met": false,
+   "tag": "1차"
+  },
+  {
+   "key": "auction:울산지방법원:2025타경1304:1",
+   "text_fp": "277078373286e4fb",
+   "met": true,
+   "tag": "1차"
+  },
+  {
+   "key": "auction:서산지원:2025타경672:1",
+   "text_fp": "fca7a87dfe2f049e",
+   "met": false,
+   "tag": "1차"
+  },
+  {
+   "key": "auction:수원지방법원:2025타경54262:1",
+   "text_fp": "f6188c8fad44f42a",
+   "met": true,
+   "tag": "1차"
+  },
+  {
+   "key": "auction:안산지원:2025타경53403:1",
+   "text_fp": "92df9b82fc139b99",
+   "met": false,
+   "tag": "1차"
+  },
+  {
+   "key": "auction:동부지원:2025타경5960:1",
+   "text_fp": "a085071fa6793c52",
+   "met": true,
+   "tag": "1차"
+  },
+  {
+   "key": "auction:전주지방법원:2025타경31391:5",
+   "text_fp": "9d5048d113b708a1",
+   "met": false,
+   "tag": "1차"
+  },
+  {
+   "key": "auction:부산지방법원:2025타경22302:1",
+   "text_fp": "fe9e5bc36bc1a3b8",
+   "met": false,
+   "tag": "1차"
+  },
+  {
+   "key": "auction:서울남부지방법원:2025타경759:1",
+   "text_fp": "10bf112f43fa77ab",
+   "met": false,
+   "tag": "1차"
+  },
+  {
+   "key": "auction:광주지방법원:2025타경3133:1",
+   "text_fp": "14beba2920ba1acc",
+   "met": true,
+   "tag": "1차"
+  },
+  {
+   "key": "auction:제주지방법원:2025타경8821:1",
+   "text_fp": "64aeff681e05d972",
+   "met": false,
+   "tag": "1차"
+  },
+  {
+   "key": "auction:논산지원:2025타경20600:1",
+   "text_fp": "97bc4386972b807a",
+   "met": false,
+   "tag": "깨끗한검증"
+  },
+  {
+   "key": "auction:의정부지방법원:2020타경17309:1",
+   "text_fp": "6f962b5ba1f90a15",
+   "met": false,
+   "tag": "깨끗한검증"
+  },
+  {
+   "key": "auction:의성지원:2025타경322:1",
+   "text_fp": "4fe6b16af96b1b33",
+   "met": false,
+   "tag": "깨끗한검증"
+  },
+  {
+   "key": "auction:서울남부지방법원:2026타경3988:1",
+   "text_fp": "73c47a62dc2520b0",
+   "met": false,
+   "tag": "깨끗한검증"
+  },
+  {
+   "key": "auction:성남지원:2026타경50465:1",
+   "text_fp": "1981bf69b379427f",
+   "met": false,
+   "tag": "깨끗한검증"
+  },
+  {
+   "key": "auction:밀양지원:2026타경10028:1",
+   "text_fp": "625f20ccd68c2126",
+   "met": false,
+   "tag": "깨끗한검증"
+  },
+  {
+   "key": "auction:홍성지원:2023타경21156:4",
+   "text_fp": "3427bb7999f86f8f",
+   "met": false,
+   "tag": "깨끗한검증"
+  },
+  {
+   "key": "auction:안산지원:2025타경946:1",
+   "text_fp": "c687e7cf5249ec87",
+   "met": true,
+   "tag": "깨끗한검증"
+  },
+  {
+   "key": "auction:인천지방법원:2025타경510331:1",
+   "text_fp": "a16165a58c3facc0",
+   "met": false,
+   "tag": "깨끗한검증"
+  },
+  {
+   "key": "auction:인천지방법원:2025타경511848:1",
+   "text_fp": "5a233f3722410fc3",
+   "met": false,
+   "tag": "깨끗한검증"
+  },
+  {
+   "key": "auction:부산지방법원:2023타경64487:1",
+   "text_fp": "db236bffa55fc86a",
+   "met": true,
+   "tag": "깨끗한검증"
+  },
+  {
+   "key": "auction:의정부지방법원:2024타경81902:41",
+   "text_fp": "e8822eb346bb2c68",
+   "met": false,
+   "tag": "깨끗한검증"
+  },
+  {
+   "key": "auction:광주지방법원:2025타경34066:60",
+   "text_fp": "505095b99a0c60c5",
+   "met": true,
+   "tag": "깨끗한검증"
+  },
+  {
+   "key": "auction:서울남부지방법원:2025타경496:2",
+   "text_fp": "78fec2079d82962f",
+   "met": false,
+   "tag": "깨끗한검증"
+  },
+  {
+   "key": "auction:부산지방법원:2024타경56667:17",
+   "text_fp": "e461838b4da01035",
+   "met": true,
+   "tag": "깨끗한검증",
+   "note": "정답 정정: 1,400자까지만 읽어 뒤 호실의 '거주한다고 함'을 놓쳤다"
+  },
+  {
+   "key": "auction:서울남부지방법원:2025타경12236:1",
+   "text_fp": "25bd7fbfdee6219d",
+   "met": false,
+   "tag": "깨끗한검증"
+  },
+  {
+   "key": "auction:대전지방법원:2025타경502281:1",
+   "text_fp": "6158d8156b5a868a",
+   "met": false,
+   "tag": "깨끗한검증"
+  },
+  {
+   "key": "auction:고양지원:2026타경60037:1",
+   "text_fp": "7bf13c6a0872f431",
+   "met": false,
+   "tag": "깨끗한검증"
+  }
+ ]
+}
