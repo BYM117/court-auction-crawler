@@ -86,16 +86,29 @@ _NO_TENANT_SPEC = re.compile(r"조사된\s*임차\s*내역\s*없|임차\s*내역
 _TENANT_SPEC = re.compile(r"주택\s*임차|상가\s*임차|임차권자|현황조사\s|권리신고")
 
 
+def same_property(a: str, b: str) -> bool:
+    """두 주소가 같은 물건인가. 쉼표·공백·앞번호만 다른 표기를 같게 본다(웹 sameProperty 와 같다)."""
+    key = lambda v: re.sub(r"[^가-힣0-9a-zA-Z]", "", re.sub(r"^\d+\.\s*", "", v or ""))  # noqa: E731
+    left, right = key(a), key(b)
+    return bool(left and right) and (left == right or left in right or right in left)
+
+
 def opposability(occupants: list[dict[str, Any]], senior: dict[str, Any] | None,
-                 spec_text: str = "") -> dict[str, Any]:
+                 spec_text: str = "", address: str = "", bulk: bool = False) -> dict[str, Any]:
     """점유인마다 대항력 있음/없음/모름, 그리고 물건 전체 요약.
 
     현황조사서에 임차인이 없어도 매각물건명세서에만 있는 경우가 있다(법원이 '대항력 있는
     임차인 있음' 이라 쓴 73건 중 15건). 그땐 '임차인 없음' 이 아니라 '모름' 이다 —
     없다고 잘못 말하는 쪽이 더 나쁘다."""
     base = parse_date((senior or {}).get("date"))
+    # 남의 호실 임차인은 뺀다. 주소 표기가 너무 달라 하나도 안 걸리면 다 쓴다 — 웹과 같은 선택
+    # (가려내려다 다 숨기는 것보다 낫다). 목록과 상세가 같은 답을 내야 한다.
+    # 일괄매각은 여러 목록을 한 번에 판다 — 주소 칸엔 첫 목록만 있어도 다른 목록 임차인이 이 물건
+    # 임차인이다(법원이 '대항력 있음' 이라 쓴 일괄매각 2건을 거르다 틀렸다). 그땐 거르지 않는다.
+    mine = [] if bulk else [o for o in occupants or []
+                            if address and same_property(str(o.get("소재지") or ""), address)]
     tenants = []
-    for occ in occupants or []:
+    for occ in mine or (occupants or []):
         role = str(occ.get("role") or "")
         if any(word in role for word in _NOT_TENANT):
             continue
@@ -309,11 +322,12 @@ def mask_payload(node: Any, names: list[str]) -> Any:
     return node
 
 
-RIGHTS_VERSION = 1
+RIGHTS_VERSION = 2   # 2: 남의 호실 임차인을 뺀다
 
 
 def compute_rights(*, spec_text: str, survey_text: str, note: str,
-                   occupants: list[dict[str, Any]], jev: dict[str, Any] | None = None) -> dict[str, Any]:
+                   occupants: list[dict[str, Any]], jev: dict[str, Any] | None = None,
+                   address: str = "") -> dict[str, Any]:
     """규칙 판정 전부 + (있으면) Jev 가 채운 꼬리. DB 에 `rights_json` 으로 그대로 들어간다.
 
     이름은 **실명 그대로** 담는다(DB 는 우리 것). 가리는 것은 payload 를 만들 때 한다 —
@@ -329,7 +343,7 @@ def compute_rights(*, spec_text: str, survey_text: str, note: str,
     return {
         "v": RIGHTS_VERSION,
         "senior": senior,
-        "opposability": opposability(occupants, senior, spec_text),
+        "opposability": opposability(occupants, senior, spec_text, address, bulk="일괄매각" in note),
         "lien": lien_status(note),
         "waiver_other_tenant": waiver_leaves_other_tenant(note) if WAIVER_RE.search(note) else None,
         "survey": {**occupancy_check(memo), "memo": memo},

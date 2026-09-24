@@ -4,6 +4,7 @@ import argparse
 from dataclasses import asdict, replace
 from datetime import date, datetime, timedelta, timezone
 import json
+import sqlite3
 from pathlib import Path
 import time
 import re
@@ -1411,14 +1412,44 @@ def run_enrich_rights(store: AuctionStore, *, limit: int = 5000, jev_budget: int
     저장해 같은 글이면 다시 묻지 않는다. **실패는 사이클을 안 멈추고 세기만 한다.**"""
     from .enrichment import parse_occupants
 
-    rows = store.list_rights_targets(version=rights_rules.RIGHTS_VERSION, limit=limit)
     use_jev = jev_budget > 0 and jev_api.available()
-    if use_jev and len(rows) < jev_budget:
-        # 규칙만 먼저 백필한 물건도 언젠가 Jev 를 받아야 한다 — 남는 예산으로 채운다.
-        rows += store.list_rights_targets(version=rights_rules.RIGHTS_VERSION, limit=jev_budget - len(rows),
-                                          jev_missing=True, exclude={r["item_key"] for r in rows})
-    counts = {"targets": len(rows), "saved": 0, "jev_items": 0, "jev_calls": 0, "jev_errors": 0,
-              "jev_pending": 0, "review": 0, "senior_rule": 0, "senior_jev": 0}
+    counts = {"targets": 0, "saved": 0, "jev_items": 0, "jev_calls": 0, "jev_errors": 0,
+              "jev_pending": 0, "review": 0, "senior_rule": 0, "senior_jev": 0, "locked_skip": 0}
+    total = limit if limit and limit > 0 else 10**9
+    seen: set[str] = set()
+
+    def batches():
+        # 500건씩 끊는다 — 6만 건의 문서 본문을 한꺼번에 올리면 수백 MB 이고, 다 읽는 동안
+        # 첫 저장이 늦어져 잠금에 걸렸다(2026-09-24 백필이 한 건도 못 쓰고 멈췄다).
+        while counts["targets"] < total:
+            want = min(500, total - counts["targets"])
+            rows = store.list_rights_targets(version=rights_rules.RIGHTS_VERSION, limit=want + len(seen),
+                                             exclude=seen)[:want]
+            if use_jev and len(rows) < want and counts["jev_items"] < jev_budget:
+                # 규칙만 먼저 백필한 물건도 언젠가 Jev 를 받아야 한다 — 남는 예산으로 채운다.
+                rows += store.list_rights_targets(version=rights_rules.RIGHTS_VERSION,
+                                                  limit=want - len(rows) + len(seen), jev_missing=True,
+                                                  exclude=seen | {r["item_key"] for r in rows})[:want - len(rows)]
+            if not rows:
+                return
+            for row in rows:
+                seen.add(row["item_key"])
+            counts["targets"] += len(rows)
+            yield rows
+
+    def save(key: str, value: dict[str, Any]) -> bool:
+        for wait in (5, 10, 20, 0):
+            try:
+                store.update_rights(key, value)
+                return True
+            except sqlite3.OperationalError as error:
+                if "locked" not in str(error) or not wait:
+                    break
+                time.sleep(wait)
+        counts["locked_skip"] += 1   # 이 건만 다음으로 — 판정 전체를 멈추지 않는다
+        return False
+
+    rows = (row for batch in batches() for row in batch)
     for index, row in enumerate(rows, start=1):
         documents = row["documents"]
         spec, survey = _doc_text(documents, "매각물건명세서"), _doc_text(documents, "현황조사서")
@@ -1435,7 +1466,7 @@ def run_enrich_rights(store: AuctionStore, *, limit: int = 5000, jev_budget: int
             return {"senior": state.get("senior") or {}, "names": (state.get("names") or {}).get("found") or []}
 
         result = rights_rules.compute_rights(spec_text=spec, survey_text=survey, note=note,
-                                             occupants=occupants, jev=answers())
+                                             occupants=occupants, jev=answers(), address=str(row.get("address") or ""))
         review: list[dict[str, Any]] = list(prev.get("review") or [])
         pending = False
         if use_jev and counts["jev_items"] < jev_budget:
@@ -1475,7 +1506,7 @@ def run_enrich_rights(store: AuctionStore, *, limit: int = 5000, jev_budget: int
                 counts["jev_errors"] += 1
                 pending = True
             result = rights_rules.compute_rights(spec_text=spec, survey_text=survey, note=note,
-                                                 occupants=occupants, jev=answers())
+                                                 occupants=occupants, jev=answers(), address=str(row.get("address") or ""))
         elif use_jev:
             pending = True
         counts["jev_pending"] += pending
@@ -1484,10 +1515,10 @@ def run_enrich_rights(store: AuctionStore, *, limit: int = 5000, jev_budget: int
         counts["senior_rule"] += senior.get("source") == "rule"
         counts["senior_jev"] += senior.get("source") == "jev"
         result.update({"jev": state, "review": review[-5:], "jev_pending": pending})
-        store.update_rights(row["item_key"], result)
-        counts["saved"] += 1
+        counts["saved"] += save(row["item_key"], result)
         if not quiet and index % 500 == 0:
-            print(f"  진행 {index}/{len(rows)} · Jev 호출 {counts['jev_calls']} · 오류 {counts['jev_errors']}")
+            print(f"  진행 {index} · 저장 {counts['saved']} · Jev 호출 {counts['jev_calls']} · 오류 {counts['jev_errors']}"
+                  f" · 잠금으로 미룸 {counts['locked_skip']}", flush=True)
     counts["jev_on"] = use_jev
     return counts
 
@@ -1504,7 +1535,7 @@ def format_rights_result(r: dict[str, Any]) -> str:
     jev = (f"Jev 물건 {r['jev_items']} · 호출 {r['jev_calls']} · 오류 {r['jev_errors']} · 다음으로 미룸 {r['jev_pending']}"
            if r.get("jev_on") else "Jev 꺼짐(TYPESAFE_API_KEY 없음 또는 --no-jev)")
     return (f"권리 판정: 저장 {r['saved']}개 / 대상 {r['targets']}개 · 최선순위 규칙 {r['senior_rule']} Jev {r['senior_jev']}"
-            f" · 엇갈림 새로 {r['review']}건 · {jev}")
+            f" · 엇갈림 새로 {r['review']}건 · 잠금으로 미룸 {r.get('locked_skip', 0)} · {jev}")
 
 
 def run_enrich_land_use(

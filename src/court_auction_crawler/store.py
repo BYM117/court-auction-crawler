@@ -1501,7 +1501,7 @@ class AuctionStore:
             out = []
             for key in keys:
                 row = conn.execute(
-                    "SELECT item_key, item_note, raw_json, rights_json, is_active FROM auction_items WHERE item_key = ?",
+                    "SELECT item_key, address, item_note, raw_json, rights_json, is_active FROM auction_items WHERE item_key = ?",
                     (key,),
                 ).fetchone()
                 docs = conn.execute(

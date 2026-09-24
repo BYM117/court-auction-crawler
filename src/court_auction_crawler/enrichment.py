@@ -1098,6 +1098,7 @@ def parse_occupants(documents: Any, mask_names: bool = False) -> list[dict[str, 
     자연히 다시 보인다(호출자가 `is_active` 로 판단한다).
     """
     out: list[dict[str, Any]] = []
+    소재지 = ""   # 사람이 여럿이면 표가 갈리는데 소재지 줄은 첫 표에만 붙는다 — 표를 넘어 이어 간다
     for document in documents or []:
         if str((document or {}).get("document_type") or "") != "현황조사서":
             continue
@@ -1111,11 +1112,16 @@ def parse_occupants(documents: Any, mask_names: bool = False) -> list[dict[str, 
             현재: dict[str, Any] | None = None
             for row in table.get("rows") or []:
                 cells = [str(c).strip() for c in row]
+                # 사건 전체를 조사한 문서라 한 사건에 호실이 여럿이면 남의 호실 임차인이 섞인다.
+                # 소재지를 달아 둬야 이 물건 것만 가려낼 수 있다(웹 lib/occupants.ts 와 같은 방식).
+                if cells and cells[0].startswith("[소재지]"):
+                    소재지 = cells[0].removeprefix("[소재지]").strip()
+                    continue
                 if len(cells) >= 3 and cells[1] == "점유인":
                     if 현재:
                         out.append(현재)
                     이름 = cells[2]
-                    현재 = {"name": mask_person_name(이름) if mask_names else 이름}
+                    현재 = {"name": mask_person_name(이름) if mask_names else 이름, "소재지": 소재지}
                     if len(cells) >= 5 and cells[3] == "당사자구분":
                         현재["role"] = cells[4]
                     continue

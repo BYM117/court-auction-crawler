@@ -102,6 +102,22 @@ class 최선순위와_대항력(unittest.TestCase):
         self.assertEqual([t["opposable"] for t in got["tenants"]], ["있음", "없음"])
         self.assertEqual(got["summary"], "있음")
 
+    def test_남의_호실_임차인은_빼고_판정한다(self):
+        occ = [{"name": "홍길동", "role": "임차인", "전입일자": "2019.01.01", "소재지": "1. 서울 강서구 화곡동 1-2, 2층201호"},
+               {"name": "김철수", "role": "임차인", "전입일자": "2022.01.01", "소재지": "2. 서울 강서구 화곡동 1-2, 2층202호"}]
+        got = R.opposability(occ, {"date": "2020-01-01"}, address="서울 강서구 화곡동 1-2 2층202호")
+        self.assertEqual([t["name"] for t in got["tenants"]], ["김철수"])
+        self.assertEqual(got["summary"], "없음")   # 옆 호실(201) 임차인 때문에 '있음' 이 되면 안 된다
+
+    def test_일괄매각은_거르지_않는다(self):
+        occ = [{"name": "홍길동", "role": "임차인", "전입일자": "2019.01.01", "소재지": "10. 서울 강서구 화곡동 1-2, 2층203호"}]
+        got = R.opposability(occ, {"date": "2020-01-01"}, address="서울 강서구 화곡동 1-2 2층201호", bulk=True)
+        self.assertEqual(got["summary"], "있음")
+
+    def test_주소가_하나도_안_맞으면_다_쓴다(self):
+        occ = [{"name": "홍길동", "role": "임차인", "전입일자": "2019.01.01", "소재지": "전혀 다른 표기"}]
+        self.assertEqual(R.opposability(occ, {"date": "2020-01-01"}, address="서울 강서구 화곡동 1-2")["summary"], "있음")
+
     def test_소유자는_임차인이_아니다(self):
         got = R.opposability([{"name": "홍길동", "role": "채무자겸소유자", "전입일자": "2010.01.01"}], {"date": "2020-01-01"})
         self.assertEqual(got["summary"], "임차인 없음")
@@ -162,6 +178,39 @@ class 실명(unittest.TestCase):
         got = public_auction_summary(self._item(active=True, jev_seen=True))["rights"]
         self.assertEqual(got["opposable"], "있음")
         self.assertEqual(got["lien"], "남음")
+
+
+
+class 백필루프(unittest.TestCase):
+    """2026-09-24: 6만 건을 한꺼번에 읽다 첫 저장이 잠금에 걸려 한 건도 못 쓰고 멈췄다."""
+
+    def test_잠긴_건만_미루고_나머지는_끝까지(self):
+        import sqlite3
+        from unittest import mock
+        from court_auction_crawler import cli
+
+        class Fake:
+            def __init__(self):
+                self.saved = {}
+
+            def list_rights_targets(self, *, version, limit, jev_missing=False, exclude=None):
+                if jev_missing:
+                    return []
+                keys = [f"k{n}" for n in range(1200) if f"k{n}" not in self.saved and f"k{n}" not in (exclude or set())]
+                return [{"item_key": k, "item_note": "", "raw_json": "{}", "rights_json": "", "is_active": 1,
+                         "documents": []} for k in keys[:limit]]
+
+            def update_rights(self, key, value):
+                if key == "k7":
+                    raise sqlite3.OperationalError("database is locked")
+                self.saved[key] = value
+
+        store = Fake()
+        with mock.patch.object(cli.time, "sleep"):
+            got = cli.run_enrich_rights(store, limit=0, jev_budget=0, quiet=True)
+        self.assertEqual(len(store.saved), 1199)
+        self.assertEqual(got["locked_skip"], 1)
+        self.assertEqual(got["targets"], 1200)
 
 
 if __name__ == "__main__":
