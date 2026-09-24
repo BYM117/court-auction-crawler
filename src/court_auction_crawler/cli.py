@@ -846,8 +846,12 @@ def run_collect_cycle(
     except Exception as exc:  # noqa: BLE001
         print(f"!! 토지이용계획 건너뜀: {str(exc)[:150]}")
 
-    lifecycle = store.apply_lifecycle()
-    print(f"생명주기 정리: 활성 {lifecycle['checked']}개 중 {lifecycle['deactivated']}개 종결 처리")
+    lifecycle = store.apply_lifecycle(seen=sum(totals.values()))
+    if lifecycle.get("skipped"):
+        print(f"생명주기 정리 건너뜀: 이번 사이클이 본 물건 {sum(totals.values())}개 — "
+              f"활성 {lifecycle['checked']}개의 10% 미만(사이트 점검·장애 의심)")
+    else:
+        print(f"생명주기 정리: 활성 {lifecycle['checked']}개 중 {lifecycle['deactivated']}개 종결 처리")
     if geocode_limit > 0:
         geocoded = run_geocode_missing(store, limit=geocode_limit, quiet=True)
         if geocoded.get("no_key"):

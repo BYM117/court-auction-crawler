@@ -1921,6 +1921,7 @@ class AuctionStore:
         unseen_no_date_days: int = 21,
         unseen_future_days: int = 7,
         now: str | None = None,
+        seen: int | None = None,
     ) -> dict[str, int]:
         """낙찰·취하된 물건은 상태 변경 없이 검색결과에서 사라지므로 상태 텍스트로는
         종결을 알 수 없다. 매각기일이 유예기간 이상 지났는데 새 기일이 잡히지 않은
@@ -1949,6 +1950,14 @@ class AuctionStore:
             checked = conn.execute(
                 "SELECT COUNT(*) AS c FROM auction_items WHERE is_active = 1"
             ).fetchone()["c"]
+            # 이번 사이클이 목록을 거의 못 읽었으면(사이트 점검 등) 종결하지 않는다.
+            # 유찰 물건은 새 기일을 목록에서 받아 와야 살아 있는데, 못 읽는 동안 '기일+3일'
+            # 이 지나면 멀쩡한 물건이 사이트에서 사라진다(2026-09-24 추석 점검: 09-21~23
+            # 기일 3,502건이 대상이었다). 평소 사이클은 활성의 70~90% 를 본다.
+            # ponytail: 사이클 전체 기준이다. 일부 법원만 못 읽은 경우는 못 거른다 —
+            # 필요해지면 법원별 본 수(court_counts)로 법원 단위 판정으로 올린다.
+            if seen is not None and seen * 10 < checked:
+                return {"checked": checked, "deactivated": 0, "skipped": True}
             # 이벤트를 먼저 일괄 기록한 뒤(같은 조건) 일괄 UPDATE. 3.6만 건 파이썬
             # 루프+개별 UPDATE 대신 2개 SQL로 락 점유 시간을 크게 줄인다.
             conn.execute(

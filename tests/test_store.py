@@ -613,6 +613,23 @@ class StoreTests(unittest.TestCase):
             {"auction:부산지방법원:2025타경901:1", "auction:부산지방법원:2025타경902:1"},
         )
 
+    def test_lifecycle_skips_when_the_cycle_could_not_read_the_list(self):
+        # 사이트 점검 중엔 목록이 0건이다. 그때 '기일+3일' 로 종결하면 새 기일을 못 받아 온
+        # 유찰 물건이 사이트에서 사라진다(2026-09-24 추석 점검).
+        self.store.upsert_items([AuctionItem({
+            "수집구분": "진행", "사건번호": "부산지방법원 2025타경889", "물건번호": "1",
+            "매각기일": "2026.06.01", "진행상태": "유찰 1회"})])
+        now = "2026-07-06T00:00:00+00:00"
+
+        skipped = self.store.apply_lifecycle(now=now, seen=0)
+        self.assertTrue(skipped.get("skipped"))
+        self.assertEqual(skipped["deactivated"], 0)
+        self.assertTrue(self.store.get_item("auction:부산지방법원:2025타경889:1")["is_active"])
+
+        # 목록을 제대로 읽은 사이클이면 예전처럼 종결한다.
+        done = self.store.apply_lifecycle(now=now, seen=skipped["checked"])
+        self.assertEqual(done["deactivated"], 1)
+
     def test_lifecycle_keeps_upcoming_and_grace_period_items(self):
         upcoming = AuctionItem(
             {
