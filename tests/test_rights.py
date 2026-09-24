@@ -118,6 +118,9 @@ class 실명(unittest.TestCase):
         self.assertIn("김철수", got)
         self.assertNotIn("홍길동이", got)
 
+    def test_두_글자_이름은_다른_낱말_속에서_안_가린다(self):
+        self.assertEqual(R.mask_text("정원이 신고. 정원수 식재. 정원(임차인)", ["정원"]), "정○이 신고. 정원수 식재. 정○(임차인)")
+
     def _item(self, active: bool, jev_seen: bool) -> dict:
         rights = R.compute_rights(
             spec_text="최선순위 / 별지 기재와 같음 2020.1.1. 근저당권 배당요구종기",

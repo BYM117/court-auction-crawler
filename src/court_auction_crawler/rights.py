@@ -260,10 +260,18 @@ def mask_person_name(name: str) -> str:
     return name[0] + "○" * (len(name) - 1) if len(name) >= 2 else name
 
 
+# 두 글자 이름은 다른 낱말 속에 들어 있을 수 있다('정원' → '정원수'). 뒤에 한글이 아닌 것이나
+# 조사가 올 때만 가린다. 세 글자 이상은 우연히 겹칠 일이 드물어 그대로 가린다.
+_SHORT_TAIL = r"(?=$|[^가-힣]|(?:이|가|은|는|의|을|를|과|와|에게|에게서|로부터|으로부터|씨|님)(?:$|[^가-힣]))"
+
+
 def mask_text(text: str, names: list[str]) -> str:
     """거둔 이름만 가린다. 긴 이름부터 — 짧은 이름이 긴 이름의 앞을 먼저 먹으면 안 된다."""
     for name in sorted(set(names), key=len, reverse=True):
-        text = text.replace(name, mask_person_name(name))
+        if len(name) >= 3:
+            text = text.replace(name, mask_person_name(name))
+        else:
+            text = re.sub(re.escape(name) + _SHORT_TAIL, mask_person_name(name), text)
     return text
 
 
