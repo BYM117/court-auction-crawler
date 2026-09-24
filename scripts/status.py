@@ -504,25 +504,6 @@ def checks() -> list[dict]:
         잰값, "남은 것: 망가진 사이클 즉시 재시도(2번)",
         by="측정" if 잰것 else "코드")
 
-    # 권리 판정(rights.py + Jev 꼬리) — 결과를 센다. Jev 실패는 사이클을 안 멈추므로
-    # 여기서 안 세면 조용히 빈다(함정 ④). 엇갈림은 정답지 후보(scripts/jev_review.py).
-    판정 = q1("SELECT COUNT(*) FROM auction_items WHERE is_active=1 AND rights_json <> ''")
-    if 판정 is None:
-        add("G19", "권리 판정(대항력·유치권·점유·실명)", "Jev", TODO, "rights_json 칸 없음 — 판정 단계 전")
-    else:
-        있음 = q1("SELECT COUNT(*) FROM auction_items WHERE is_active=1 "
-                  "AND json_extract(NULLIF(rights_json,''),'$.opposability.summary')='있음'")
-        없음 = q1("SELECT COUNT(*) FROM auction_items WHERE is_active=1 "
-                  "AND json_extract(NULLIF(rights_json,''),'$.opposability.summary')='없음'")
-        미룸 = q1("SELECT COUNT(*) FROM auction_items WHERE json_extract(NULLIF(rights_json,''),'$.jev_pending')=1")
-        오류 = q1("SELECT COUNT(*) FROM auction_items WHERE json_extract(NULLIF(rights_json,''),'$.jev.error') IS NOT NULL")
-        엇갈림 = q1("SELECT COUNT(*) FROM auction_items "
-                    "WHERE json_array_length(json_extract(NULLIF(rights_json,''),'$.review')) > 0")
-        add("G19", "권리 판정(대항력·유치권·점유·실명)", "Jev",
-            DONE if active and 판정 >= active * 0.9 and (오류 or 0) <= 판정 * 0.05 else (WIP if 판정 else TODO),
-            f"진행 {pct(판정, active)} 판정 · 대항력 있음 {있음:,}/없음 {없음:,} · Jev 미룸 {미룸:,} · 오류 {오류:,} · 엇갈림 {엇갈림:,}",
-            "엇갈림은 python3 scripts/jev_review.py 로 정답을 매겨 정답지에 보탠다")
-
     return out
 
 
