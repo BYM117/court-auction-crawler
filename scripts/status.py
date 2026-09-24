@@ -563,6 +563,16 @@ def live_status() -> list[str]:
     except Exception:
         pass
 
+    # 1-1) 사이트 점검으로 상세 수집을 멈춰 뒀나. 멈춘 이유를 모르면 누가 '꺼져 있네' 하고
+    # 점검 중에 켠다. 표시 파일이 있으면 자동 재개 장치(maintenance-watch)가 30분마다 본다.
+    pause = (DB.parent if DB is not None else ROOT / "data") / "maintenance_pause"
+    if pause.exists():
+        watch = ROOT / "logs" / "maintenance-watch.log"
+        last = (watch.read_text(encoding="utf-8", errors="replace").strip().splitlines() or ["기록 없음"])[-1] \
+            if watch.exists() else "기록 없음"
+        out.append("- ⏸ **상세 수집 정지 — 법원 사이트 점검 대기.** 끝나면 자동 재개 장치가 "
+                   f"켠다(30분마다 확인). 직접 켜지 말 것 · 마지막 확인: {last[:70]}")
+
     # 2) 수집 부하 — 밀려나고 있나 (CRAWL-LOAD.md)
     # 차단 신호는 '세션 거절'(받아둔 사건을 없다고 함)의 **비율**이다. 하루 합계는
     # 나쁜 새벽과 좋은 낮을 섞어 둘 다 가리므로, 최근 300건 창을 먼저 보인다.

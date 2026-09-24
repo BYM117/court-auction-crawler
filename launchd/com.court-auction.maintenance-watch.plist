@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.court-auction.maintenance-watch</string>
+  <!-- 사이트 점검이 끝나면 상세 수집기를 되살린다. data/maintenance_pause 가 있을 때만
+       일하고, 없으면 바로 끝난다. 문서 폴더는 TCC 보호 대상이라 전체 디스크 접근이
+       부여된 zsh 안에서 cd와 리다이렉션을 수행한다. -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/zsh</string>
+    <string>-lc</string>
+    <string>cd "/Users/bymsub/Documents/경매물건 크롤링" &amp;&amp; exec /bin/zsh scripts/resume_after_maintenance.sh >> logs/maintenance-watch.log 2>&amp;1</string>
+  </array>
+  <key>StandardOutPath</key>
+  <string>/Users/bymsub/Library/Logs/court-auction/maintenance-watch.launchd.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/bymsub/Library/Logs/court-auction/maintenance-watch.launchd.err.log</string>
+  <key>StartInterval</key>
+  <integer>1800</integer>
+  <key>RunAtLoad</key>
+  <true/>
+</dict>
+</plist>

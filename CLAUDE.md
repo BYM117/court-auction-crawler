@@ -59,6 +59,11 @@ launchd가 다섯 개를 띄운다. `launchctl kickstart -k gui/$(id -u)/com.cou
 | `com.court-auction.server` | 로컬 대시보드 | 상시 |
 | `com.court-auction.logrotate` | 로그를 날짜별로 분리 | 매일 00:05 |
 | `com.court-auction.baseline` | 법원 공식 통계와 대조 (G11) | 매달 1일 10:00 |
+| `com.court-auction.maintenance-watch` | 사이트 점검이 끝나면 상세 수집 자동 재개 (`data/maintenance_pause` 있을 때만) | 30분마다 |
+
+**법원 사이트 점검 때**(추석·설 등): `touch data/maintenance_pause` 후 상세 수집기만
+`bootout` 한다. 끝나면 `maintenance-watch` 가 알아서 워커 1 로 켠다. 목록 수집기는 둬도
+된다 — 목록을 못 읽은 사이클은 생명주기 정리를 건너뛴다. 자세한 것은 `CRAWL-LOAD.md`.
 
 수집 사이클 한 바퀴 순서다.
 
