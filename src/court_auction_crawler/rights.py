@@ -139,7 +139,7 @@ def opposability(occupants: list[dict[str, Any]], senior: dict[str, Any] | None,
 # 정답지 90건: 이 규칙 90/90, '남으면 무조건 높음' 85/90(헛경고 5).
 WAIVER_RE = re.compile(r"대항력\s*(?:은|을|의)?\s*포기")
 _OTHER_TENANT_RE = re.compile(
-    r"대항력[^.。]{0,20}(?:여지|있을\s*수|미상|주의)|임대차\s*관계\s*미상|미상의\s*(?:임차인|전입자)")
+    r"대항력[^.。]{0,20}(?:여지|있을\s*수|미상|주의)|임대차\s*관계\s*(?:미상|불분명)|미상의\s*(?:임차인|전입자)")
 
 
 def waiver_leaves_other_tenant(text: str) -> bool:
@@ -152,12 +152,19 @@ def waiver_leaves_other_tenant(text: str) -> bool:
 # 판결" — 법원이 유치권을 인정한 것이다. '부존재' 라는 글자만 보면 정반대로 틀린다.
 # 신고인이 여럿이면 일부만 해소되기도 한다 — **마지막 해소 뒤에 신고·행사가 또 나오면 남음.**
 # 얽힌 문장은 남음 쪽으로 틀린다(헛경고가 놓침보다 싸다). 그런 엇갈림은 Jev 가 찾아 정답지로.
+# 끝난 것만 해소다 — '1심 승소'·'승소했으나 미확정'·'승소판결 뒤 항소장 접수' 는 아직이다(2026-09-28,
+# Jev 엇갈림 19건 중 규칙이 틀린 9건이 전부 이 무리였고 전부 '남음' 을 '해소' 로 틀린 위험한 쪽이었다).
+_FINAL = r"(?<!미)확정(?!\s*되지)|상고\s*기각"
 _LIEN_RESOLVED = re.compile(
     r"유치권[^.。]{0,30}(?:취하|철회)|(?:취하|철회|포기)\s*\)?\s*서[^.。]{0,10}(?:제출|접수)|철회\s*신고서"
-    r"|부존재[^.。]{0,80}(?:승소|확정)|부존재\s*확인서|존재하지\s*(?:아니|않)")
+    r"|부존재\s*확인서|(?:부존재|존재하지\s*(?:아니|않))[^。]{0,160}?(?:" + _FINAL + ")")
 _LIEN_LOST = re.compile(
-    r"부존재[^.。]{0,80}패소|원고\s*패소|일부\s*승소|성립[^.。]{0,6}인정|(?<!부)존재\s*확인\s*(?:판결|소)")
-_LIEN_OPEN = re.compile(r"유치권\s*(?:권리)?신고|유치권[^.。]{0,10}(?:행사|주장)|성립\s*여부[^.。]{0,6}불분명")
+    r"부존재[^.。]{0,80}패소|원고\s*패소|일부\s*승소|성립[^.。]{0,6}인정|(?<!부)존재\s*확인\s*(?:판결|소)"
+    r"|유치권이\s*존재한다|(?<!부)존재한다는|(?:타|다른)\s*채권자의?\s*유치권")
+# 해소 뒤에 이런 말이 또 나오면 남음 — 다른 신고인, 아직 진행 중인 소송, 항소, 미확정.
+_LIEN_OPEN = re.compile(
+    r"유치권\s*(?:권리)?신고|유치권[^.。]{0,10}(?:행사|주장)|성립\s*여부[^.。]{0,6}불분명"
+    r"|진행\s*중|항소장|항소\s*중|미확정|확정되지")
 
 
 def lien_status(text: str) -> str | None:
@@ -166,11 +173,11 @@ def lien_status(text: str) -> str | None:
         return None
     if _LIEN_LOST.search(text):
         return "남음"
-    resolved = [m.start() for m in _LIEN_RESOLVED.finditer(text)]
+    resolved = [m.end() for m in _LIEN_RESOLVED.finditer(text)]   # 해소 문장이 끝난 자리부터 본다
     if not resolved:
         return "남음"
     opened = [m.start() for m in _LIEN_OPEN.finditer(text)]
-    return "남음" if opened and max(opened) > max(resolved) else "해소"
+    return "남음" if opened and max(opened) >= max(resolved) else "해소"
 
 
 # ── ④ 현황조사 — 조사관이 점유자를 직접 만났나 ─────────────────────────────
@@ -355,7 +362,7 @@ def mask_payload(node: Any, names: list[str]) -> Any:
     return node
 
 
-RIGHTS_VERSION = 4   # 4: 문장 속 이름은 Jev 확인분만 · 2: 남의 호실 임차인을 뺀다 · 3: 문장에서 거둔 이름의 조사·낱말을 걸렀다
+RIGHTS_VERSION = 5   # 5: 확정 안 된 부존재 승소는 남음 · 임대차관계 불분명 · 4: 문장 속 이름은 Jev 확인분만 · 2: 남의 호실 임차인을 뺀다 · 3: 문장에서 거둔 이름의 조사·낱말을 걸렀다
 
 
 def compute_rights(*, spec_text: str, survey_text: str, note: str,

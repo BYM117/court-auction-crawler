@@ -27,6 +27,9 @@ class 대항력포기(unittest.TestCase):
     def test_포기와_별개인_미상_임차인은_위험(self):
         self.assertTrue(R.waiver_leaves_other_tenant("1. " + HUG + " 2. 대항력 여지 있는 임대차관계 미상의 임차인 있음."))
 
+    def test_임대차관계_불분명도_다른_임차인이다(self):
+        self.assertTrue(R.waiver_leaves_other_tenant("1.임대차관계 불분명(전입인 홍길동) 2." + HUG))
+
     def test_있을_수_있음도_위험(self):
         self.assertTrue(R.waiver_leaves_other_tenant("- 대항력 있는 임차인 있을 수 있음. - " + HUG))
 
@@ -54,6 +57,30 @@ class 유치권(unittest.TestCase):
 
     def test_존재확인_판결은_남음(self):
         self.assertEqual(R.lien_status("유치권 신고서가 제출되었고 유치권 존재확인판결이 제출됨"), "남음")
+
+    def test_확정_안_된_승소는_아직이다(self):
+        # 2026-09-28 엇갈림 검토: 규칙이 틀린 9건이 전부 이 무리였고 전부 위험한 쪽이었다
+        for text in ("유치권신고가 있으나 불분명함. 신청채권자가 유치권부존재확인소송을 제기하여 1심 승소함.",
+                     "유치권부존재확인 소송 1심에서 신청채권자가 승소하였으나 현재 미확정 상태임.",
+                     "유치권신고를 하였고 원고승소판결을 제출하였으나 유치권자가 추완 항소장을 접수하였음",
+                     "유치권 부존재 관련 소명자료가 제출되었음(유치권의 성립 여부는 최종 확정되지 아니하였으므로 사전 확인 요함)"):
+            self.assertEqual(R.lien_status(text), "남음", text)
+
+    def test_존재한다는_확정판결은_유치권이_인정된_것(self):
+        self.assertEqual(R.lien_status("유치권 부존재 확인의 소에 의하여 위 금원에 대하여 유치권이 존재한다는 확정판결 있음"), "남음")
+
+    def test_한_명은_확정이어도_다른_소송이_진행_중이면_남음(self):
+        text = ("가나건설의 유치권 부존재를 확인하는 화해권고결정이 확정되고, 홍길동에 대한 소송은 진행 중임.")
+        self.assertEqual(R.lien_status(text), "남음")
+
+    def test_타_채권자의_유치권_행사는_남음(self):
+        text = ("309호는 타 채권자의 유치권 행사 중으로 점유하고 있음. 가나냉각기의 유치권이 존재하지 않는다는 판결이 "
+                "있었고 상고심에서 상고기각 판결이 있었음")
+        self.assertEqual(R.lien_status(text), "남음")
+
+    def test_항소기각_상고기각까지_간_부존재는_해소(self):
+        text = "유치권신고서가 제출되었으나 유치권이 존재하지 않는다는 판결이 있었고 항소기각, 상고심에서 상고기각 판결이 있었음"
+        self.assertEqual(R.lien_status(text), "해소")
 
     def test_일부만_해소되고_새_신고가_남으면_남음(self):
         text = ("- 신고인 홍길동의 유치권 신고가 있으나 유치권부존재확인 사건의 확정 판결이 제출됨. "
@@ -186,6 +213,17 @@ class 실명(unittest.TestCase):
     def test_끝났는데_Jev가_아직이면_메모를_아예_안_싣는다(self):
         got = public_auction_detail(self._item(active=False, jev_seen=False))["rights"]
         self.assertEqual(got["survey"]["memo"], "")
+
+    def test_계산된_대항력은_보통_법원이_쓴_것은_높음(self):
+        from court_auction_crawler.enrichment import build_screening
+        item = self._item(active=True, jev_seen=True)     # 계산상 '있음'(전입 2019 < 최선순위 2020)
+        flags = public_auction_summary(item)["auction"]["special_rights"]
+        self.assertIn("대항력가능", flags)
+        self.assertEqual(build_screening(["대항력가능"])["risk_level"], "보통")
+        stated = {**item, "raw": {"비고": "대항력 있는 임차인 있음. 배당에서 전액 변제되지 않으면 매수인이 인수함"}}
+        flags = public_auction_summary(stated)["auction"]["special_rights"]
+        self.assertIn("대항력있는임차인", flags)
+        self.assertNotIn("대항력가능", flags)             # 같은 위험을 두 번 세지 않는다
 
     def test_목록에도_요약이_간다(self):
         got = public_auction_summary(self._item(active=True, jev_seen=True))["rights"]

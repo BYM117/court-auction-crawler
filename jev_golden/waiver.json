@@ -546,6 +546,30 @@
    "text_fp": "2752272b5e5c0c5e",
    "risk": true,
    "tag": "새표본"
+  },
+  {
+   "key": "auction:수원지방법원:2024타경78797:1",
+   "text_fp": "a53c3e4b0464f7fe",
+   "risk": true,
+   "tag": "엇갈림검토"
+  },
+  {
+   "key": "auction:수원지방법원:2025타경56782:1",
+   "text_fp": "c44842d06a82e321",
+   "risk": false,
+   "tag": "엇갈림검토"
+  },
+  {
+   "key": "auction:수원지방법원:2025타경55735:1",
+   "text_fp": "c44842d06a82e321",
+   "risk": false,
+   "tag": "엇갈림검토"
+  },
+  {
+   "key": "auction:천안지원:2026타경10142:1",
+   "text_fp": "0d45cffa0a2b240b",
+   "risk": false,
+   "tag": "엇갈림검토"
   }
  ]
 }

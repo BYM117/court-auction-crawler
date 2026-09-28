@@ -408,6 +408,96 @@
    "text_fp": "dc67a1f9eb9cfd12",
    "status": "해소",
    "tag": "깨끗한검증"
+  },
+  {
+   "key": "auction:속초지원:2025타경117:2",
+   "text_fp": "7733f3fa76e70f05",
+   "status": "해소",
+   "tag": "엇갈림검토"
+  },
+  {
+   "key": "auction:홍성지원:2025타경15025:1",
+   "text_fp": "b9c81c2226889537",
+   "status": "해소",
+   "tag": "엇갈림검토"
+  },
+  {
+   "key": "auction:인천지방법원:2023타경518970:1",
+   "text_fp": "69312063eb9d412e",
+   "status": "해소",
+   "tag": "엇갈림검토"
+  },
+  {
+   "key": "auction:김천지원:2023타경1073:1",
+   "text_fp": "5c0e6aab182f4cdd",
+   "status": "해소",
+   "tag": "엇갈림검토"
+  },
+  {
+   "key": "auction:고양지원:2024타경3714:1",
+   "text_fp": "514d5971b410b48a",
+   "status": "해소",
+   "tag": "엇갈림검토"
+  },
+  {
+   "key": "auction:순천지원:2024타경57866:1",
+   "text_fp": "fd790986a1cd38d3",
+   "status": "해소",
+   "tag": "엇갈림검토"
+  },
+  {
+   "key": "auction:서울동부지방법원:2024타경58545:1",
+   "text_fp": "d0de8e628401e893",
+   "status": "남음",
+   "tag": "엇갈림검토"
+  },
+  {
+   "key": "auction:대구서부지원:2023타경4384:1",
+   "text_fp": "b332eecfab9125e1",
+   "status": "남음",
+   "tag": "엇갈림검토"
+  },
+  {
+   "key": "auction:평택지원:2023타경44383:1",
+   "text_fp": "b0f5afa466099bb5",
+   "status": "남음",
+   "tag": "엇갈림검토"
+  },
+  {
+   "key": "auction:수원지방법원:2022타경56861:1",
+   "text_fp": "6366606499e9ea38",
+   "status": "남음",
+   "tag": "엇갈림검토"
+  },
+  {
+   "key": "auction:청주지방법원:2023타경6300:1",
+   "text_fp": "1b439f7f3e9f5b01",
+   "status": "남음",
+   "tag": "엇갈림검토"
+  },
+  {
+   "key": "auction:원주지원:2023타경306375:1",
+   "text_fp": "546101dcdcdc4ba7",
+   "status": "남음",
+   "tag": "엇갈림검토"
+  },
+  {
+   "key": "auction:울산지방법원:2024타경6207:1",
+   "text_fp": "7683f18aacf0781c",
+   "status": "남음",
+   "tag": "엇갈림검토"
+  },
+  {
+   "key": "auction:부천지원:2025타경33319:1",
+   "text_fp": "434456b84e5c78ee",
+   "status": "남음",
+   "tag": "엇갈림검토"
+  },
+  {
+   "key": "auction:광주지방법원:2024타경9158:1",
+   "text_fp": "74e5a5b97bf8abb6",
+   "status": "남음",
+   "tag": "엇갈림검토"
   }
  ]
 }

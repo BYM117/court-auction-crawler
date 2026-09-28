@@ -33,9 +33,11 @@ def main() -> int:
     db = sqlite3.connect(f"file:{args.db}?mode=rw", uri=True, timeout=30)
     if args.add:
         key, name, label = args.add
-        note = (db.execute("SELECT item_note FROM auction_items WHERE item_key = ?", (key,)).fetchone() or [None])[0]
-        if note is None:
+        row = db.execute("SELECT item_note, raw_json FROM auction_items WHERE item_key = ?", (key,)).fetchone()
+        if row is None:
             sys.exit("그 물건이 없습니다")
+        listed = str((json.loads(row[1] or "{}") or {}).get("비고") or "")
+        note = " ".join(t for t in (listed, str(row[0] or "")) if t)   # 운영과 같은 글(목록 비고 + 사건 비고)
         path = ROOT / "jev_golden" / f"{name}.json"
         data = json.loads(path.read_text())
         field = {"waiver": "risk", "lien": "status"}[name]
@@ -54,6 +56,7 @@ def main() -> int:
         print("엇갈린 것 없음.")
     for key, note, rights in rows:
         review = json.loads(rights)["review"][-1]
+        note = note or "(사건 비고 없음 — 목록 비고를 볼 것)"
         print(f"\n■ {key}  [{review['kind']}] 규칙={review['rule']}  Jev={review['jev']}\n  {note[:400]}")
     return 0
 

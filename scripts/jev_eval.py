@@ -40,8 +40,17 @@ def load(name: str) -> dict:
 
 
 def note_of(db, key):
-    row = db.execute("SELECT item_note FROM auction_items WHERE item_key = ?", (key,)).fetchone()
-    return row[0] if row else None
+    """운영(`rights` 단계)과 같은 글 — 목록 비고 + 사건 비고. 예전 정답은 사건 비고만으로 지문을 찍었으니
+    둘 다 후보로 돌려주고, 지문이 맞는 쪽으로 채점한다(대조 기준을 운영과 맞춘다, 함정 ⑤-1)."""
+    row = db.execute("SELECT item_note, raw_json FROM auction_items WHERE item_key = ?", (key,)).fetchone()
+    if not row:
+        return None
+    try:
+        listed = str((json.loads(row[1] or "{}") or {}).get("비고") or "")
+    except (TypeError, ValueError):
+        listed = ""
+    note = str(row[0] or "")
+    return [" ".join(t for t in (listed, note) if t), note]
 
 
 def doc_text(db, key=None, doc_id=None, kind="현황조사서"):
@@ -64,11 +73,14 @@ def run(db, use_jev: bool) -> dict:
     def text_items(name, getter):
         data = load(name); out = []; drift = 0
         for it in data["items"]:
-            text = getter(it)
-            if text is None or ("text_fp" in it and fp(text if name != "occupancy" else text[:200]) != it["text_fp"]):
+            got = getter(it)
+            texts = got if isinstance(got, list) else [got]
+            match = next((t for t in texts if t is not None and ("text_fp" not in it or
+                          fp(t if name != "occupancy" else t[:200]) == it["text_fp"])), None)
+            if match is None:
                 drift += 1
                 continue
-            out.append((it, text))
+            out.append((it, match))
         return out, drift
 
     items, drift = text_items("waiver", lambda it: note_of(db, it["key"]))
@@ -138,14 +150,19 @@ def main() -> int:
         print(f"  {name:9} 규칙 {rule_ok}/{n}{jev} · 본문 바뀜 {drift}")
     hist = Path(args.db).resolve().parent / "jev_eval_history.jsonl"
     past = [json.loads(line) for line in hist.read_text().splitlines()] if hist.exists() else []
+    # 정답지가 커지면(엇갈림 검토로 어려운 것이 들어온다) 규칙이 나아져도 비율은 떨어질 수 있다 —
+    # 같은 정답지로 잰 기록끼리만 댄다. 정답지마다 지문을 남긴다.
+    golden = {name: hashlib.sha256((ROOT / "jev_golden" / f"{name}.json").read_bytes()).hexdigest()[:12]
+              for name in ("waiver", "lien", "occupancy", "senior", "names")}
     record = {"at": datetime.now(timezone.utc).isoformat(timespec="seconds"), "rules": R.RIGHTS_VERSION,
-              "questions": versions, "jev": use_jev,
+              "questions": versions, "jev": use_jev, "golden": golden,
               "scores": {k: {"rule": v[0] / v[3] if v[3] else None, "jev": (v[1] / v[2]) if v[2] else None}
                          for k, v in results.items()}}
     regress = []
     for name, cur in record["scores"].items():
         for kind in ("rule", "jev"):
-            best = max((p["scores"].get(name, {}).get(kind) or 0 for p in past), default=0)
+            best = max((p["scores"].get(name, {}).get(kind) or 0 for p in past
+                        if (p.get("golden") or {}).get(name) == golden.get(name)), default=0)
             if cur[kind] is not None and cur[kind] + 1e-9 < best:
                 regress.append(f"{name}.{kind} {cur[kind]:.3f} < 최고 {best:.3f}")
     with hist.open("a") as f:
