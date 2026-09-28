@@ -36,7 +36,7 @@ def fake_rows(db: Path, include_inactive: bool) -> list[sqlite3.Row]:
     where = "coordinate_source='building' AND lat IS NOT NULL"
     if not include_inactive:
         where += " AND is_active=1"
-    with sqlite3.connect(f"file:{db}?mode=ro", uri=True) as conn:
+    with sqlite3.connect(f"file:{db}?mode=rw", uri=True) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
             "SELECT item_key, address, lat, lng, geocode_query, coordinate_source, "
@@ -64,7 +64,7 @@ def wrong_place_rows(db: Path, include_inactive: bool) -> list[sqlite3.Row]:
     where = "lat IS NOT NULL AND coordinate_quality IN ('verified','approximate')"
     if not include_inactive:
         where += " AND is_active=1"
-    with sqlite3.connect(f"file:{db}?mode=ro", uri=True) as conn:
+    with sqlite3.connect(f"file:{db}?mode=rw", uri=True) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
             "SELECT item_key, address, normalized_address, lat, lng, geocode_query, "
@@ -87,7 +87,7 @@ def mislabeled_rows(db: Path, include_inactive: bool) -> list[sqlite3.Row]:
     where = "lat IS NOT NULL AND coordinate_quality='missing'"
     if not include_inactive:
         where += " AND is_active=1"
-    with sqlite3.connect(f"file:{db}?mode=ro", uri=True) as conn:
+    with sqlite3.connect(f"file:{db}?mode=rw", uri=True) as conn:
         conn.row_factory = sqlite3.Row
         return conn.execute(
             "SELECT item_key, address, lat, lng, geocode_query, coordinate_source, "

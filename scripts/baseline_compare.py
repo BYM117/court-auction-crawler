@@ -90,7 +90,7 @@ async def fetch(ym: str) -> dict:
 def ours(ym: str) -> dict[str, dict]:
     """우리 쪽 집계. 법원 정의에 맞춰 '변경' 기일은 뺀다(입찰이 없었다)."""
     prefix = f"{ym[:4]}.{ym[4:]}"
-    with sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True) as conn:
+    with sqlite3.connect(f"file:{DB_PATH}?mode=rw", uri=True) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
             """
@@ -115,7 +115,7 @@ def coverage_note(ym: str) -> str | None:
     앞부분 기일이 통째로 없고, 그러면 법원마다 '기일이 언제 잡혔는가'가 비율을
     좌우한다. 실측 202608: 깃발 8개가 전부 기일 날짜 분포로 설명됐다.
     """
-    with sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True) as conn:
+    with sqlite3.connect(f"file:{DB_PATH}?mode=rw", uri=True) as conn:
         first = conn.execute(
             "SELECT MIN(collected_at) FROM auction_sale_results").fetchone()[0]
     if not first:

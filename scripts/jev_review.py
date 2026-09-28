@@ -30,7 +30,7 @@ def main() -> int:
     args = ap.parse_args()
     if not Path(args.db).exists():
         sys.exit(f"DB 가 없습니다: {args.db} — 원본 폴더에서 돌리거나 절대경로를 주세요.")
-    db = sqlite3.connect(f"file:{args.db}?mode=ro", uri=True, timeout=30)
+    db = sqlite3.connect(f"file:{args.db}?mode=rw", uri=True, timeout=30)
     if args.add:
         key, name, label = args.add
         note = (db.execute("SELECT item_note FROM auction_items WHERE item_key = ?", (key,)).fetchone() or [None])[0]

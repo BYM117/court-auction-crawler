@@ -20,6 +20,7 @@ import argparse
 import json
 import re
 import sqlite3
+import time
 import subprocess
 import sys
 from datetime import datetime
@@ -63,19 +64,38 @@ DONE, WIP, TODO, FIXED_LIMIT, UNKNOWN = "해결됨", "진행 중", "미해결", 
 
 
 # ── 재는 도구 ────────────────────────────────────────────────────────────────
+def ro_connect(timeout: float = 30) -> sqlite3.Connection:
+    """읽기만 하는 연결. **`mode=ro` 를 쓰지 않는다.** DB 가 WAL 이라(store.py, 07-10~) 마침
+    다른 연결이 하나도 없으면 -shm 이 지워져 있고, 그때 읽기 전용으로는 파일을 못 연다
+    ('unable to open database file', 2026-09-28 — 조회가 None 이 되어 도구가 죽었다).
+    쓰기 가능으로 열되 query_only 로 쓰기를 막는다. mode=rw 라 파일이 없으면 빈 DB 를
+    만들지 않고 실패한다(워크트리 함정)."""
+    con = sqlite3.connect(f"file:{DB}?mode=rw", uri=True, timeout=timeout)
+    con.execute("PRAGMA query_only = ON")
+    return con
+
+
 def q1(sql: str, default=0):
     """DB에서 숫자 하나. DB가 없거나 잠겨 있거나 컬럼이 없으면 None을 돌려준다."""
     if DB is None:
         return None
-    try:
-        con = sqlite3.connect(f"file:{DB}?mode=ro", uri=True, timeout=5)
+    # 잠금은 잠깐이다 — 수집 사이클이 쓰는 중이면 기다렸다 다시 본다. 5초로 두었더니
+    # 2026-09-28 에 한 번 잠겨 None 이 났고, 그게 숫자 서식에서 터져 도구 전체가 죽었다.
+    for attempt in range(3):
         try:
-            row = con.execute(sql).fetchone()
-            return row[0] if row and row[0] is not None else default
-        finally:
-            con.close()
-    except sqlite3.Error:
-        return None
+            con = ro_connect(30)
+            try:
+                row = con.execute(sql).fetchone()
+                return row[0] if row and row[0] is not None else default
+            finally:
+                con.close()
+        except sqlite3.OperationalError as exc:
+            if "locked" not in str(exc) or attempt == 2:
+                return None
+            time.sleep(5)
+        except sqlite3.Error:
+            return None
+    return None
 
 
 def src_has(filename: str, needle: str) -> bool | None:
@@ -146,7 +166,7 @@ def wrong_place() -> int | None:
     if DB is None:
         return None
     try:
-        con = sqlite3.connect(f"file:{DB}?mode=ro", uri=True, timeout=10)
+        con = ro_connect(10)
     except sqlite3.Error:
         return None
     n = 0
@@ -175,7 +195,7 @@ def sample_details(limit: int, where: str = "detail_status='collected'"):
     if DB is None:
         return []
     try:
-        con = sqlite3.connect(f"file:{DB}?mode=ro", uri=True, timeout=10)
+        con = ro_connect(10)
         rows = [r[0] for r in con.execute(
             f"SELECT detail_json FROM auction_items WHERE {where} "
             f"ORDER BY detail_collected_at DESC LIMIT {limit}")]
@@ -234,7 +254,7 @@ def building_match_rate() -> tuple[int, int]:
     if DB is None:
         return (0, 0)
     try:
-        con = sqlite3.connect(f"file:{DB}?mode=ro", uri=True, timeout=10)
+        con = ro_connect(10)
         rows = con.execute(
             "SELECT transactions_detail FROM auction_items "
             "WHERE is_active=1 AND transactions_detail LIKE '%match_level%'").fetchall()
@@ -423,7 +443,7 @@ def checks() -> list[dict]:
     try:
         if DB is None:
             raise sqlite3.Error("no db")
-        con = sqlite3.connect(f"file:{DB}?mode=ro", uri=True, timeout=5)
+        con = ro_connect(5)
         SIDO = ("서울특별시", "부산광역시", "대구광역시", "인천광역시", "광주광역시",
                 "대전광역시", "울산광역시", "세종특별자치시", "경기도", "강원도",
                 "강원특별자치도", "충청북도", "충청남도", "전라북도", "전북특별자치도",
@@ -616,7 +636,7 @@ def live_status() -> list[str]:
     # 3) 백필이 얼마나 남았나
     if DB is not None:
         try:
-            con = sqlite3.connect(f"file:{DB}?mode=ro", uri=True, timeout=10)
+            con = ro_connect(10)
             def n(sql: str) -> int:
                 try:
                     return int(con.execute(sql).fetchone()[0])
@@ -731,7 +751,14 @@ def main() -> int:
               file=sys.stderr)
         return 1
 
-    text = render(checks())
+    try:
+        text = render(checks())
+    except Exception as exc:  # noqa: BLE001
+        # 격차 표 하나가 터져도 '지금 벌어지는 일' 은 끝까지 보여야 한다 — 새 세션이
+        # 가장 먼저 봐야 할 칸이다(데몬·점검 대기·수집 부하).
+        text = "\n".join(["# 수집기 현황 — 격차 표를 못 그렸다", "",
+                           f"> ⚠ status.py 오류: {type(exc).__name__}: {str(exc)[:150]} — 고칠 것", "",
+                           *live_status()])
     print(text)
     if args.write:
         (ROOT / "STATUS.md").write_text(text + "\n", encoding="utf-8")

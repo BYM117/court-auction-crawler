@@ -60,7 +60,7 @@ def km_between(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
 def main(limit: int, seed: int, db: Path) -> None:
     from court_auction_crawler.geocoder import geocode_address
 
-    with sqlite3.connect(f"file:{db}?mode=ro", uri=True) as conn:
+    with sqlite3.connect(f"file:{db}?mode=rw", uri=True) as conn:
         conn.row_factory = sqlite3.Row
         rows = broken_rows(conn)
     print(f"엉뚱하게 찍힌 활성 물건 {len(rows)}건")

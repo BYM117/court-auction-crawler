@@ -46,7 +46,7 @@ def main() -> int:
     # 컬럼은 AuctionStore를 열 때 생긴다(ALTER TABLE). 생으로 붙으면 'no such column'이다.
     AuctionStore(a.db)
 
-    read = sqlite3.connect(f"file:{a.db}?mode=ro", uri=True)
+    read = sqlite3.connect(f"file:{a.db}?mode=rw", uri=True)
     read.row_factory = sqlite3.Row
     write = sqlite3.connect(a.db)
     write.execute("PRAGMA busy_timeout=30000")

@@ -32,7 +32,7 @@ name_hash = lambda n: hashlib.sha256(("jev-name:" + n).encode()).hexdigest()[:16
 def open_ro(path: str) -> sqlite3.Connection:
     if not Path(path).exists():   # 워크트리의 상대경로는 빈 DB 를 조용히 만든다 — 그 전에 멈춘다
         sys.exit(f"DB 가 없습니다: {path} — 원본 폴더에서 돌리거나 --db 에 절대경로를 주세요.")
-    return sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=30)
+    return sqlite3.connect(f"file:{path}?mode=rw", uri=True, timeout=30)
 
 
 def load(name: str) -> dict:
