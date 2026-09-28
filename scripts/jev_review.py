@@ -51,9 +51,13 @@ def main() -> int:
     rows = db.execute(
         """SELECT item_key, item_note, rights_json FROM auction_items
             WHERE json_array_length(json_extract(NULLIF(rights_json, ''), '$.review')) > 0
-            ORDER BY rights_at DESC LIMIT ?""", (args.limit,)).fetchall()
+            ORDER BY rights_at DESC LIMIT ?""", (args.limit + 500,)).fetchall()
+    # 이미 정답을 매긴 것은 다시 보여주지 않는다(판정이 다시 돌아도 review 기록은 남아 있다).
+    labeled = {item.get("key") for name in ("waiver", "lien")
+               for item in json.loads((ROOT / "jev_golden" / f"{name}.json").read_text())["items"]}
+    rows = [row for row in rows if row[0] not in labeled]
     if not rows:
-        print("엇갈린 것 없음.")
+        print("새로 엇갈린 것 없음(정답을 매긴 것은 뺐다).")
     for key, note, rights in rows:
         review = json.loads(rights)["review"][-1]
         note = note or "(사건 비고 없음 — 목록 비고를 볼 것)"
