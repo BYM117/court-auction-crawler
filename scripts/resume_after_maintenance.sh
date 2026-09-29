@@ -49,6 +49,18 @@ PY
   fi
 fi
 
+# ── 상세 수집기를 시간으로 쉬게 한 경우(새벽 거절률 급등 등) ──────────────────────
+# data/detail_pause 에 UNTIL=YYYYmmddHHMM(KST). 그 시각이 되면 resume_gentle.sh 로 켜고 표시를 지운다.
+DPAUSE=data/detail_pause
+if [ -f "$DPAUSE" ]; then
+  DUNTIL=$(sed -n 's/^UNTIL=//p' "$DPAUSE")
+  if [ "$(TZ=Asia/Seoul date +%Y%m%d%H%M)" -ge "${DUNTIL:-999999999999}" ]; then
+    if zsh scripts/resume_gentle.sh; then rm -f "$DPAUSE"; echo "[$(now)] 상세 수집기 재개(기한 ${DUNTIL}) — 표시를 지웠다"; fi
+  else
+    echo "[$(now)] 상세 수집기 쉬는 중 — 기한 ${DUNTIL}"
+  fi
+fi
+
 [ -f "$FLAG" ] || exit 0
 
 body=$(mktemp)
