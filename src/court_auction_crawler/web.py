@@ -676,7 +676,7 @@ def collect_log_status(
     elif "후 재시작" in last_line or "다음 자동 수집까지" in last_line:
         status["state"] = "idle"
         status["state_label"] = "다음 수집 대기"
-        status["current"] = "3시간 주기 대기 중"
+        status["current"] = "정해진 시각(02:30·08:00·12:30) 대기 중"
         status["last_result"] = last_line
         status["progress_percent"] = 100
     elif "자동 수집 중지 요청" in last_line:

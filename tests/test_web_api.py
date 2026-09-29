@@ -312,6 +312,25 @@ class WebApiTests(unittest.TestCase):
         self.assertEqual(full["current_start"], today)
         self.assertEqual(quick["scheduled_start"], today)
 
+    def test_collector_runs_at_fixed_kst_times(self):
+        from datetime import datetime, timedelta, timezone
+
+        kst = timezone(timedelta(hours=9))
+        runner = CollectorControlRunner(self.store)
+        at = lambda month, day, hh, mm: datetime(2026, month, day, hh, mm, tzinfo=kst)  # noqa: E731
+
+        # 새벽 → 아침 → 점심 → 이튿날 새벽
+        self.assertEqual(runner.next_run_at(at(9, 30, 2, 30)), at(9, 30, 8, 0))
+        self.assertEqual(runner.next_run_at(at(9, 30, 8, 0)), at(9, 30, 12, 30))
+        self.assertEqual(runner.next_run_at(at(9, 30, 12, 30)), at(10, 1, 2, 30))
+        # 저녁에 손으로 돌려도 다음은 이튿날 새벽이다
+        self.assertEqual(runner.next_run_at(at(9, 30, 19, 5)), at(10, 1, 2, 30))
+        # 출발 시각 기준이라, 02:30 회차가 08:10 에 끝나면 다음 칸(08:00)은 이미 지났다 —
+        # 호출자는 기다리지 않고 곧바로 돈다(밀린 칸이 여럿이어도 한 번만)
+        self.assertLess(runner.next_run_at(at(9, 30, 2, 30)), at(9, 30, 8, 10))
+        # UTC 로 들어와도 KST 로 계산한다
+        self.assertEqual(runner.next_run_at(datetime(2026, 9, 29, 17, 30, tzinfo=timezone.utc)), at(9, 30, 8, 0))
+
     def test_collect_log_status_treats_waiting_cycle_as_idle(self):
         log_path = Path(self.tmp.name) / "collect-all.log"
         err_path = Path(self.tmp.name) / "collect-all.err.log"
@@ -332,7 +351,7 @@ class WebApiTests(unittest.TestCase):
 
         self.assertEqual(payload["state"], "idle")
         self.assertEqual(payload["state_label"], "다음 수집 대기")
-        self.assertEqual(payload["current"], "3시간 주기 대기 중")
+        self.assertEqual(payload["current"], "정해진 시각(02:30·08:00·12:30) 대기 중")
         self.assertEqual(payload["last_result"], "===== 다음 자동 수집까지 10800초 대기 =====")
         self.assertEqual(payload["progress_percent"], 100)
 

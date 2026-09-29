@@ -1076,6 +1076,10 @@ def run_db_check(store: AuctionStore, *, repair: bool = False) -> int:
     return 0
 
 
+# 목록 회차 사이 웹 푸시 간격. 전에는 3시간마다 도는 회차 끝에서만 올렸다.
+PUSH_ONLY_INTERVAL_SECONDS = 3 * 3600
+
+
 def run_collect_loop(
     store: AuctionStore,
     *,
@@ -1088,9 +1092,23 @@ def run_collect_loop(
     push_concurrency: int = 12,
 ) -> int:
     """목록 수집 상시 데몬. collector.enabled가 켜져 있을 때만 수집하고,
-    3시간(quick)/24시간(full) 주기를 자동 판단한다. 연속 실패가 쌓이면 프로세스를
-    종료해 launchd가 깨끗하게 되살린다(맥 잠자기 후 좀비 방어)."""
+    정해진 시각(COLLECT_RUN_AT_KST)에 출발하며 24시간마다 full 로 돈다. 연속 실패가 쌓이면
+    프로세스를 종료해 launchd가 깨끗하게 되살린다(맥 잠자기 후 좀비 방어)."""
     controller = CollectorControlRunner(store)
+
+    def push_once() -> None:
+        # 푸시가 실패해도 수집 사이클은 성공으로 친다(수집과 배포는 별개다).
+        try:
+            run_push_cycle(
+                store,
+                push_dest,
+                item_limit=push_item_limit,
+                asset_limit=push_asset_limit,
+                concurrency=push_concurrency,
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"!! 웹 푸시 실패(수집은 정상): {str(exc)[:200]}", flush=True)
+
     with singleton_lock(store.db_path.parent / "collect-all.pid") as acquired:
         if not acquired:
             print("목록 수집 데몬이 이미 실행 중이라 종료합니다 (data/collect-all.pid).", flush=True)
@@ -1118,6 +1136,7 @@ def run_collect_loop(
                 # 안 돌았지'를 알 방법이 없다.
                 print("DB 무결성 점검 생략(하루 한 번, 다음 full 사이클에)", flush=True)
             window = controller.collection_window(run_kind)
+            cycle_started = datetime.now().astimezone()
             print(
                 f"===== 자동 수집 시작 {time.strftime('%Y-%m-%d %H:%M:%S')} "
                 f"mode={run_kind} current={window['current_start']}~{window['current_end']} "
@@ -1144,34 +1163,33 @@ def run_collect_loop(
                     controller.record_full_run()
                 if push_dest:
                     # 수집·보강이 끝난 뒤에 올려야 이번 사이클의 변경분이 함께 나간다.
-                    # 푸시가 실패해도 수집 사이클은 성공으로 친다(수집과 배포는 별개다).
-                    try:
-                        run_push_cycle(
-                            store,
-                            push_dest,
-                            item_limit=push_item_limit,
-                            asset_limit=push_asset_limit,
-                            concurrency=push_concurrency,
-                        )
-                    except Exception as exc:  # noqa: BLE001
-                        print(f"!! 웹 푸시 실패(수집은 정상): {str(exc)[:200]}", flush=True)
+                    push_once()
             except Exception as exc:  # noqa: BLE001 - 데몬은 어떤 실패에도 죽지 않고 자가복구
                 consecutive_failures += 1
                 print(f"===== 자동 수집 실패({consecutive_failures}/{max_consecutive_failures}): {exc} =====", flush=True)
                 if consecutive_failures >= max_consecutive_failures:
                     self_restart("===== 연속 실패 지속 -> 프로세스 종료(launchd 재시작) =====")
 
-            interval = controller.interval_seconds
+            # 끝나고 3시간 쉬던 것을 정해진 시각 출발로 바꿨다(2026-09-30) — 출발이 날마다 밀려
+            # 오후·저녁에 3만 건을 읽고 바뀐 것 0건으로 돌아오는 회차가 하루 두세 번이었다.
+            next_at = controller.next_run_at(cycle_started)
+            interval = max(0, int((next_at - datetime.now().astimezone()).total_seconds()))
             print(
                 f"===== 자동 수집 종료 {time.strftime('%Y-%m-%d %H:%M:%S')} exit=0; "
                 f"{interval}초 후 재시작 =====",
                 flush=True,
             )
-            print(f"===== 다음 자동 수집까지 {interval}초 대기 =====", flush=True)
-            waited = 0
-            while waited < interval and controller.enabled:
-                time.sleep(min(30, interval - waited))
-                waited += 30
+            print(f"===== 다음 자동 수집까지 {interval}초 대기 ({next_at:%m-%d %H:%M} 출발) =====", flush=True)
+            last_push = time.monotonic()
+            while datetime.now().astimezone() < next_at and controller.enabled:
+                time.sleep(30)
+                # 목록은 하루 세 번만 읽지만 상세 수집기는 쉬지 않고 문서·사진을 받는다. 그걸 웹에
+                # 내보내는 푸시만은 긴 틈(12:30→02:30)에도 3시간마다 돈다 — 법원 요청은 없다.
+                if push_dest and time.monotonic() - last_push >= PUSH_ONLY_INTERVAL_SECONDS:
+                    print(f"===== 목록 쉬는 사이 웹 푸시 {time.strftime('%Y-%m-%d %H:%M:%S')} =====", flush=True)
+                    push_once()
+                    last_push = time.monotonic()
+                    print(f"===== 다음 자동 수집까지 대기 ({next_at:%m-%d %H:%M} 출발) =====", flush=True)
 
 
 def build_snapshot_payload(store: AuctionStore) -> dict[str, Any]:

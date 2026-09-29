@@ -8,6 +8,7 @@
 web.py가 re-export하므로 `from .web import CollectorControlRunner` 등 기존 경로는 유지된다."""
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import threading
 import time
@@ -18,6 +19,14 @@ from .crawler import collect_sync
 from .detail_crawler import collect_details_sync
 from .models import SearchOptions, SyncSummary
 from .store import AuctionStore
+
+
+KST = timezone(timedelta(hours=9))
+# 목록 수집은 이 시각(KST)에 출발한다. 법원 목록은 새벽~오전에만 바뀐다 — 09-16~29 회차 71개를
+# 물건 변경 이벤트로 재니, 새 물건은 00~04시 출발 회차에, 가격·상태·기일 변경은 04~12시 출발
+# 회차에 잡혔고, 그날 오전 회차 뒤에 돈 오후·저녁 회차 34개가 새로 잡은 실변경은 다 합쳐 24건이었다.
+# 12:30 은 늦게 올라오는 날(09-17: 11시 회차가 784건을 더 잡았다)과 망가진 회차의 보험이다.
+COLLECT_RUN_AT_KST = ("02:30", "08:00", "12:30")
 
 
 def _date_after(days: int) -> str:
@@ -202,6 +211,17 @@ class CollectorControlRunner:
 
     def record_full_run(self) -> None:
         self.last_full_path.write_text(str(time.time()), encoding="utf-8")
+
+    def next_run_at(self, started_at: datetime) -> datetime:
+        """이번 회차가 출발한 뒤 첫 정해진 시각. 회차가 길어져 그 시각을 넘겼으면 호출자가
+        곧바로 돌게 된다 — 밀린 칸이 여럿이어도 한 번만 따라잡는다."""
+        started_at = started_at.astimezone(KST)
+        slots = [
+            started_at.replace(hour=int(hh), minute=int(mm), second=0, microsecond=0) + timedelta(days=day)
+            for day in (0, 1)
+            for hh, mm in (slot.split(":") for slot in COLLECT_RUN_AT_KST)
+        ]
+        return min(slot for slot in slots if slot > started_at)
 
     def _write_log(self, line: str) -> None:
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
