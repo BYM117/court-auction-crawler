@@ -1013,6 +1013,10 @@ class AuctionStore:
                  -- 들어오자 훑기 4,194건이 통째로 뒤로 밀려 종국 확인이 0건이었다.
                  ORDER BY (is_active = 0 AND COALESCE(last_seen_at, '') < ?) DESC,
                           is_active DESC,
+                          -- 기일이 내일·모레인 물건이 먼저다. 명세서·현황조사서는 기일이 지나면
+                          -- 영영 못 받는데(함정 ⑦), 새 물건(상세 미수집)을 먼저 보게 두면 그 뒤로
+                          -- 밀린다(2026-09-29: 09-30 기일 명세서 1,414건이 10-08·12 새 물건 뒤였다).
+                          (REPLACE(SUBSTR(sale_date, 1, 10), '.', '-') BETWEEN ? AND ?) DESC,
                           (detail_collected_at IS NULL) DESC,
                           (REPLACE(SUBSTR(sale_date, 1, 10), '.', '-') > ?) DESC,
                           (sale_date IS NULL OR sale_date = '') ASC,
@@ -1027,6 +1031,8 @@ class AuctionStore:
                 # 만료 7일 전부터 급한 것으로 본다(훑기 창 30일 → 23일 이상).
                 [*params,
                  closing_sweep_cutoff(max(closing_sweep_days - 7, 1)),
+                 (date.today() + timedelta(days=1)).isoformat(),
+                 (date.today() + timedelta(days=2)).isoformat(),
                  date.today().isoformat(), row_limit],
             ).fetchall()
         return [dict(row) for row in rows]
