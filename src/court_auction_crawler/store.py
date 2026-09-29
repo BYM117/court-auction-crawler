@@ -1018,7 +1018,8 @@ class AuctionStore:
                           -- 밀린다(2026-09-29: 09-30 기일 명세서 1,414건이 10-08·12 새 물건 뒤였다).
                           (REPLACE(SUBSTR(sale_date, 1, 10), '.', '-') BETWEEN ? AND ?) DESC,
                           (detail_collected_at IS NULL) DESC,
-                          (REPLACE(SUBSTR(sale_date, 1, 10), '.', '-') > ?) DESC,
+                          -- '>=' — 기일 당일은 아직 지난 게 아니다(서류를 오전까지 볼 수 있다).
+                          (REPLACE(SUBSTR(sale_date, 1, 10), '.', '-') >= ?) DESC,
                           (sale_date IS NULL OR sale_date = '') ASC,
                           sale_date ASC,
                           detail_fail_count ASC,
