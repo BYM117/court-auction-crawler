@@ -57,7 +57,7 @@ kickstart 한다 — `check_daemon_fresh --fix` 는 꺼 둔 collect 를 건드�
 규칙 v5 로 고치고 시험을 박았다. 같은 정답지(유치권 82·포기 94)에서 규칙 80·94, Jev 76·92, v4 였다면 72.
 **평가도 두 군데 고침**: 운영과 같은 글(목록 비고 + 사건 비고)을 읽게(함정 ⑤-1), 같은 정답지 기록끼리만 대게.
 
-**반영**: 규칙 v5 로 재계산 → `rights_at` 이 바뀌어 전량 재업로드 후보(함정 ② 자동). collect·server 재시작.
+**반영**: 규칙 v5 로 재계산 → `rights_at` 이 바뀌어 전량 재업로드 후보(함정 ② 자동). collect 재시작. **~~server 재시작~~ → 정정(09-29): server 는 재시작하지 않았다**(09-24 11:11 그대로). `check_daemon_fresh` 의 WATCHED 에 server 는 enrichment·rights 가, collect 는 `rights.py`·`jev.py` 가 없어 '최신' 으로 떴다 — 권리 판정 규칙을 고친 뒤엔 데몬 시작 시각과 두 파일 수정 시각을 직접 댈 것(코드 검토 세션 지적).
 두 저장소 푸시(웹은 곧 Vercel 배포). **말로 검색은 Vercel 에 `TYPESAFE_API_KEY` 를 넣어야 켜진다.**
 
 ---
