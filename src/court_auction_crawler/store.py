@@ -1489,7 +1489,9 @@ class AuctionStore:
         if jev_missing:
             sql = """SELECT item_key FROM auction_items
                       WHERE rights_json <> ''
-                        AND json_extract(rights_json, '$.jev.names.fp') IS NULL
+                        -- NULLIF: 판정 전 물건은 빈 문자열이다. SQLite 는 AND 를 앞에서 끊는다는 보장이
+                        -- 없어 json_extract('') 가 'malformed JSON' 으로 터질 수 있다(2026-09-29 확인 질의에서 밟음).
+                        AND json_extract(NULLIF(rights_json, ''), '$.jev.names.fp') IS NULL
                       ORDER BY is_active ASC, updated_at DESC
                       LIMIT ?"""
             params: tuple[Any, ...] = (self._push_limit(limit),)
