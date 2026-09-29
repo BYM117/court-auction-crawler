@@ -21,6 +21,34 @@ FLAG=data/maintenance_pause
 URL="${COURT_CHECK_URL:-https://www.courtauction.go.kr/pgj/index.on}"
 now() { date '+%Y-%m-%d %H:%M:%S'; }
 
+# ── 목록 수집기(collect)를 일부러 멈춰 둔 경우의 자동 재개 ───────────────────────
+# data/collect_pause 가 있으면 본다. 내용(한 줄씩):
+#   UNTIL=YYYYmmddHHMM   (KST) 이 시각이 되면 무조건 켠다
+#   SALE_DATE=2026.09.30 이 기일 활성 물건의 명세서를 SINCE 뒤로 전부 한 번씩 시도했으면 켠다
+#   SINCE=2026-09-29T05:00   (UTC, detail checked_at 기준)
+# 2026-09-29 에 이 세션의 백그라운드 루프로 했다가, 앱이 꺼지면 같이 죽는다는 지적을 받고 옮겼다.
+CPAUSE=data/collect_pause
+if [ -f "$CPAUSE" ]; then
+  UNTIL=$(sed -n 's/^UNTIL=//p' "$CPAUSE"); SALE=$(sed -n 's/^SALE_DATE=//p' "$CPAUSE"); SINCE=$(sed -n 's/^SINCE=//p' "$CPAUSE")
+  left=$(PYTHONPATH=src .venv/bin/python - "$SALE" "$SINCE" <<'PY' 2>/dev/null
+import sqlite3, sys
+sale, since = sys.argv[1], sys.argv[2]
+if not sale: print(-1); raise SystemExit
+db = sqlite3.connect("file:data/auction.sqlite3?mode=rw", uri=True, timeout=30); db.execute("PRAGMA query_only=ON")
+print(db.execute("""SELECT COUNT(*) FROM auction_items i WHERE is_active=1 AND sale_date LIKE ?
+  AND NOT EXISTS (SELECT 1 FROM auction_documents d WHERE d.item_key=i.item_key AND d.document_type='매각물건명세서'
+    AND (d.status='collected' OR d.checked_at >= ?))""", (sale + "%", since)).fetchone()[0])
+PY
+)
+  if [ "${left:-1}" = "0" ] || [ "$(TZ=Asia/Seoul date +%Y%m%d%H%M)" -ge "${UNTIL:-999999999999}" ]; then
+    launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.court-auction.collect.plist" 2>&1
+    rm -f "$CPAUSE"
+    echo "[$(now)] 목록 수집기 재개 (${SALE} 미시도 ${left:-?}, 기한 ${UNTIL}) — 정지 표시를 지웠다"
+  else
+    echo "[$(now)] 목록 수집기 정지 유지 — ${SALE} 명세서 미시도 ${left:-?}건 · 기한 ${UNTIL}"
+  fi
+fi
+
 [ -f "$FLAG" ] || exit 0
 
 body=$(mktemp)

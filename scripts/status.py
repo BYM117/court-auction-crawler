@@ -612,6 +612,15 @@ def live_status() -> list[str]:
         out.append("- ⏸ **상세 수집 정지 — 법원 사이트 점검 대기.** 끝나면 자동 재개 장치가 "
                    f"켠다(30분마다 확인). 직접 켜지 말 것 · 마지막 확인: {last[:70]}")
 
+    # 1-1b) 목록 수집기를 일부러 멈춰 뒀나. 꺼진 이유를 모르면 누가 켠다(2026-09-29: 09-30 명세서를
+    # 받으려고 DB 다툼을 없앴다). 표시 파일이 있으면 maintenance-watch 가 30분마다 재개 조건을 본다.
+    cpause = (DB.parent if DB is not None else ROOT / "data") / "collect_pause"
+    if cpause.exists():
+        kv = dict(line.split("=", 1) for line in cpause.read_text(encoding="utf-8").splitlines() if "=" in line)
+        out.append("- ⏸ **목록 수집기(collect) 일부러 정지 — 직접 켜지 말 것.** "
+                   f"{kv.get('SALE_DATE', '?')} 기일 명세서를 다 훑거나 {kv.get('UNTIL', '?')}(KST) 이 되면 "
+                   "maintenance-watch 가 켠다(30분마다 확인). `data/collect_pause`")
+
     # 1-2) 문서 본문이 실제로 들어오나. 2026-09-25 법원 점검 뒤 뷰어가 바뀌어 매각물건명세서
     # 본문이 나흘간 0건이었는데(전부 metadata_only) 로그·status 어디에도 안 보였다 — 함정 ④.
     # 시도 대비 '본문 받음' 을 문서 종류별로 센다. 감정평가서는 원래 못 받는다(G06)라 뺀다.
