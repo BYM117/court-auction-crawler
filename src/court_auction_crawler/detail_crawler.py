@@ -54,6 +54,15 @@ DOCUMENT_TYPES = {
 }
 # 매각물건명세서 본문이 그려지는 뷰어. 경매 사이트가 아니라 법원 문서열람 시스템이다.
 STREAMDOCS_FRAME_HINT = "streamdocs"
+# 뷰어가 이미 부른 `…/documents/{id}/document` 주소에서 같은 문서의 `/texts`(전문 평문)를
+# 같은 출처로 부른다. 문서를 아직 안 불렀으면 빈 문자열.
+STREAMDOCS_TEXTS_JS = """async () => {
+  const e = performance.getEntriesByType('resource').map(r => r.name)
+    .find(n => /\\/streamdocs\\/v4\\/documents\\/[^/]+\\/document(\\?|$)/.test(n));
+  if (!e) return '';
+  const r = await fetch(e.replace(/\\/document(\\?.*)?$/, '/texts'), {credentials: 'include'});
+  return r.ok ? await r.text() : '';
+}"""
 # 본문으로 인정할 최소 길이. 뷰어가 덜 그려졌을 때는 페이지 표시('1/5')뿐이라 10자 안팎이고,
 # 실제 명세서는 1,300자를 넘는다(실측).
 STREAMDOCS_MIN_CHARS = 300
@@ -897,6 +906,16 @@ class CourtAuctionDetailCrawler:
         while time.monotonic() < deadline:
             frame = next((f for f in popup.frames if STREAMDOCS_FRAME_HINT in f.url), None)
             if frame is not None:
+                # 2026-09-25 법원 점검 뒤 뷰어가 페이지를 그림으로만 그리고 글자 층을 안 깐다
+                # (iframe 글자는 '1/2' 뿐). 그 뒤 명세서 1,331건이 전부 본문 없이 들어왔다.
+                # 뷰어 검색이 쓰는 글자 API(`…/documents/{id}/texts`)는 살아 있어 문서 전체를
+                # 평문으로 준다. 예전 글자 층 모양(줄 사이 빈 줄)에 맞춰 넘긴다.
+                try:
+                    api_text = await frame.evaluate(STREAMDOCS_TEXTS_JS)
+                except Exception:  # noqa: BLE001 - 아직 문서를 안 불렀으면 다음 회차에
+                    api_text = ""
+                if len(api_text) >= STREAMDOCS_MIN_CHARS:
+                    return "\n\n".join(api_text.splitlines()).strip()
                 try:
                     text = await frame.evaluate(
                         "() => document.body ? document.body.innerText : ''"

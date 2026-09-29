@@ -612,6 +612,28 @@ def live_status() -> list[str]:
         out.append("- ⏸ **상세 수집 정지 — 법원 사이트 점검 대기.** 끝나면 자동 재개 장치가 "
                    f"켠다(30분마다 확인). 직접 켜지 말 것 · 마지막 확인: {last[:70]}")
 
+    # 1-2) 문서 본문이 실제로 들어오나. 2026-09-25 법원 점검 뒤 뷰어가 바뀌어 매각물건명세서
+    # 본문이 나흘간 0건이었는데(전부 metadata_only) 로그·status 어디에도 안 보였다 — 함정 ④.
+    # 시도 대비 '본문 받음' 을 문서 종류별로 센다. 감정평가서는 원래 못 받는다(G06)라 뺀다.
+    if DB is not None:
+        try:
+            con = ro_connect(30)
+            try:
+                rows = con.execute(
+                    "SELECT document_type, SUM(status='collected'), COUNT(*) FROM auction_documents "
+                    "WHERE checked_at >= strftime('%Y-%m-%dT%H:%M:%S', 'now', '-24 hours') "
+                    "AND document_type IN ('매각물건명세서', '현황조사서') GROUP BY 1").fetchall()
+            finally:
+                con.close()
+            부분 = []
+            for 종류, 받음, 시도 in rows:
+                경고 = " ⚠ 본문 0건 — 뷰어·캡처가 깨졌을 수 있다" if 시도 >= 20 and not 받음 else ""
+                부분.append(f"{종류} {받음:,}/{시도:,}{경고}")
+            if 부분:
+                out.append(f"- 문서 본문(최근 24시간 받음/시도): {' · '.join(부분)}")
+        except Exception:
+            pass
+
     # 2) 수집 부하 — 밀려나고 있나 (CRAWL-LOAD.md)
     # 차단 신호는 '세션 거절'(받아둔 사건을 없다고 함)의 **비율**이다. 하루 합계는
     # 나쁜 새벽과 좋은 낮을 섞어 둘 다 가리므로, 최근 300건 창을 먼저 보인다.
