@@ -434,9 +434,15 @@ class StoreTests(unittest.TestCase):
         self.store.save_item_detail(item_key, {"tables": [{"caption": "물건 기본정보"}]})
         self.assertEqual(self.store.list_detail_targets(), [])
 
+        # 감정평가서는 본문을 못 받는 문서라 밀려 있어도 다시 가지 않는다(2026-09-30).
+        self.store.save_document_status(
+            item_key, "감정평가서", status="metadata_only", next_retry_at="2000-01-01T00:00:00+00:00"
+        )
+        self.assertEqual(self.store.list_detail_targets(), [])
+
         self.store.save_document_status(
             item_key,
-            "감정평가서",
+            "현황조사서",
             status="pending",
             next_retry_at="2000-01-01T00:00:00+00:00",
         )
@@ -461,7 +467,7 @@ class StoreTests(unittest.TestCase):
 
         # 재시도 큐에서 빠진다 (문서 due가 있어도 unavailable이면 제외)
         self.store.save_document_status(
-            item_key, "감정평가서", status="pending", next_retry_at="2000-01-01T00:00:00+00:00"
+            item_key, "현황조사서", status="pending", next_retry_at="2000-01-01T00:00:00+00:00"
         )
         self.assertEqual(self.store.list_detail_targets(), [])
         item = self.store.get_item(item_key)

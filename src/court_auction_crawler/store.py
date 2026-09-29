@@ -11,6 +11,7 @@ import sqlite3
 from typing import Any, Iterator
 
 from .enrichment import (
+    RESTRICTED_DOCUMENTS,
     parse_case_closing,
     parse_case_item,
     parse_case_parties,
@@ -982,6 +983,10 @@ class AuctionStore:
                               FROM auction_documents AS document
                              WHERE document.item_key = auction_items.item_key
                                AND document.status != 'collected'
+                               -- 내보내지 않는 문서(감정평가서)는 다시 받으러 가지 않는다. 본문은
+                               -- 협회 서버에 있어 한 번도 못 받았는데(G06) 12시간마다 재시도해
+                               -- 큐의 절반(16,560/32,299)을 차지했다(2026-09-30 실측).
+                               AND document.document_type NOT IN ({restricted})
                                AND (document.next_retry_at IS NULL OR document.next_retry_at <= ?)
                         )
                     )
@@ -989,7 +994,10 @@ class AuctionStore:
                     -- 막고 있으면 영영 안 들어온다(실측: 큐에 0건이었다).
                     OR ({closing_sweep})
                 )
-                """.format(closing_sweep=CLOSING_SWEEP_SQL if closing_sweep_days > 0 else "0")
+                """.format(
+                    closing_sweep=CLOSING_SWEEP_SQL if closing_sweep_days > 0 else "0",
+                    restricted=", ".join(f"'{name}'" for name in RESTRICTED_DOCUMENTS),
+                )
             )
             now = utc_now()
             params.extend([now, now, now])

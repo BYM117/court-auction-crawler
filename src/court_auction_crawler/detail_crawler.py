@@ -47,10 +47,12 @@ NO_SUCH_CASE_MARKER = "잘못된 번호"
 # 안 뜬다). 그래서 이 문구가 있으면 '덜 그려진 것'이 아니라 다 그려진 것이다.
 CASE_RENDERED_MARKER = "사건기본내역"
 DATA_URI_RE = re.compile(r"^data:(?P<mime>[^;,]+)(?:;charset=[^;,]+)?;base64,(?P<data>.+)$", re.S)
+# 감정평가서는 뺐다(2026-09-30). 본문은 한국감정평가사협회 서버에 있어 받을 수 없고(G06),
+# 버튼을 누르면 협회 뷰어를 불러 하루 약 2,800번 협회 서버를 두드렸다. 화면에 쓰는 감정평가
+# 내용은 법원 물건상세 화면의 요항표(appraisal_summary)에서 따로 받는다.
 DOCUMENT_TYPES = {
     "매각물건명세서": 7,
     "현황조사서": 14,
-    "감정평가서": 14,
 }
 # 매각물건명세서 본문이 그려지는 뷰어. 경매 사이트가 아니라 법원 문서열람 시스템이다.
 STREAMDOCS_FRAME_HINT = "streamdocs"
@@ -795,36 +797,15 @@ class CourtAuctionDetailCrawler:
                         next_retry_at=next_retry or retry_after(days=1),
                     )
                     result["pending"] += 1
-                elif document_type in {"현황조사서", "감정평가서"}:
+                elif document_type == "현황조사서":
                     metadata = await self._collect_inline_document(page, visible_button)
-                    resource_download = None
-                    if document_type == "감정평가서":
-                        pdf_url = next(
-                            (
-                                url
-                                for url in metadata.get("iframe", {}).get("resources", [])
-                                if str(url).lower().split("?", 1)[0].endswith(".pdf")
-                            ),
-                            "",
-                        )
-                        if pdf_url and self.download_document_files:
-                            resource_download = await self._download_resource(
-                                page,
-                                target["item_key"],
-                                document_type,
-                                pdf_url,
-                            )
-                    has_content = document_has_body(metadata, resource_download)
+                    has_content = document_has_body(metadata, None)
                     self.store.save_document_status(
                         target["item_key"],
                         document_type,
                         status="collected" if has_content else "metadata_only",
                         title=document_type,
                         source_url=page.url,
-                        file_path=resource_download.get("file_path", "") if resource_download else "",
-                        content_type=resource_download.get("content_type", "") if resource_download else "",
-                        file_size=resource_download.get("file_size", 0) if resource_download else 0,
-                        sha256=resource_download.get("sha256", "") if resource_download else "",
                         metadata=metadata,
                         next_retry_at="" if has_content else retry_after(hours=12),
                     )
@@ -932,33 +913,6 @@ class CourtAuctionDetailCrawler:
                 last = text
             await popup.wait_for_timeout(600)
         return last.strip() if len(last) >= STREAMDOCS_MIN_CHARS else ""
-
-    async def _download_resource(
-        self,
-        page: Page,
-        item_key: str,
-        document_type: str,
-        url: str,
-    ) -> dict[str, Any] | None:
-        response = await page.context.request.get(url, headers={"Referer": page.url}, timeout=30_000)
-        if not response.ok:
-            return None
-        content = await response.body()
-        if len(content) < 1_000:
-            return None
-        content_type = response.headers.get("content-type", "application/pdf").split(";", 1)[0]
-        suffix = Path(url.split("?", 1)[0]).suffix or mimetypes.guess_extension(content_type) or ".bin"
-        target_dir = self.asset_dir / safe_path_part(item_key) / "documents"
-        target_dir.mkdir(parents=True, exist_ok=True)
-        target_path = target_dir / f"{safe_path_part(document_type)}{suffix}"
-        target_path.write_bytes(content)
-        return {
-            "file_path": str(target_path.resolve()),
-            "content_type": content_type,
-            "file_size": len(content),
-            "sha256": hashlib.sha256(content).hexdigest(),
-            "capture_method": "linked_resource",
-        }
 
     async def _collect_inline_document(self, page: Page, button: Any) -> dict[str, Any]:
         await button.click()
