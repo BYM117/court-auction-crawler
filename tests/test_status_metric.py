@@ -283,5 +283,23 @@ class 위험도탐침Test(unittest.TestCase):
         self.assertIs(_load().screening_can_say_low(), True)
 
 
+class 데몬감시목록Test(unittest.TestCase):
+    """check_daemon_fresh 의 감시 목록은 import 를 따라가 계산한다. 손 목록은 두 번 구멍이 났다
+    (09-21 common.py, 09-29 rights.py·jev.py — 'from . import jev as jev_api' 의 별칭)."""
+
+    def setUp(self):
+        spec = importlib.util.spec_from_file_location("fresh", ROOT / "scripts" / "check_daemon_fresh.py")
+        self.m = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.m)
+
+    def test_패키지_모듈이_다_감시된다(self):
+        got = {path.rsplit("/", 1)[-1] for path in self.m.import_closure()}
+        every = {p.name for p in self.m.PKG.glob("*.py")} - {"__init__.py"}
+        self.assertEqual(every - got, set())
+
+    def test_일부러_꺼_둔_collect_는_건드리지_않는다(self):
+        self.assertIn("collect", self.m.PAUSE_FLAGS)
+
+
 if __name__ == "__main__":
     unittest.main()
