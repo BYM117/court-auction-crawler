@@ -35,6 +35,9 @@ CLOSING_SWEEP_SQL = (
     " AND COALESCE(last_seen_at, '') >= ?"
     " AND (detail_checked_at IS NULL OR detail_checked_at < last_seen_at)"
 )
+# 수집기가 물건상세의 감정평가 요항표를 담기 시작한 때(UTC). DB 에서 요항표가 있는 가장 이른
+# 상세가 2026-09-18T10:45:17 이고 그 전 상세는 전부 없다(09-30 실측).
+APPRAISAL_SUMMARY_SINCE = "2026-09-18T10:45:00+00:00"
 
 
 def closing_sweep_cutoff(days: int) -> str:
@@ -990,6 +993,15 @@ class AuctionStore:
                                AND (document.next_retry_at IS NULL OR document.next_retry_at <= ?)
                         )
                     )
+                    -- 감정평가 요항표(appraisal_summary)를 받기 전에 상세를 받고 다시 안 연 물건을 한 번
+                    -- 더 본다(2026-09-30: 활성 22,315건이 요항표 0%). 보고 나면 detail_collected_at 이
+                    -- 기준보다 뒤라 스스로 빠진다. 기일 사흘 안은 뺀다 — 그 앞줄은 명세서 몫이다.
+                    OR (
+                        is_active = 1
+                        AND detail_status = 'collected'
+                        AND detail_collected_at < '{summary_since}'
+                        AND REPLACE(SUBSTR(sale_date, 1, 10), '.', '-') > ?
+                    )
                     -- 사라진 물건을 딱 한 번 더 본다. 위에서 문을 열어도 이 조건이
                     -- 막고 있으면 영영 안 들어온다(실측: 큐에 0건이었다).
                     OR ({closing_sweep})
@@ -997,10 +1009,11 @@ class AuctionStore:
                 """.format(
                     closing_sweep=CLOSING_SWEEP_SQL if closing_sweep_days > 0 else "0",
                     restricted=", ".join(f"'{name}'" for name in RESTRICTED_DOCUMENTS),
+                    summary_since=APPRAISAL_SUMMARY_SINCE,
                 )
             )
             now = utc_now()
-            params.extend([now, now, now])
+            params.extend([now, now, now, (date.today() + timedelta(days=2)).isoformat()])
             if closing_sweep_days > 0:
                 params.append(closing_sweep_cutoff(closing_sweep_days))
         row_limit = 1_000_000 if limit is None or limit <= 0 else min(limit, 1_000_000)

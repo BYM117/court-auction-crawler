@@ -448,6 +448,32 @@ class StoreTests(unittest.TestCase):
         )
         self.assertEqual([row["item_key"] for row in self.store.list_detail_targets()], [item_key])
 
+    def test_detail_targets_revisit_items_detailed_before_appraisal_summary_once(self):
+        from datetime import date as _date
+
+        far = (_date.today() + timedelta(days=10)).strftime("%Y.%m.%d")
+        near = (_date.today() + timedelta(days=1)).strftime("%Y.%m.%d")
+        self.store.upsert_items([
+            AuctionItem({"사건번호": "대구지방법원 2026타경777", "물건번호": "1", "매각기일": far}),
+            AuctionItem({"사건번호": "대구지방법원 2026타경778", "물건번호": "1", "매각기일": near}),
+        ])
+        old, soon = "auction:대구지방법원:2026타경777:1", "auction:대구지방법원:2026타경778:1"
+        for key in (old, soon):
+            self.store.save_item_detail(key, {"tables": [{"caption": "물건 기본정보"}]})
+        self.assertEqual(self.store.list_detail_targets(), [])
+
+        # 요항표를 담기 전에 받은 상세 — 기일이 멀면 한 번 더 보고, 사흘 안이면 명세서 앞줄을 막지 않게 뺀다
+        with self.store.connect() as conn:
+            conn.execute(
+                "UPDATE auction_items SET detail_collected_at = '2026-09-10T00:00:00+00:00', "
+                "last_changed_at = '2026-09-09T00:00:00+00:00'"
+            )
+        self.assertEqual([row["item_key"] for row in self.store.list_detail_targets()], [old])
+
+        # 다시 받으면 스스로 빠진다
+        self.store.save_item_detail(old, {"tables": [{"caption": "물건 기본정보"}], "appraisal_summary": "1) 위치"})
+        self.assertEqual(self.store.list_detail_targets(), [])
+
     def test_detail_unavailable_stops_retry_until_item_changes(self):
         self.store.upsert_items(
             [
