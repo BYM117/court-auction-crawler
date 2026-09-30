@@ -418,6 +418,15 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(result.unchanged, 1)
         self.assertEqual(result.updated, 0)
 
+    def test_building_update_by_pnu_uses_an_index(self):
+        # 색인이 없으면 저장마다 표 전체를 훑으며 쓰기 잠금을 쥔다(운영 DB 62초, 2026-09-30).
+        with self.store.connect() as conn:
+            plan = " ".join(str(row[3]) for row in conn.execute(
+                "EXPLAIN QUERY PLAN UPDATE auction_items SET building_status = 'ok' "
+                "WHERE pnu = ? AND building_status != 'ok'", ("1111010100100010000",)))
+        self.assertIn("idx_auction_items_pnu", plan)
+        self.assertNotIn("SCAN auction_items", plan)
+
     def test_detail_targets_complete_and_retry_on_due_document(self):
         item = AuctionItem(
             {

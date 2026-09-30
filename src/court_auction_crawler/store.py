@@ -455,6 +455,10 @@ class AuctionStore:
                     ON auction_items(is_active, detail_status, detail_next_retry_at, sale_date)
                 """
             )
+            # 건축물대장은 필지(pnu) 단위로 같은 답을 한꺼번에 적는다(update_building, 09-09~). 색인이
+            # 없어 저장마다 표 전체를 훑었다 — 한 번에 62초, 그동안 쓰기 잠금을 쥐어 건축물대장 단계에
+            # DB 가 97% 잠겼고 상세 수집기가 30초 대기를 넘겨 죽었다(2026-09-30 13:17·16:02·17:26).
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_auction_items_pnu ON auction_items(pnu)")
             conn.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_auction_documents_item
