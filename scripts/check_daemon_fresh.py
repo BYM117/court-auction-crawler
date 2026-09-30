@@ -98,7 +98,9 @@ def main() -> int:
             continue
         최신 = max(((ROOT / s).stat().st_mtime, s) for s in sources
                    if (ROOT / s).exists())
-        고친때 = datetime.fromtimestamp(최신[0])
+        # 시작 시각(ps)은 초까지라 수정 시각도 초로 자른다. 안 자르면 병합 직후 같은 초에 재시작한
+        # 데몬이 '낡음' 으로 떴다(2026-09-30 하루 네 번 — 그중 한 번은 도는 사이클을 끊을 뻔했다).
+        고친때 = datetime.fromtimestamp(int(최신[0]))
         if 고친때 > 시작:
             낡음.append(label)
             print(f"  {label:16} ★낡음★ 시작 {시작:%m-%d %H:%M} < {최신[1].split('/')[-1]} "
