@@ -252,10 +252,11 @@ class 부하창Test(unittest.TestCase):
         self.load_window = _load().load_window
 
     @staticmethod
-    def _pass(ok, fail, rej=0, new=0):
+    def _pass(ok, fail, rej=0, new=0, cases=None):
+        cases = ok + fail if cases is None else cases
         return (["  !! 상세 수집 실패: 사건검색 거절: X 받아둔 적 있는 사건을 '없다'고 함(세션 거절)"] * rej
                 + ["  !! 상세 수집 실패: 사건 검색 결과 없음: X 2026타경1"] * new
-                + [f"상세 수집 완료: 대상 9999개, 사건 10건, 완료 {ok}개, 실패 {fail}개, 조회불가 0개"])
+                + [f"상세 수집 완료: 대상 9999개, 사건 {cases}건, 완료 {ok}개, 실패 {fail}개, 조회불가 0개"])
 
     def test_나쁜_새벽이_최근_창을_오염시키지_않는다(self):
         lines = self._pass(5, 20, rej=15) * 4 + self._pass(380, 20, rej=3)
@@ -272,6 +273,13 @@ class 부하창Test(unittest.TestCase):
         창, _ = self.load_window(self._pass(290, 20, rej=2, new=15))
         self.assertEqual(창[2], 2)
         self.assertEqual(창[3], 15)
+
+    def test_거절률의_분모는_사건이다(self):
+        # 물건 여럿짜리 사건이 섞이면 완료·실패(물건)가 사건보다 많다 — 거절(사건 단위)을
+        # 물건으로 나누면 낮게 나온다(09-27: 18.5% 로 보였지만 실제 25.7%).
+        창, _ = self.load_window(self._pass(400, 30, rej=30, cases=300))
+        self.assertEqual(창[4], 300)
+        self.assertEqual(창[2] * 100 // 창[4], 10)
 
     def test_요약_줄이_없으면_None(self):
         self.assertIsNone(self.load_window(["[상세 1/10] 서울중앙지방법원 2026타경1 (1개 물건)"]))

@@ -35,9 +35,13 @@ import sqlite3, sys
 sale, since = sys.argv[1], sys.argv[2]
 if not sale: print(-1); raise SystemExit
 db = sqlite3.connect("file:data/auction.sqlite3?mode=rw", uri=True, timeout=30); db.execute("PRAGMA query_only=ON")
+# '시도' 는 물건을 열어 본 것(detail_checked_at)으로 센다. 법원이 조회를 막은 물건(unavailable)과
+# 사건 화면에 물건 목록이 없는 물건은 명세서 칸까지 못 가서 영영 '미시도' 로 남았다 — 09-30 에 66건이
+# 그렇게 남아 목록 수집기(=웹 푸시)가 27시간 멈췄다.
 print(db.execute("""SELECT COUNT(*) FROM auction_items i WHERE is_active=1 AND sale_date LIKE ?
+  AND detail_status != 'unavailable' AND COALESCE(detail_checked_at, '') < ?
   AND NOT EXISTS (SELECT 1 FROM auction_documents d WHERE d.item_key=i.item_key AND d.document_type='매각물건명세서'
-    AND (d.status='collected' OR d.checked_at >= ?))""", (sale + "%", since)).fetchone()[0])
+    AND (d.status='collected' OR d.checked_at >= ?))""", (sale + "%", since, since)).fetchone()[0])
 PY
 )
   if [ "${left:-1}" = "0" ] || [ "$(TZ=Asia/Seoul date +%Y%m%d%H%M)" -ge "${UNTIL:-999999999999}" ]; then

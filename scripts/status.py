@@ -554,28 +554,31 @@ ORDER = [TODO, WIP, DONE, FIXED_LIMIT, UNKNOWN]
 def load_window(lines: list[str], min_attempts: int = 300):
     """상세 수집 로그에서 (최근 창, 오늘 전체) 부하를 낸다. 요약 줄이 없으면 None.
 
-    창 = [완료, 실패, 세션거절, 검색전] — 끝에서부터 패스를 min_attempts 건이 찰
-    때까지 모은 것. 전체 = [완료, 실패, 세션거절]. 세션거절·검색전은 그 패스의
+    창 = [완료, 실패, 세션거절, 검색전, 사건] — 끝에서부터 패스를 **사건** min_attempts 건이
+    찰 때까지 모은 것. 전체 = [완료, 실패, 세션거절]. 세션거절·검색전은 그 패스의
     요약 줄 **앞**에 찍힌 실패 줄을 센다. 아직 요약이 안 난 진행 중 패스는 뺀다.
+
+    거절률의 분모는 **사건**이다. 거절은 사건 하나에 한 줄인데 완료·실패는 물건 수라,
+    물건으로 나누면 여러 물건 사건만큼 낮게 나왔다(2026-09-30: 09-27 18.5% → 실제 25.7%).
     """
     import re  # noqa: PLC0415
-    passes: list[tuple[int, int, int, int]] = []
+    passes: list[tuple[int, int, int, int, int]] = []
     거절 = 검색전 = 0
     for line in lines:
         if "세션 거절" in line:
             거절 += 1
         elif "사건 검색 결과 없음" in line:
             검색전 += 1
-        m = re.search(r"상세 수집 완료: .*?완료 (\d+)개, 실패 (\d+)개", line)
+        m = re.search(r"상세 수집 완료: .*?사건 (\d+)건, 완료 (\d+)개, 실패 (\d+)개", line)
         if m:
-            passes.append((int(m.group(1)), int(m.group(2)), 거절, 검색전))
+            passes.append((int(m.group(2)), int(m.group(3)), 거절, 검색전, int(m.group(1))))
             거절 = 검색전 = 0
     if not passes:
         return None
-    창 = [0, 0, 0, 0]
+    창 = [0, 0, 0, 0, 0]
     for p in reversed(passes):
         창 = [a + b for a, b in zip(창, p)]
-        if 창[0] + 창[1] >= min_attempts:
+        if 창[4] >= min_attempts:
             break
     return 창, [sum(p[i] for p in passes) for i in range(3)]
 
@@ -653,12 +656,12 @@ def live_status() -> list[str]:
     if log.exists():
         try:
             got = load_window(log.read_text(encoding="utf-8", errors="replace").splitlines())
-            if got and got[0][0] + got[0][1] > 50:
+            if got and got[0][4] > 50:
                 창, 전체 = got
-                합 = 창[0] + 창[1]
+                합 = 창[4]
                 율 = 창[2] * 100 // 합
                 신호 = " ⚠ 5% 넘음 — 법원이 밀어내는 중(CRAWL-LOAD.md)" if 율 >= 5 else ""
-                out.append(f"- 수집 부하(최근 {합:,}건): **세션거절률 {율}%**(기준 5%){신호} · "
+                out.append(f"- 수집 부하(최근 사건 {합:,}건): **세션거절률 {율}%**(기준 5%){신호} · "
                            f"실패 {창[1]:,} 중 새 물건 검색 전 {창[3]:,}")
                 out.append(f"  (오늘 전체: 완료 {전체[0]:,} · 실패 {전체[1]:,} · 세션거절 {전체[2]:,})")
         except Exception:
