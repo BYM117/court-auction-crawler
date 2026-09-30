@@ -10,12 +10,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-import json
 from typing import Any
-from urllib.parse import urlencode
-from urllib.request import Request, urlopen
 
-from .geocoder import env_value, ssl_context
+from .geocoder import env_value, vworld_ned_get
 
 BASE_URL = "https://api.vworld.kr/ned/data/getLandUseAttr"
 
@@ -111,10 +108,4 @@ def _request(key: str, pnu: str) -> dict[str, Any]:
         "pageNo": "1",
         "key": key,
     }
-    domain = env_value("VWORLD_API_DOMAIN")
-    if domain:
-        params["domain"] = domain
-    request = Request(f"{BASE_URL}?{urlencode(params)}", headers={"User-Agent": "court-auction-crawler/0.1"})
-    timeout = float(env_value("LAND_USE_TIMEOUT") or "10")
-    with urlopen(request, timeout=timeout, context=ssl_context()) as response:
-        return json.loads(response.read().decode("utf-8"))
+    return vworld_ned_get(BASE_URL, params, "landUses", timeout=float(env_value("LAND_USE_TIMEOUT") or "10"))

@@ -164,5 +164,40 @@ class GeocoderTests(unittest.TestCase):
         self.assertTrue(is_mappable_property("서울특별시 중구 세종대로 110", "아파트"))
 
 
+class VworldNedTests(unittest.TestCase):
+    """브이월드 NED 거절(INCORRECT_KEY)을 '자료 없음' 으로 읽어 공시가격·토지이용계획이 한 달간 0건이었다
+    (2026-08-31~09-30). 거절은 예외로, 자료 없음은 그대로 — 그리고 출처(Referer)를 붙인다."""
+
+    def _get(self, body: str, domain: str = "http://127.0.0.1:4173"):
+        import io, json  # noqa: E401
+        from unittest import mock
+        from court_auction_crawler import geocoder
+
+        seen = {}
+
+        def fake_urlopen(request, timeout, context):  # noqa: ARG001
+            seen["headers"] = dict(request.header_items())
+            seen["url"] = request.full_url
+            return mock.MagicMock(__enter__=lambda s: io.BytesIO(body.encode()), __exit__=lambda *a: False)
+
+        with mock.patch.object(geocoder, "urlopen", fake_urlopen), \
+                mock.patch.object(geocoder, "env_value", lambda name: domain if name == "VWORLD_API_DOMAIN" else ""):
+            result = geocoder.vworld_ned_get("https://api.vworld.kr/ned/data/x", {"pnu": "1"}, "landUses", timeout=1)
+        return result, seen, json
+
+    def test_거절은_예외다(self):
+        with self.assertRaises(RuntimeError):
+            self._get('{"landUses": {"resultCode": "INCORRECT_KEY", "resultMsg": "인증키 정보가 올바르지 않습니다."}}')
+
+    def test_자료_없음은_그대로_돌려준다(self):
+        result, _, _ = self._get('{"response": {"totalCount": "0", "resultCode": ""}}')
+        self.assertEqual(result["response"]["totalCount"], "0")
+
+    def test_출처를_붙이고_domain_인자는_안_보낸다(self):
+        _, seen, _ = self._get('{"landUses": {"field": []}}')
+        self.assertEqual(seen["headers"].get("Referer"), "http://127.0.0.1:4173")
+        self.assertNotIn("domain=", seen["url"])
+
+
 if __name__ == "__main__":
     unittest.main()

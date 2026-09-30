@@ -861,7 +861,9 @@ def run_collect_cycle(
         # 잘 바뀌지 않으므로 초기 백필을 빨리 끝내는 편이 낫다.
         land = run_enrich_land_use(store, limit=3000, quiet=True)
         if not land.get("no_key"):
-            print(f"토지이용계획: 확보 {land['ok']}개, 대상 {land['targets']}개")
+            # 오류(브이월드 거절 등)를 같이 찍는다 — '확보 0개' 만 찍어 한 달을 몰랐다(08-31~09-30).
+            print(f"토지이용계획: 확보 {land['ok']}개, 대상 {land['targets']}개, "
+                  f"오류 {land.get('counts', {}).get('error', 0)}개")
     except Exception as exc:  # noqa: BLE001
         print(f"!! 토지이용계획 건너뜀: {str(exc)[:150]}")
 
@@ -886,7 +888,8 @@ def run_collect_cycle(
         if priced.get("no_key"):
             print("공시기준가 건너뜀: VWORLD_API_KEY가 없습니다.")
         else:
-            print(f"공시기준가: 매칭 {priced['priced']}개, 대상 {priced['targets']}개")
+            print(f"공시기준가: 매칭 {priced['priced']}개, 대상 {priced['targets']}개, "
+                  f"오류 {priced.get('counts', {}).get('error', 0)}개")
         # 건축물대장·실거래가(공공데이터포털)도 같은 PNU로 이어서 채운다.
         buildings = run_enrich_buildings(store, limit=price_limit, quiet=True)
         if not buildings.get("no_key"):

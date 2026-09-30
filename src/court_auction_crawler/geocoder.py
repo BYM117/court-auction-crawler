@@ -708,3 +708,23 @@ def env_value(name: str) -> str:
             if key.strip() == name:
                 return raw.strip().strip("\"'")
     return ""
+
+
+def vworld_ned_get(url: str, params: dict[str, str], bucket: str, *, timeout: float) -> dict[str, Any]:
+    """브이월드 NED(공시가격·토지이용계획) 조회. 거절은 예외로 올린다 — '자료 없음' 과 가르기 위해서다.
+
+    2026-08-31 무렵부터 NED 는 요청 출처(Referer)가 없으면 멀쩡한 키도 `INCORRECT_KEY` 로 거절하고,
+    `domain` 인자를 같이 보내면 들쭉날쭉 거절한다(09-30 실측: 출처만 → 매번 성공, 둘 다 → 섞임).
+    그래서 출처만 붙인다. 우리는 이 거절을 '행 없음' 으로 읽어 한 달간 전부 miss 로 저장했다(함정 ④).
+    정말 자료가 없으면 `{"response": {"totalCount": "0", "resultCode": ""}}` 로 와서 bucket 이 없다."""
+    headers = {"User-Agent": "court-auction-crawler/0.1"}
+    referer = env_value("VWORLD_API_DOMAIN")
+    if referer:
+        headers["Referer"] = referer
+    request = Request(f"{url}?{urlencode(params)}", headers=headers)
+    with urlopen(request, timeout=timeout, context=ssl_context()) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+    part = (payload or {}).get(bucket)
+    if isinstance(part, dict) and part.get("resultCode"):
+        raise RuntimeError(f"브이월드 거절 {part.get('resultCode')}: {part.get('resultMsg', '')}")
+    return payload

@@ -17,10 +17,8 @@ import json
 import re
 from typing import Any
 from urllib.error import URLError
-from urllib.parse import urlencode
-from urllib.request import Request, urlopen
 
-from .geocoder import env_value, ssl_context
+from .geocoder import env_value, vworld_ned_get
 
 
 HO_RE = re.compile(r"제?\s*(\d+)호")
@@ -190,11 +188,11 @@ def _request_ned(
             "numOfRows": str(num_rows),
             "pageNo": str(page),
         }
-        domain = env_value("VWORLD_API_DOMAIN")
-        if domain:
-            params["domain"] = domain
         try:
-            payload = _request(f"https://api.vworld.kr/ned/data/{endpoint}", params)
+            payload = vworld_ned_get(
+                f"https://api.vworld.kr/ned/data/{endpoint}", params, bucket,
+                timeout=float(env_value("GEOCODER_TIMEOUT") or "5"),
+            )
         except (TimeoutError, OSError, URLError, json.JSONDecodeError):
             break
         page_rows = (((payload or {}).get(bucket) or {}).get("field")) or []
@@ -205,13 +203,6 @@ def _request_ned(
             break
     return rows
 
-
-def _request(base_url: str, params: dict[str, str]) -> dict[str, Any]:
-    url = f"{base_url}?{urlencode(params)}"
-    request = Request(url, headers={"User-Agent": "court-auction-crawler/0.1"})
-    timeout = float(env_value("GEOCODER_TIMEOUT") or "5")
-    with urlopen(request, timeout=timeout, context=ssl_context()) as response:
-        return json.loads(response.read().decode("utf-8"))
 
 
 def _num(value: Any) -> float:

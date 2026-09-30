@@ -69,8 +69,9 @@ class SharedHelperTests(unittest.TestCase):
             transactions,
         )
 
+        # land_use·official_price 는 geocoder.vworld_ned_get 을 거쳐 아예 이름을 안 가진다(2026-09-30).
         for module in (building_registry, land_use, official_price, transactions):
-            self.assertIs(module.ssl_context, geocoder.ssl_context, module.__name__)
+            self.assertIs(getattr(module, "ssl_context", geocoder.ssl_context), geocoder.ssl_context, module.__name__)
 
     def test_case_no_re_has_one_definition(self):
         """store 와 detail_crawler 가 사건번호 규칙을 각자 갖고 있으면 깨진다.
