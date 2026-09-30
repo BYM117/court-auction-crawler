@@ -199,6 +199,21 @@ def is_benign_case_error(exc: Exception) -> bool:
     return isinstance(exc, (LookupError, ValueError, KeyError))
 
 
+# '사건 검색 결과 없음' 이 이만큼 잇따르면 창이 망가진 것으로 보고 차단 의심으로 센다.
+# 받아본 적 없는 사건의 '잘못된 번호' 는 양성(아직 검색 색인 전)이라 거버너가 안 셌는데,
+# 창이 망가지면 새 물건마다 그 답이 와서 전부 양성으로 샜다 — 2026-09-30 14:02~16:02
+# 클릭 시간초과 뒤 사건 241건 중 131건, 브라우저 새로 열기 0회(관제실 발견). 진짜 색인 전
+# 물건이 몰려 오판해도 브라우저를 한 번 새로 여는 값뿐이다.
+SEARCH_MISS_TRIP = 10
+
+
+def next_search_miss_streak(streak: int, exc: Exception | None) -> int:
+    """성공(None)이면 0, '사건 검색 결과 없음' 이면 하나 늘리고, 그 밖의 실패는 그대로 둔다."""
+    if exc is None:
+        return 0
+    return streak + 1 if str(exc).startswith("사건 검색 결과 없음") else streak
+
+
 async def site_message(page: Page) -> str:
     """오류 화면이 실제로 뭐라고 하는지 읽는다.
 
@@ -350,6 +365,7 @@ class CourtAuctionDetailCrawler:
             async def run_worker(worker_index: int) -> None:
                 context = await browser.new_context(viewport={"width": 1440, "height": 1100})
                 page = await context.new_page()
+                miss_streak = 0
                 try:
                     while not governor.abort_requested:
                         await governor.wait_turn(worker_index)
@@ -377,12 +393,14 @@ class CourtAuctionDetailCrawler:
                             # 성공으로도 세지 않는다 — record_healthy가 성공률 창을
                             # 채우고 distress를 지우는 탓에, 실패가 아무리 쌓여도
                             # 거버너가 못 알아채고 자가 복구가 일주일간 0회였다.
-                            if not is_benign_case_error(exc):
+                            miss_streak = next_search_miss_streak(miss_streak, exc)
+                            if not is_benign_case_error(exc) or miss_streak >= SEARCH_MISS_TRIP:
                                 governor.record_distress()
                             await page.wait_for_timeout(
                                 int(self.delay * 1000 * governor.delay_multiplier())
                             )
                             continue
+                        miss_streak = next_search_miss_streak(miss_streak, None)
                         governor.record_healthy()
                         summary.collected += result["collected"]
                         summary.failed += result["failed"]

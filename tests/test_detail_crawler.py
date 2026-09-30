@@ -6,6 +6,7 @@ from pathlib import Path
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 from court_auction_crawler.detail_crawler import (
+    SEARCH_MISS_TRIP,
     CourtAuctionDetailCrawler,
     HealthGovernor,
     case_search_error,
@@ -14,6 +15,7 @@ from court_auction_crawler.detail_crawler import (
     find_document_title,
     find_table_value,
     is_benign_case_error,
+    next_search_miss_streak,
     safe_path_part,
     site_message,
     sniff_image_mime,
@@ -242,6 +244,22 @@ class DetailCrawlerHelperTests(unittest.TestCase):
         self.assertTrue(is_benign_case_error(ValueError("사건번호 형식 오류")))
         self.assertFalse(is_benign_case_error(PlaywrightTimeoutError("Timeout 30000ms exceeded")))
         self.assertFalse(is_benign_case_error(RuntimeError("net::ERR_INTERNET_DISCONNECTED")))
+
+    def test_search_misses_in_a_row_trip_the_governor(self):
+        # 창이 망가지면 새 물건마다 '사건 검색 결과 없음'(양성)이 온다 — 잇따르면 차단 의심으로 센다
+        # (2026-09-30 14:02~16:02: 131건이 새어 나가는 동안 브라우저를 한 번도 새로 안 열었다).
+        miss = LookupError("사건 검색 결과 없음: 서울남부지방법원 2026타경1")
+        no_items = LookupError("물건 목록 없음(사건 화면은 정상): 서울남부지방법원 2026타경2")
+        governor = HealthGovernor()
+        streak = 0
+        for _ in range(SEARCH_MISS_TRIP + governor.trip_threshold - 1):
+            streak = next_search_miss_streak(streak, miss)
+            if not is_benign_case_error(miss) or streak >= SEARCH_MISS_TRIP:
+                governor.record_distress()
+        self.assertTrue(governor.wants_fresh_browser)
+        # 사건 화면이 멀쩡한 '물건 목록 없음' 은 세지 않고, 성공 한 번이면 처음부터 다시 센다
+        self.assertEqual(next_search_miss_streak(3, no_items), 3)
+        self.assertEqual(next_search_miss_streak(9, None), 0)
 
     def test_singleton_lock_skips_when_another_collector_is_alive(self):
         with tempfile.TemporaryDirectory() as tmp:
