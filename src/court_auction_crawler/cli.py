@@ -894,7 +894,10 @@ def run_collect_cycle(
                 f"건축물대장: 확보 {buildings['ok']}개, 대상 {buildings['targets']}개"
                 f", 조회 {buildings['queries']}회"
             )
-        deals = run_enrich_transactions(store, limit=max(price_limit // 3, 50), quiet=True)
+        # 사이클당 280 — 목록이 하루 5회에서 3회로 줄며(2026-09-30) 166×5=830 이던 하루 상한이 498 로
+        # 줄었다. 재조회 대기 2.5만 건이라 상한을 되돌린다. 국토부 일일 한도에 닿으면 RateLimitError 로
+        # 그날치를 멈추므로(최근 열흘 중 8일) 더 올려도 하루 총량은 한도가 정한다.
+        deals = run_enrich_transactions(store, limit=min(price_limit, 280), quiet=True)
         if not deals.get("no_key"):
             print(f"실거래가: 확보 {deals['ok']}개, 대상 {deals['targets']}개")
     try:
