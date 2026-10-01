@@ -544,6 +544,22 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(item["detail_fail_count"], 1)
         self.assertIn("법원 응답 지연", item["detail_error"])
 
+    def test_no_item_list_failure_waits_at_least_12_hours_even_near_sale(self):
+        from datetime import date as _date
+
+        tomorrow = (_date.today() + timedelta(days=1)).strftime("%Y.%m.%d")
+        self.store.upsert_items([
+            AuctionItem({"사건번호": "대전지방법원 2026타경901", "물건번호": "1", "매각기일": tomorrow}),
+            AuctionItem({"사건번호": "대전지방법원 2026타경902", "물건번호": "1", "매각기일": tomorrow}),
+        ])
+        gone, slow = "auction:대전지방법원:2026타경901:1", "auction:대전지방법원:2026타경902:1"
+        self.store.mark_detail_failure(gone, "물건 목록 없음(사건 화면은 정상): 대전지방법원 2026타경901")
+        self.store.mark_detail_failure(slow, "법원 응답 지연")
+        now = datetime.now(timezone.utc)
+        wait = lambda key: datetime.fromisoformat(self.store.get_item(key)["detail_next_retry_at"]) - now  # noqa: E731
+        self.assertGreaterEqual(wait(gone), timedelta(hours=11, minutes=59))
+        self.assertLess(wait(slow), timedelta(hours=2))   # 다른 실패는 기일 전 당김 그대로
+
     def test_detail_failure_keeps_collected_when_data_already_exists(self):
         self.store.upsert_items(
             [AuctionItem({"사건번호": "서울중앙지방법원 2026타경700", "물건번호": "1", "매각기일": "2026.08.01"})]

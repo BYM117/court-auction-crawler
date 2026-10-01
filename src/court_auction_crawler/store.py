@@ -1124,6 +1124,11 @@ class AuctionStore:
             fail_count = int(row["detail_fail_count"] or 0) + 1
             retry_hours = min(24 * 7, 2 ** min(fail_count - 1, 7))
             next_retry = detail_retry_at(now, retry_hours, row["sale_date"] or "")
+            if str(error).startswith("물건 목록 없음"):
+                # 사건 화면에 물건이 없다 = 팔렸거나 취하돼 목록에서 빠지는 중이다. 기일이 하루 안이면
+                # detail_retry_at 이 1시간마다로 당겨, 09-23~10-01 사건 67개에 1,039번(최다 30번) 갔다.
+                # 다시 받아진 것은 4개뿐 — 끊지는 않고 12시간 간격으로만 본다.
+                next_retry = max(next_retry, (now + timedelta(hours=12)).isoformat(timespec="seconds"))
             # 이미 상세를 받아둔 물건(재수집=갱신 시도)이 실패하면 status를 failed로
             # 덮지 않는다. 기존 상세 데이터는 여전히 유효하므로 collected를 유지하고
             # 재시도만 백오프 예약한다. 상세를 한 번도 못 받은 것만 failed로 표시한다.
