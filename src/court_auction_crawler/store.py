@@ -1020,6 +1020,12 @@ class AuctionStore:
             params.extend([now, now, now, (date.today() + timedelta(days=2)).isoformat()])
             if closing_sweep_days > 0:
                 params.append(closing_sweep_cutoff(closing_sweep_days))
+            # 물건에 다음 방문 시각이 잡혀 있으면 어느 이유로도 그 전엔 부르지 않는다. '밀린 문서' 조건과
+            # 요항표 보충 조건이 이걸 안 봐서, '물건 목록 없음' 으로 10-06 까지 미룬 물건을 명세서가 pending
+            # 이라는 이유로 패스마다 다시 불렀다(10-01 10:53~17:50 같은 사건 10~11번, 관제실 발견).
+            # 상세를 받으면 detail_next_retry_at 은 NULL 로 돌아간다(save_item_detail).
+            clauses.append("detail_next_retry_at IS NULL OR detail_next_retry_at <= ?")
+            params.append(now)
         row_limit = 1_000_000 if limit is None or limit <= 0 else min(limit, 1_000_000)
         with self.connect() as conn:
             rows = conn.execute(

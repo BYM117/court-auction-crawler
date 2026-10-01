@@ -560,6 +560,10 @@ class StoreTests(unittest.TestCase):
         self.assertGreaterEqual(wait(gone), timedelta(hours=11, minutes=59))
         self.assertLess(wait(slow), timedelta(hours=2))   # 다른 실패는 기일 전 당김 그대로
 
+        # 미뤄 둔 물건은 명세서가 밀려 있어도(pending, 재시도 시각 없음) 그 전엔 다시 부르지 않는다
+        self.store.save_document_status(gone, "매각물건명세서", status="pending", next_retry_at="")
+        self.assertNotIn(gone, [row["item_key"] for row in self.store.list_detail_targets()])
+
     def test_detail_failure_keeps_collected_when_data_already_exists(self):
         self.store.upsert_items(
             [AuctionItem({"사건번호": "서울중앙지방법원 2026타경700", "물건번호": "1", "매각기일": "2026.08.01"})]
