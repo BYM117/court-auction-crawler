@@ -38,6 +38,11 @@ ITEM_DETAIL_BUTTON_SELECTOR = "input[value='물건상세조회']"
 # '인근매각물건사례' 절의 조회 버튼과, 그 결과로 나타나는 탭 묶음(G08).
 NEAR_SALES_SEARCH_SELECTOR = "#mf_wfm_mainFrame_btn_srchNearHist"
 NEAR_SALES_GROUP_SELECTOR = "#mf_wfm_mainFrame_tac_aroundGdsExmGrp"
+# 인근매각 '검색' 버튼을 누르나(2026-10-03 끔, 시험). 물건마다 법원에 주변 매각 수백 건을 뒤지는 검색을 한 번 더
+# 시켰다(09-17 19시~). 사람은 거의 안 누르는 버튼이고, 세션이 막히기 전 받는 물건 수가 09-18 193 → 10-02 8 로
+# 무너진 시점과 겹친다. 끈 뒤 수명이 돌아오는지 보고 '동네별 하루 한 번' 으로 바꾼다. 받아 둔 통계는
+# store.save_item_detail 이 지킨다(안 누르면 머리글만 온다).
+NEAR_SALES_SEARCH = False
 CASE_DETAIL_BUTTON_SELECTOR = "input[value='사건상세조회']"
 # 사이트가 '그런 사건 없다'고 할 때 띄우는 문구. 화면 중간에 나오므로 본문 끝만
 # 잘라 보면 안 보인다. 이 문구가 곧 진실은 아니다 — 판단은 case_search_error 참고.
@@ -757,7 +762,8 @@ class CourtAuctionDetailCrawler:
             )
         except PlaywrightTimeoutError:
             pass
-        await self._open_near_sales(page)
+        if NEAR_SALES_SEARCH:
+            await self._open_near_sales(page)
         tables = await extract_tables(page)
         sections = await extract_sections(page)
         appraisal_summary = html.unescape(await extract_appraisal_summary(page))

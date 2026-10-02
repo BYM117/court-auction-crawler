@@ -572,6 +572,20 @@ class StoreTests(unittest.TestCase):
         self.store.save_document_status(gone, "매각물건명세서", status="pending", next_retry_at="")
         self.assertNotIn(gone, [row["item_key"] for row in self.store.list_detail_targets()])
 
+    def test_recollection_without_near_sales_search_keeps_old_stats(self):
+        # 인근매각 검색을 안 누르면 머리글만 온다 — 받아 둔 통계를 덮으면 웹 탭이 빈다.
+        self.store.upsert_items([AuctionItem({"사건번호": "안산지원 2024타경2497", "물건번호": "1"})])
+        key = "auction:안산지원:2024타경2497:1"
+        head = ["기간", "매각건수", "매각가율"]
+        filled = {"caption": "인근매각통계", "rows": [head, ["3개월", "19건", "31%"]]}
+        self.store.save_item_detail(key, {"tables": [{"caption": "물건기본정보", "rows": [["a"]]}, filled]})
+        self.store.save_item_detail(key, {"tables": [{"caption": "물건기본정보", "rows": [["b"]]},
+                                                     {"caption": "인근매각통계", "rows": [head]}]})
+        with self.store.connect() as conn:
+            tables = json.loads(conn.execute("SELECT detail_json FROM auction_items WHERE item_key = ?", (key,)).fetchone()[0])["tables"]
+        self.assertIn(filled, tables)
+        self.assertEqual(tables[0]["rows"], [["b"]])   # 다른 표는 새것으로
+
     def test_session_rejection_is_not_counted_against_the_item(self):
         # 세션 거절은 접속 탓이다 — 물건 실패 횟수를 안 올리고 1시간 뒤 다시 본다(기일 임박 물건이 밀리지 않게).
         self.store.upsert_items([AuctionItem({"사건번호": "김천지원 2025타경11146", "물건번호": "1", "매각기일": "2099.01.01"})])

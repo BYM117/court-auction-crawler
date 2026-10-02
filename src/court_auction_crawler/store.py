@@ -1089,7 +1089,14 @@ class AuctionStore:
                 merged = json.loads(row["detail_json"] or "{}")
             except (TypeError, ValueError):
                 merged = {}
+            kept = filled_near_stats(merged.get("tables"))
             merged.update(detail)
+            # 인근매각 검색을 안 누르면(detail_crawler.NEAR_SALES_SEARCH) 머리글만 온다 — 받아 둔 통계를 덮지 않는다.
+            if kept is not None and filled_near_stats(merged.get("tables")) is None:
+                merged["tables"] = [kept if NEAR_STATS_CAPTION in (t.get("caption") or "") else t
+                                    for t in merged.get("tables") or []]
+                if kept not in merged["tables"]:
+                    merged["tables"].append(kept)
             case_item = parse_case_item(merged, row["item_no"])
             closing = parse_case_closing(merged)
             conn.execute(
@@ -2755,6 +2762,19 @@ def calculate_crawl_priority(status: str, sale_date: str) -> int:
     if "유찰" in clean_text(status):
         score += 30
     return score
+
+
+NEAR_STATS_CAPTION = "인근매각통계"
+
+
+def filled_near_stats(tables: Any) -> dict[str, Any] | None:
+    """상세 표 중 데이터 행이 든 인근매각통계 표. 없거나 머리글뿐이면 None."""
+    for table in tables or []:
+        if isinstance(table, dict) and NEAR_STATS_CAPTION in (table.get("caption") or ""):
+            rows = table.get("rows") or []
+            if any(any(str(cell).strip() for cell in row) for row in rows[1:]):
+                return table
+    return None
 
 
 def detail_retry_at(now: datetime, retry_hours: int, sale_date: str) -> str:
