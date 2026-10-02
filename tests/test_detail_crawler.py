@@ -10,6 +10,7 @@ from court_auction_crawler.detail_crawler import (
     CourtAuctionDetailCrawler,
     HealthGovernor,
     case_search_error,
+    is_session_rejection,
     collect_details_sync,
     document_next_retry,
     find_document_title,
@@ -244,6 +245,17 @@ class DetailCrawlerHelperTests(unittest.TestCase):
         self.assertTrue(is_benign_case_error(ValueError("사건번호 형식 오류")))
         self.assertFalse(is_benign_case_error(PlaywrightTimeoutError("Timeout 30000ms exceeded")))
         self.assertFalse(is_benign_case_error(RuntimeError("net::ERR_INTERNET_DISCONNECTED")))
+
+    def test_session_rejection_trips_on_first_hit(self):
+        # 받아둔 사건을 '없다' 하면 그 세션은 죽은 것이다 — 문턱(5회)을 안 기다리고 바로 새 브라우저.
+        error = str(case_search_error("김천지원", "2025타경11146", "잘못된 번호", "", collected_before=True))
+        self.assertTrue(is_session_rejection(error))
+        governor = HealthGovernor()
+        governor.record_distress(immediate=is_session_rejection(error))
+        self.assertTrue(governor.wants_fresh_browser)
+        # 받아본 적 없는 사건의 '없다' 는 세션 거절이 아니다
+        miss = str(case_search_error("김천지원", "2026타경1", "잘못된 번호", "", collected_before=False))
+        self.assertFalse(is_session_rejection(miss))
 
     def test_search_misses_in_a_row_trip_the_governor(self):
         # 창이 망가지면 새 물건마다 '사건 검색 결과 없음'(양성)이 온다 — 잇따르면 차단 의심으로 센다

@@ -1132,8 +1132,11 @@ class AuctionStore:
             ).fetchone()
             if row is None:
                 return
-            fail_count = int(row["detail_fail_count"] or 0) + 1
-            retry_hours = min(24 * 7, 2 ** min(fail_count - 1, 7))
+            # 세션 거절은 사건이 아니라 법원 접속(세션)이 죽은 것이다(detail_crawler.case_search_error).
+            # 물건 실패로 세면 멀쩡한 물건이 백오프로 밀린다 — 10-02 활성 925건, 그중 472건이 기일 7일 이내였다.
+            rejected = "(세션 거절)" in str(error)
+            fail_count = int(row["detail_fail_count"] or 0) + (0 if rejected else 1)
+            retry_hours = 1 if rejected else min(24 * 7, 2 ** min(fail_count - 1, 7))
             next_retry = detail_retry_at(now, retry_hours, row["sale_date"] or "")
             if str(error).startswith("물건 목록 없음"):
                 # 사건 화면에 물건이 없다 = 팔렸거나 취하돼 목록에서 빠지는 중이다. 기일이 하루 안이면

@@ -127,13 +127,17 @@ class HealthGovernor:
             self.success_streak = 0
             print("== 상태 양호: 정상 속도로 복귀합니다 ==")
 
-    def record_distress(self) -> None:
+    def record_distress(self, *, immediate: bool = False) -> None:
+        """immediate: 세션이 죽은 게 확실한 신호(받아둔 사건을 '없다' 함)라 문턱을 안 기다린다.
+        실측(09-22~10-02): 첫 세션 거절 뒤 같은 세션의 요청은 95~100% 거절이었다 — 문턱 5회를
+        기다리는 동안 보낸 4번은 전부 헛걸음이었고, 10-02 엔 요청의 46%가 죽은 세션으로 갔다."""
         self.success_streak = 0
         self.distress_count += 1
         self.attempts_since_healthy += 1
         self.window_attempts += 1
-        if self.distress_count < self.trip_threshold:
+        if not immediate and self.distress_count < self.trip_threshold:
             return
+        streak = self.distress_count
         self.distress_count = 0
         self.trips += 1
         cooldown = min(
@@ -149,7 +153,7 @@ class HealthGovernor:
         # (냉각은 워치독이 패스를 접을 때까지의 짧은 브레이크로만 남는다.)
         self.wants_fresh_browser = True
         print(
-            f"!! 차단 의심: 연속 오류 {self.trip_threshold}회 -> "
+            f"!! 차단 의심: 연속 오류 {streak}회 -> "
             f"브라우저를 새로 엽니다 (최대 {int(cooldown)}초 냉각)"
         )
 
@@ -204,7 +208,17 @@ def is_benign_case_error(exc: Exception) -> bool:
 # 창이 망가지면 새 물건마다 그 답이 와서 전부 양성으로 샜다 — 2026-09-30 14:02~16:02
 # 클릭 시간초과 뒤 사건 241건 중 131건, 브라우저 새로 열기 0회(관제실 발견). 진짜 색인 전
 # 물건이 몰려 오판해도 브라우저를 한 번 새로 여는 값뿐이다.
-SEARCH_MISS_TRIP = 10
+# 10 → 3(2026-10-02): 정상 구간에서 '검색 결과 없음' 이 진짜로(색인 전) 난 것은 09-22~10-02 에 1번뿐이고
+# 나머지는 전부 죽은 세션의 꼬리였다.
+SEARCH_MISS_TRIP = 3
+
+
+SESSION_REJECTION_MARK = "(세션 거절)"
+
+
+def is_session_rejection(error: str) -> bool:
+    """받아둔 사건을 '없다' 고 한 것 = 사건이 아니라 세션이 죽은 것(case_search_error 1번)."""
+    return SESSION_REJECTION_MARK in error
 
 
 def next_search_miss_streak(streak: int, exc: Exception | None) -> int:
@@ -379,7 +393,7 @@ class CourtAuctionDetailCrawler:
                         summary.cases += 1
                         print(
                             f"[상세 {progress['index']}/{total_cases}] {court} {case_no} "
-                            f"({len(case_targets)}개 물건)"
+                            f"({len(case_targets)}개 물건) {datetime.now():%H:%M:%S}"
                         )
                         try:
                             result = await self._collect_case(page, court, case_no, case_targets)
@@ -395,7 +409,7 @@ class CourtAuctionDetailCrawler:
                             # 거버너가 못 알아채고 자가 복구가 일주일간 0회였다.
                             miss_streak = next_search_miss_streak(miss_streak, exc)
                             if not is_benign_case_error(exc) or miss_streak >= SEARCH_MISS_TRIP:
-                                governor.record_distress()
+                                governor.record_distress(immediate=is_session_rejection(error))
                             await page.wait_for_timeout(
                                 int(self.delay * 1000 * governor.delay_multiplier())
                             )

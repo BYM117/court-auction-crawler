@@ -572,6 +572,17 @@ class StoreTests(unittest.TestCase):
         self.store.save_document_status(gone, "매각물건명세서", status="pending", next_retry_at="")
         self.assertNotIn(gone, [row["item_key"] for row in self.store.list_detail_targets()])
 
+    def test_session_rejection_is_not_counted_against_the_item(self):
+        # 세션 거절은 접속 탓이다 — 물건 실패 횟수를 안 올리고 1시간 뒤 다시 본다(기일 임박 물건이 밀리지 않게).
+        self.store.upsert_items([AuctionItem({"사건번호": "김천지원 2025타경11146", "물건번호": "1", "매각기일": "2099.01.01"})])
+        key = "auction:김천지원:2025타경11146:1"
+        self.store.mark_detail_failure(key, "법원 응답 지연")
+        self.store.mark_detail_failure(key, "사건검색 거절: 김천지원 2025타경11146 받아둔 적 있는 사건을 '없다'고 함(세션 거절)")
+        item = self.store.get_item(key)
+        self.assertEqual(item["detail_fail_count"], 1)
+        wait = datetime.fromisoformat(item["detail_next_retry_at"]) - datetime.now(timezone.utc)
+        self.assertLess(wait, timedelta(hours=1, minutes=1))
+
     def test_repeated_detail_failure_does_not_touch_updated_at(self):
         # 실패마다 updated_at 을 올리면 내용이 그대로인 물건이 R2 재업로드 후보가 된다(2026-10-01).
         self.store.upsert_items([AuctionItem({"사건번호": "울산지방법원 2026타경77", "물건번호": "1"})])
