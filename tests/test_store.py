@@ -564,6 +564,18 @@ class StoreTests(unittest.TestCase):
         self.store.save_document_status(gone, "매각물건명세서", status="pending", next_retry_at="")
         self.assertNotIn(gone, [row["item_key"] for row in self.store.list_detail_targets()])
 
+    def test_repeated_detail_failure_does_not_touch_updated_at(self):
+        # 실패마다 updated_at 을 올리면 내용이 그대로인 물건이 R2 재업로드 후보가 된다(2026-10-01).
+        self.store.upsert_items([AuctionItem({"사건번호": "울산지방법원 2026타경77", "물건번호": "1"})])
+        key = "auction:울산지방법원:2026타경77:1"
+        self.store.mark_detail_failure(key, "법원 응답 지연")          # pending → failed: 상태가 바뀌었다
+        with self.store.connect() as conn:
+            conn.execute("UPDATE auction_items SET updated_at = '2026-01-01T00:00:00+00:00' WHERE item_key = ?", (key,))
+        self.store.mark_detail_failure(key, "법원 응답 지연")          # failed → failed: 그대로
+        item = self.store.get_item(key)
+        self.assertEqual(item["updated_at"], "2026-01-01T00:00:00+00:00")
+        self.assertEqual(item["detail_fail_count"], 2)
+
     def test_detail_failure_keeps_collected_when_data_already_exists(self):
         self.store.upsert_items(
             [AuctionItem({"사건번호": "서울중앙지방법원 2026타경700", "물건번호": "1", "매각기일": "2026.08.01"})]

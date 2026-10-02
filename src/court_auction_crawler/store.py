@@ -1140,12 +1140,16 @@ class AuctionStore:
             # 재시도만 백오프 예약한다. 상세를 한 번도 못 받은 것만 failed로 표시한다.
             keep_collected = row["detail_collected_at"] is not None
             status = "collected" if keep_collected else "failed"
+            # updated_at 은 상태가 바뀔 때만 올린다. 실패마다 올리면 내용이 그대로인 물건이 R2 재업로드
+            # 후보가 된다(pending_item_pushes) — 웹은 detail_collection 을 안 쓰는데 푸시가 회차당 6~10시간
+            # 걸려 하루 3회 일정이 밀렸다(2026-10-01). SET 의 오른쪽은 갱신 전 값을 본다.
             conn.execute(
                 """
                 UPDATE auction_items
                    SET detail_status = ?, detail_checked_at = ?,
                        detail_next_retry_at = ?, detail_fail_count = ?,
-                       detail_error = ?, updated_at = ?
+                       detail_error = ?,
+                       updated_at = CASE WHEN detail_status = ? THEN updated_at ELSE ? END
                  WHERE item_key = ?
                 """,
                 (
@@ -1154,6 +1158,7 @@ class AuctionStore:
                     next_retry,
                     fail_count,
                     str(error)[:500],
+                    status,
                     now.isoformat(timespec="seconds"),
                     item_key,
                 ),
