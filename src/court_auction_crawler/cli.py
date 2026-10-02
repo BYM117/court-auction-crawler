@@ -341,6 +341,19 @@ def _notice_courts(only: str | None, limit: int | None) -> list[str]:
     return courts
 
 
+# 상세 수집기를 쉬게 하는 시간대(맥 시계 = KST, [시작, 끝)). 자정~02시는 09-30·10-02·10-03 모두 최악이었다(10-02 시각별
+# 거절 56~70%, 10-03 01시대 세션당 사건 3건). 이 시간에 법원에 가는 건 상세 수집기뿐이다 — 목록 02:30·08:00·12:30, 공고 05:40.
+DETAIL_QUIET_HOURS = (0, 2)
+
+
+def quiet_seconds_left(now: datetime) -> float:
+    """지금이 쉬는 시간대면 끝날 때까지 남은 초, 아니면 0."""
+    start, end = DETAIL_QUIET_HOURS
+    if not start <= now.hour < end:
+        return 0
+    return (now.replace(hour=end, minute=0, second=0, microsecond=0) - now).total_seconds()
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
 
@@ -492,6 +505,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "collect-details":
         store = AuctionStore(args.db)
         while True:
+            quiet = quiet_seconds_left(datetime.now()) if args.loop else 0
+            if quiet:
+                print(f"===== 법원이 예민한 시간대({DETAIL_QUIET_HOURS[0]:02d}~{DETAIL_QUIET_HOURS[1]:02d}시) — "
+                      f"{quiet / 60:.0f}분 쉰다 =====", flush=True)
+                time.sleep(quiet)
+                continue
             summary = collect_details_sync(
                 store,
                 limit=args.limit or None,

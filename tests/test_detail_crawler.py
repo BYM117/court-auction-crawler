@@ -247,6 +247,13 @@ class DetailCrawlerHelperTests(unittest.TestCase):
         self.assertFalse(is_benign_case_error(PlaywrightTimeoutError("Timeout 30000ms exceeded")))
         self.assertFalse(is_benign_case_error(RuntimeError("net::ERR_INTERNET_DISCONNECTED")))
 
+    def test_detail_quiet_hours(self):
+        from datetime import datetime
+        from court_auction_crawler.cli import quiet_seconds_left
+        self.assertEqual(quiet_seconds_left(datetime(2026, 10, 3, 1, 30)), 1800)
+        self.assertEqual(quiet_seconds_left(datetime(2026, 10, 3, 2, 0)), 0)
+        self.assertEqual(quiet_seconds_left(datetime(2026, 10, 3, 23, 59)), 0)
+
     def test_near_area_key_is_dong_plus_category(self):
         self.assertEqual(near_area_key("경기도 시흥시 서울대학로278번길 70 1층에이127호 (배곧동,배곧두손)", "근린상가"), "")
         self.assertEqual(near_area_key("서울특별시 강북구 미아동 791-1505 [건물]", "다가구주택"), "서울특별시 강북구 미아동|다가구주택")
