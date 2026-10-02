@@ -20,7 +20,7 @@ from playwright.async_api import Page, TimeoutError as PlaywrightTimeoutError, a
 
 from .common import CASE_NO_RE, self_restart, singleton_lock, utc_now
 from .crawler import _prefer_local_browser_cache
-from .store import AuctionStore, representative_case_no
+from .store import NEAR_STATS_CAPTION, AuctionStore, filled_near_stats, representative_case_no
 
 
 COURT_CASE_SEARCH_URL = (
@@ -38,11 +38,23 @@ ITEM_DETAIL_BUTTON_SELECTOR = "input[value='물건상세조회']"
 # '인근매각물건사례' 절의 조회 버튼과, 그 결과로 나타나는 탭 묶음(G08).
 NEAR_SALES_SEARCH_SELECTOR = "#mf_wfm_mainFrame_btn_srchNearHist"
 NEAR_SALES_GROUP_SELECTOR = "#mf_wfm_mainFrame_tac_aroundGdsExmGrp"
-# 인근매각 '검색' 버튼을 누르나(2026-10-03 끔, 시험). 물건마다 법원에 주변 매각 수백 건을 뒤지는 검색을 한 번 더
+# 인근매각 '검색' 버튼: "off" 안 누름 · "area" 동+종류마다 하루 한 번만(나머지는 그날 받은 표를 복사) · "every" 물건마다.
+# 2026-10-03 "off"(시험). 물건마다 법원에 주변 매각 수백 건을 뒤지는 검색을 한 번 더
 # 시켰다(09-17 19시~). 사람은 거의 안 누르는 버튼이고, 세션이 막히기 전 받는 물건 수가 09-18 193 → 10-02 8 로
 # 무너진 시점과 겹친다. 끈 뒤 수명이 돌아오는지 보고 '동네별 하루 한 번' 으로 바꾼다. 받아 둔 통계는
 # store.save_item_detail 이 지킨다(안 누르면 머리글만 온다).
-NEAR_SALES_SEARCH = False
+NEAR_SALES_SEARCH = "off"
+# "area" 일 때 받은 통계를 며칠 나눠 쓰나. 1 = 그날만(사용자 결정 '동네별 하루 한 번'). 통계는 3·6·12개월 평균이라 하루 새 거의
+# 안 바뀐다. 활성 동네 키 11,589개에 물건 평균 2.8개라 하루 한 번이면 검색이 약 3분의 1만 준다 — 늘리면 더 준다.
+NEAR_STATS_REUSE_DAYS = 1
+
+
+def near_area_key(address: str, category: str) -> str:
+    """인근매각통계를 나눠 쓸 동네 키 = 시도 시군구 동(읍·면·가·리) + 종류. 같은 날 같은 키의 표가 91% 똑같았다
+    (09-17~10-02 23,004건; 시군구+종류는 80%, 동만은 24%). 동을 못 뽑으면 빈 문자열 — 그 물건은 직접 누른다."""
+    parts = (address or "").split()
+    dong = next((p for p in parts[2:5] if re.search(r"(동|읍|면|가|리)$", p)), "")
+    return f"{' '.join(parts[:2])} {dong}|{category}" if dong and category else ""
 CASE_DETAIL_BUTTON_SELECTOR = "input[value='사건상세조회']"
 # 사이트가 '그런 사건 없다'고 할 때 띄우는 문구. 화면 중간에 나오므로 본문 끝만
 # 잘라 보면 안 보인다. 이 문구가 곧 진실은 아니다 — 판단은 case_search_error 참고.
@@ -623,10 +635,19 @@ class CourtAuctionDetailCrawler:
                 break
             button = current_buttons.nth(button_index)
             button_item_no = button_states[button_index][0]
+            if button_item_no and button_item_no not in target_by_no:
+                # 받을 물건이 아니면 열지 않는다 — 물건 여러 개인 사건에서 대상 아닌 물건까지 다 열었다(하루 100~250번).
+                continue
+            planned = target_by_no.get(button_item_no) or {}
+            area = near_area_key(planned.get("address", ""), planned.get("category", ""))
+            today = date.today().isoformat()
+            since = (date.today() - timedelta(days=NEAR_STATS_REUSE_DAYS - 1)).isoformat()
+            shared_stats = self.store.near_stats_for(area, since) if NEAR_SALES_SEARCH == "area" and area else None
+            press = NEAR_SALES_SEARCH == "every" or (NEAR_SALES_SEARCH == "area" and shared_stats is None)
             try:
                 await button.click(timeout=10_000)
                 await page.wait_for_selector(CASE_DETAIL_BUTTON_SELECTOR, state="visible", timeout=15_000)
-                detail = await self._extract_item_detail(page)
+                detail = await self._extract_item_detail(page, near_sales=press)
             except Exception as exc:
                 # 한 물건의 진입 실패가 사건 전체를 실패로 만들지 않게 격리한다.
                 target = target_by_no.get(button_item_no)
@@ -644,6 +665,11 @@ class CourtAuctionDetailCrawler:
             target = target_by_no.get(item_no)
             if target is not None:
                 seen_item_nos.add(item_no)
+                if shared_stats is not None:
+                    detail["tables"] = [shared_stats if NEAR_STATS_CAPTION in (t.get("caption") or "") else t
+                                        for t in detail.get("tables") or []]
+                elif press and area and (got := filled_near_stats(detail.get("tables"))) is not None:
+                    self.store.save_near_stats(area, today, got)
                 try:
                     photos = await self._save_photos(page, target["item_key"], detail.pop("photo_data", []))
                     detail["photos"] = photos
@@ -753,7 +779,7 @@ class CourtAuctionDetailCrawler:
             "filing_and_service_tables": filing_tables,
         }
 
-    async def _extract_item_detail(self, page: Page) -> dict[str, Any]:
+    async def _extract_item_detail(self, page: Page, *, near_sales: bool = False) -> dict[str, Any]:
         try:
             await page.wait_for_selector(
                 "img[alt*='전경도'], img[alt*='내부구조도']",
@@ -762,7 +788,7 @@ class CourtAuctionDetailCrawler:
             )
         except PlaywrightTimeoutError:
             pass
-        if NEAR_SALES_SEARCH:
+        if near_sales:
             await self._open_near_sales(page)
         tables = await extract_tables(page)
         sections = await extract_sections(page)

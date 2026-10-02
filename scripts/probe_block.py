@@ -50,7 +50,7 @@ def pick_cases(db: str, limit: int) -> list[tuple[tuple[str, str], list[dict]]]:
 
 
 async def run(near: bool, limit: int, out: Path, db: str) -> dict:
-    detail_crawler.NEAR_SALES_SEARCH = near
+    detail_crawler.NEAR_SALES_SEARCH = "every" if near else "off"
     crawler = CourtAuctionDetailCrawler(FakeStore(), asset_dir=out / "assets", delay=5)
     cases = pick_cases(db, limit)
     started = time.time()

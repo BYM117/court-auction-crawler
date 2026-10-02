@@ -11,6 +11,7 @@ from court_auction_crawler.detail_crawler import (
     HealthGovernor,
     case_search_error,
     is_session_rejection,
+    near_area_key,
     collect_details_sync,
     document_next_retry,
     find_document_title,
@@ -245,6 +246,12 @@ class DetailCrawlerHelperTests(unittest.TestCase):
         self.assertTrue(is_benign_case_error(ValueError("사건번호 형식 오류")))
         self.assertFalse(is_benign_case_error(PlaywrightTimeoutError("Timeout 30000ms exceeded")))
         self.assertFalse(is_benign_case_error(RuntimeError("net::ERR_INTERNET_DISCONNECTED")))
+
+    def test_near_area_key_is_dong_plus_category(self):
+        self.assertEqual(near_area_key("경기도 시흥시 서울대학로278번길 70 1층에이127호 (배곧동,배곧두손)", "근린상가"), "")
+        self.assertEqual(near_area_key("서울특별시 강북구 미아동 791-1505 [건물]", "다가구주택"), "서울특별시 강북구 미아동|다가구주택")
+        self.assertEqual(near_area_key("경기도 양평군 양평읍 양근리 1", "전"), "경기도 양평군 양평읍|전")
+        self.assertEqual(near_area_key("서울특별시 강북구 미아동 1", ""), "")
 
     def test_session_rejection_trips_on_first_hit(self):
         # 받아둔 사건을 '없다' 하면 그 세션은 죽은 것이다 — 문턱(5회)을 안 기다리고 바로 새 브라우저.

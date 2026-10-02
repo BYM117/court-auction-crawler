@@ -479,16 +479,18 @@ class StoreTests(unittest.TestCase):
             self.store.save_item_detail(key, {"tables": [{"caption": "물건 기본정보"}]})
         self.assertEqual(self.store.list_detail_targets(), [])
 
-        # 요항표를 담기 전에 받은 상세 — 기일이 멀면 한 번 더 보고, 사흘 안이면 명세서 앞줄을 막지 않게 뺀다
+        # 요항표를 담기 전에 받은 상세 — 활성이면 기일과 상관없이 한 번 더 본다(10-03 사용자 결정: 권리분석에 필요).
+        # 급한 것(기일 사흘 안)이 앞줄이다.
         with self.store.connect() as conn:
             conn.execute(
                 "UPDATE auction_items SET detail_collected_at = '2026-09-10T00:00:00+00:00', "
                 "last_changed_at = '2026-09-09T00:00:00+00:00'"
             )
-        self.assertEqual([row["item_key"] for row in self.store.list_detail_targets()], [old])
+        self.assertEqual([row["item_key"] for row in self.store.list_detail_targets()], [soon, old])
 
         # 다시 받으면 스스로 빠진다
-        self.store.save_item_detail(old, {"tables": [{"caption": "물건 기본정보"}], "appraisal_summary": "1) 위치"})
+        for key in (old, soon):
+            self.store.save_item_detail(key, {"tables": [{"caption": "물건 기본정보"}], "appraisal_summary": "1) 위치"})
         self.assertEqual(self.store.list_detail_targets(), [])
 
     def test_detail_unavailable_stops_retry_until_item_changes(self):
@@ -571,6 +573,31 @@ class StoreTests(unittest.TestCase):
         # 미뤄 둔 물건은 명세서가 밀려 있어도(pending, 재시도 시각 없음) 그 전엔 다시 부르지 않는다
         self.store.save_document_status(gone, "매각물건명세서", status="pending", next_retry_at="")
         self.assertNotIn(gone, [row["item_key"] for row in self.store.list_detail_targets()])
+
+    def test_detail_queue_puts_urgent_first(self):
+        # 10-03 '급한 것 먼저': 기일 7일 안 → 새 물건 → 진짜 바뀐 물건 → 나머지(요항표 보충)
+        from datetime import date as _date
+        d = lambda n: (_date.today() + timedelta(days=n)).strftime("%Y.%m.%d")  # noqa: E731
+        rows = {"week": d(5), "new": d(30), "changed": d(40), "backfill": d(20)}
+        self.store.upsert_items([AuctionItem({"사건번호": f"부산지방법원 2026타경{i}", "물건번호": "1", "매각기일": v})
+                                 for i, v in enumerate(rows.values(), 1)])
+        keys = {name: f"auction:부산지방법원:2026타경{i}:1" for i, name in enumerate(rows, 1)}
+        for name in ("week", "changed", "backfill"):
+            self.store.save_item_detail(keys[name], {"tables": []})
+        with self.store.connect() as conn:
+            conn.execute("UPDATE auction_items SET detail_collected_at = '2026-09-10T00:00:00+00:00', "
+                         "last_changed_at = '2026-09-09T00:00:00+00:00' WHERE item_key IN (?, ?)", (keys["week"], keys["backfill"]))
+            conn.execute("UPDATE auction_items SET detail_collected_at = '2026-09-20T00:00:00+00:00', "
+                         "last_changed_at = '2026-09-21T00:00:00+00:00' WHERE item_key = ?", (keys["changed"],))
+        order = [row["item_key"] for row in self.store.list_detail_targets()]
+        self.assertEqual(order, [keys["week"], keys["new"], keys["changed"], keys["backfill"]])
+
+    def test_near_stats_cache_roundtrip(self):
+        table = {"caption": "인근매각통계", "rows": [["기간"], ["3개월"]]}
+        self.assertIsNone(self.store.near_stats_for("경기도 시흥시 배곧동|근린상가", "2026-10-03"))
+        self.store.save_near_stats("경기도 시흥시 배곧동|근린상가", "2026-10-03", table)
+        self.assertEqual(self.store.near_stats_for("경기도 시흥시 배곧동|근린상가", "2026-10-03"), table)
+        self.assertIsNone(self.store.near_stats_for("경기도 시흥시 배곧동|근린상가", "2026-10-04"))
 
     def test_only_meaningful_list_changes_queue_detail_again(self):
         # 소재지목록·상세URL·수집구분은 읽은 화면에 따라 흔들린다 — 그것만 바뀌면 상세를 다시 열지 않는다.

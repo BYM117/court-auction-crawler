@@ -246,6 +246,13 @@ class AuctionStore:
                     error TEXT
                 );
 
+                CREATE TABLE IF NOT EXISTS near_stats_cache (
+                    area TEXT NOT NULL,
+                    day TEXT NOT NULL,
+                    table_json TEXT NOT NULL,
+                    PRIMARY KEY (area, day)
+                );
+
                 CREATE TABLE IF NOT EXISTS court_run_stats (
                     finished_at TEXT NOT NULL,
                     mode TEXT NOT NULL,
@@ -1009,7 +1016,6 @@ class AuctionStore:
                         is_active = 1
                         AND detail_status = 'collected'
                         AND detail_collected_at < '{summary_since}'
-                        AND REPLACE(SUBSTR(sale_date, 1, 10), '.', '-') > ?
                     )
                     -- 사라진 물건을 딱 한 번 더 본다. 위에서 문을 열어도 이 조건이
                     -- 막고 있으면 영영 안 들어온다(실측: 큐에 0건이었다).
@@ -1022,7 +1028,7 @@ class AuctionStore:
                 )
             )
             now = utc_now()
-            params.extend([now, now, now, (date.today() + timedelta(days=2)).isoformat()])
+            params.extend([now, now, now])
             if closing_sweep_days > 0:
                 params.append(closing_sweep_cutoff(closing_sweep_days))
             # 물건에 다음 방문 시각이 잡혀 있으면 어느 이유로도 그 전엔 부르지 않는다. '밀린 문서' 조건과
@@ -1037,7 +1043,7 @@ class AuctionStore:
                 f"""
                 SELECT item_key, court, case_no, item_no, sale_date, status,
                        detail_status, detail_collected_at, detail_next_retry_at,
-                       detail_fail_count, last_changed_at
+                       detail_fail_count, last_changed_at, address, category
                   FROM auction_items
                  WHERE {' AND '.join(f'({clause})' for clause in clauses)}
                  -- **시한이 있는 것이 먼저다.** 사라진 물건은 종국 후 30일이 지나면
@@ -1053,7 +1059,11 @@ class AuctionStore:
                           -- 영영 못 받는데(함정 ⑦), 새 물건(상세 미수집)을 먼저 보게 두면 그 뒤로
                           -- 밀린다(2026-09-29: 09-30 기일 명세서 1,414건이 10-08·12 새 물건 뒤였다).
                           (REPLACE(SUBSTR(sale_date, 1, 10), '.', '-') BETWEEN ? AND ?) DESC,
+                          -- 2026-10-03 사용자 결정 '급한 것 먼저': 기일 7일 안(명세서 창) → 새 물건 → 진짜 바뀐 물건
+                          -- → 나머지(요항표 보충 등). 법원에 막혀 하루에 볼 수 있는 양이 적을 때 보충이 급한 것을 밀지 않게.
+                          (REPLACE(SUBSTR(sale_date, 1, 10), '.', '-') BETWEEN ? AND ?) DESC,
                           (detail_collected_at IS NULL) DESC,
+                          (last_changed_at > detail_collected_at) DESC,
                           -- '>=' — 기일 당일은 아직 지난 게 아니다(서류를 오전까지 볼 수 있다).
                           (REPLACE(SUBSTR(sale_date, 1, 10), '.', '-') >= ?) DESC,
                           (sale_date IS NULL OR sale_date = '') ASC,
@@ -1072,6 +1082,8 @@ class AuctionStore:
                  # 되자 그날 기일 물건이 우선순위에서 빠졌다(2026-09-30 01:33, 일시 실패 46건).
                  date.today().isoformat(),
                  (date.today() + timedelta(days=2)).isoformat(),
+                 date.today().isoformat(),
+                 (date.today() + timedelta(days=7)).isoformat(),
                  date.today().isoformat(), row_limit],
             ).fetchall()
         return [dict(row) for row in rows]
@@ -1128,6 +1140,18 @@ class AuctionStore:
                     item_key,
                 ),
             )
+
+    def near_stats_for(self, area: str, since_day: str) -> dict[str, Any] | None:
+        """since_day 이후(포함)에 받은 그 동네 통계 중 가장 최근 것."""
+        with self.connect() as conn:
+            row = conn.execute("SELECT table_json FROM near_stats_cache WHERE area = ? AND day >= ? ORDER BY day DESC LIMIT 1",
+                               (area, since_day)).fetchone()
+        return json.loads(row[0]) if row else None
+
+    def save_near_stats(self, area: str, day: str, table: dict[str, Any]) -> None:
+        with self.connect() as conn:
+            conn.execute("INSERT OR REPLACE INTO near_stats_cache(area, day, table_json) VALUES(?, ?, ?)",
+                         (area, day, json_dumps(table)))
 
     def mark_detail_failure(self, item_key: str, error: str) -> None:
         now = datetime.now(timezone.utc)
