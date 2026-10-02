@@ -253,6 +253,13 @@ class DetailCrawlerHelperTests(unittest.TestCase):
         governor = HealthGovernor()
         governor.record_distress(immediate=is_session_rejection(error))
         self.assertTrue(governor.wants_fresh_browser)
+        # 법원 보안 차단 창은 받아본 적 없는 사건이어도 차단이다('잘못된 번호' 가 같이 떠도)
+        blocked = str(case_search_error(
+            "성남지원", "2025타경4413",
+            "해당 IP는 비정상적인 접속으로 보안정책에의하여 차단되었습니다.\n해당 사건번호는 잘못된 번호입니다.",
+            "", collected_before=False))
+        self.assertIn("법원 보안 차단", blocked)
+        self.assertTrue(is_session_rejection(blocked))
         # 받아본 적 없는 사건의 '없다' 는 세션 거절이 아니다
         miss = str(case_search_error("김천지원", "2026타경1", "잘못된 번호", "", collected_before=False))
         self.assertFalse(is_session_rejection(miss))

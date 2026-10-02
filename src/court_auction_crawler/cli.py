@@ -524,7 +524,9 @@ def main(argv: list[str] | None = None) -> int:
             # 대상을 처리했으면 그 사이 쌓인 신건을 바로 다시 확인하고,
             # 비어 있었으면 idle 간격만큼 쉬었다가 재시도 도래분을 확인한다.
             if summary.aborted:
-                wait_minutes = 0.5
+                # 1.5분(2026-10-02, 0.5분에서): 법원 보안 차단이면 이제 헛요청 없이 바로 패스를 접는다.
+                # 전엔 막힌 세션에 4번을 더 보내느라 약 1분이 더 걸렸다 — 새 세션을 여는 간격은 그대로 둔다.
+                wait_minutes = 1.5
             elif summary.targets:
                 wait_minutes = 1.0
             else:

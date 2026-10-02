@@ -46,6 +46,11 @@ NO_SUCH_CASE_MARKER = "잘못된 번호"
 # 있는 사건은 물건상세조회 버튼까지 0.25초에 같이 뜨고, 없는 사건은 20초를 봐도
 # 안 뜬다). 그래서 이 문구가 있으면 '덜 그려진 것'이 아니라 다 그려진 것이다.
 CASE_RENDERED_MARKER = "사건기본내역"
+# 법원 보안 차단 창(SCMsgBox): "해당 IP는 비정상적인 접속으로 보안정책에의하여 차단되었습니다."
+# 이 창이 뜨면 그 아래 사건 화면은 '잘못된 번호' 로 바뀐다. 문구는 IP 지만 실측으로는 세션(쿠키)
+# 단위다 — 같은 쿠키는 계속 막히고 새 쿠키는 같은 IP 에서 곧바로 된다(2026-10-02 탐침).
+# 9월 내내 이 창을 못 읽어 '받아둔 사건을 없다고 함' 으로만 기록됐다.
+COURT_BLOCK_MARKER = "비정상적인 접속"
 DATA_URI_RE = re.compile(r"^data:(?P<mime>[^;,]+)(?:;charset=[^;,]+)?;base64,(?P<data>.+)$", re.S)
 # 감정평가서는 뺐다(2026-09-30). 본문은 한국감정평가사협회 서버에 있어 받을 수 없고(G06),
 # 버튼을 누르면 협회 뷰어를 불러 하루 약 2,800번 협회 서버를 두드렸다. 화면에 쓰는 감정평가
@@ -228,6 +233,17 @@ def next_search_miss_streak(streak: int, exc: Exception | None) -> int:
     return streak + 1 if str(exc).startswith("사건 검색 결과 없음") else streak
 
 
+async def screen_text(page: Page) -> str:
+    """화면 글자 전부 — 본문과 하위 프레임까지. 오류 창이 프레임 안에 뜨면 본문만 읽어선 안 보인다."""
+    parts = [await page.locator("main, body").first.inner_text(timeout=5_000)]
+    for frame in page.frames[1:]:
+        try:
+            parts.append(await frame.locator("body").inner_text(timeout=1_000))
+        except Exception:  # noqa: BLE001 - 덤으로 읽는 프레임이다
+            pass
+    return "\n".join(parts)
+
+
 async def site_message(page: Page) -> str:
     """오류 화면이 실제로 뭐라고 하는지 읽는다.
 
@@ -280,6 +296,8 @@ def case_search_error(
     양성이라고 물건을 버리는 것은 아니다. 재시도로 남고, 백오프는 기일을 넘지
     못하게 잘린다(store.mark_detail_failure). 3번 판단이 틀렸더라도 기일 전에
     반드시 한 번은 더 확인한다."""
+    if COURT_BLOCK_MARKER in text:
+        return RuntimeError(f"법원 보안 차단: {court} {case_no} '비정상적인 접속으로 차단' 창(세션 거절)")
     if NO_SUCH_CASE_MARKER in text:
         if collected_before:
             return RuntimeError(
@@ -506,7 +524,7 @@ class CourtAuctionDetailCrawler:
             # 여기서 버튼을 따지면 정작 메워야 할 물건을 전부 놓친다.
             shared = await self._extract_case_shared(page)
             if next(_schedule_tables(shared), None) is None:
-                text = await page.locator("main, body").first.inner_text(timeout=5_000)
+                text = await screen_text(page)
                 raise case_search_error(
                     court,
                     case_no,
@@ -533,7 +551,7 @@ class CourtAuctionDetailCrawler:
             }
 
         if button_count == 0:
-            text = await page.locator("main, body").first.inner_text(timeout=5_000)
+            text = await screen_text(page)
             raise case_search_error(
                 court,
                 case_no,
