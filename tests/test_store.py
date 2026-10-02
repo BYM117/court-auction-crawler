@@ -427,6 +427,14 @@ class StoreTests(unittest.TestCase):
         self.assertIn("idx_auction_items_pnu", plan)
         self.assertNotIn("SCAN auction_items", plan)
 
+    def test_item_events_lookup_uses_an_index(self):
+        # get_item 이 이력을 item_key 로 읽는다 — 색인이 없으면 R2 푸시가 물건마다 표 전체를 훑는다(2026-10-02).
+        with self.store.connect() as conn:
+            plan = " ".join(str(row[3]) for row in conn.execute(
+                "EXPLAIN QUERY PLAN SELECT * FROM auction_events WHERE item_key = ? ORDER BY created_at",
+                ("auction:x:1:1",)))
+        self.assertIn("idx_auction_events_item", plan)
+
     def test_detail_targets_complete_and_retry_on_due_document(self):
         item = AuctionItem(
             {

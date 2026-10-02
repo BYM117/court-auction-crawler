@@ -459,6 +459,11 @@ class AuctionStore:
             # 없어 저장마다 표 전체를 훑었다 — 한 번에 62초, 그동안 쓰기 잠금을 쥐어 건축물대장 단계에
             # DB 가 97% 잠겼고 상세 수집기가 30초 대기를 넘겨 죽었다(2026-09-30 13:17·16:02·17:26).
             conn.execute("CREATE INDEX IF NOT EXISTS idx_auction_items_pnu ON auction_items(pnu)")
+            # get_item 이 물건의 변경 이력을 item_key 로 읽는데 색인이 없어 28만 행을 훑었다 — 한 건 3.76초,
+            # R2 푸시가 1분에 24건이라 회차당 6~10시간 걸렸다. 색인 뒤 0.003초, 1분에 약 880건(2026-10-02).
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_auction_events_item ON auction_events(item_key, created_at)"
+            )
             conn.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_auction_documents_item
