@@ -572,6 +572,22 @@ class StoreTests(unittest.TestCase):
         self.store.save_document_status(gone, "매각물건명세서", status="pending", next_retry_at="")
         self.assertNotIn(gone, [row["item_key"] for row in self.store.list_detail_targets()])
 
+    def test_only_meaningful_list_changes_queue_detail_again(self):
+        # 소재지목록·상세URL·수집구분은 읽은 화면에 따라 흔들린다 — 그것만 바뀌면 상세를 다시 열지 않는다.
+        row = {"사건번호": "인천지방법원 2025타경510258", "물건번호": "1", "매각기일": "2099.01.01",
+               "최저매각가격": "14,823,000 (8%)", "진행상태": "유찰 7회", "수집구분": "예정", "소재지목록": "a"}
+        key = "auction:인천지방법원:2025타경510258:1"
+        self.store.upsert_items([AuctionItem(row)])
+        self.store.save_item_detail(key, {"tables": []})
+        with self.store.connect() as conn:  # 같은 초 안에 돌아 '바뀜 > 상세 받은 때' 가 안 서지 않게
+            conn.execute("UPDATE auction_items SET detail_collected_at = '2026-09-20T00:00:00+00:00' WHERE item_key = ?", (key,))
+            conn.execute("UPDATE auction_items SET last_changed_at = '2026-09-19T00:00:00+00:00' WHERE item_key = ?", (key,))
+        queued = lambda: key in [t["item_key"] for t in self.store.list_detail_targets()]  # noqa: E731
+        self.store.upsert_items([AuctionItem({**row, "수집구분": "진행", "소재지목록": "b", "상세URL": "x"})])
+        self.assertFalse(queued())
+        self.store.upsert_items([AuctionItem({**row, "최저매각가격": "11,858,000 (6%)", "진행상태": "유찰 8회"})])
+        self.assertTrue(queued())
+
     def test_recollection_without_near_sales_search_keeps_old_stats(self):
         # 인근매각 검색을 안 누르면 머리글만 온다 — 받아 둔 통계를 덮으면 웹 탭이 빈다.
         self.store.upsert_items([AuctionItem({"사건번호": "안산지원 2024타경2497", "물건번호": "1"})])

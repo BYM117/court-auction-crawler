@@ -737,7 +737,7 @@ class AuctionStore:
                                category = ?, appraisal = ?, minimum_bid = ?,
                                sale_date = ?, status = ?, detail_url = ?,
                                raw_json = ?, detail_json = ?, content_hash = ?, list_hash = ?,
-                               last_seen_at = ?, last_changed_at = ?, next_check_at = ?,
+                               last_seen_at = ?, last_changed_at = COALESCE(?, last_changed_at), next_check_at = ?,
                                is_active = ?, crawl_priority = ?, crawl_fail_count = 0,
                                updated_at = ?
                          WHERE item_key = ?
@@ -759,7 +759,7 @@ class AuctionStore:
                             content_hash,
                             list_hash,
                             now,
-                            now,
+                            now if meaningful_list_change(existing["raw_json"], values) else None,
                             next_check_at,
                             1 if active else 0,
                             crawl_priority,
@@ -2762,6 +2762,20 @@ def calculate_crawl_priority(status: str, sale_date: str) -> int:
     if "유찰" in clean_text(status):
         score += 30
     return score
+
+
+# 상세를 다시 받을 만한 목록 변경. 나머지(소재지목록·상세URL·수집구분·사건번호 '(중복)'·소재지)는 어느 목록 화면에서
+# 읽었냐에 따라 흔들리는 표기다 — 09-26~10-03 '바뀜' 11,572건 중 약 7천 건(60%)이 그것만 바뀌었는데 상세를 다시 열었다.
+MEANINGFUL_LIST_FIELDS = ("매각기일", "최저매각가격", "진행상태", "비고", "감정평가액", "용도")
+
+
+def meaningful_list_change(old_raw_json: str | None, new_values: dict[str, Any]) -> bool:
+    """상세를 다시 받을 만큼 목록이 바뀌었나. 옛 값을 못 읽으면 바뀐 것으로 친다."""
+    try:
+        old = json.loads(old_raw_json or "")
+    except (TypeError, ValueError):
+        return True
+    return any(str(old.get(k) or "").strip() != str(new_values.get(k) or "").strip() for k in MEANINGFUL_LIST_FIELDS)
 
 
 NEAR_STATS_CAPTION = "인근매각통계"
