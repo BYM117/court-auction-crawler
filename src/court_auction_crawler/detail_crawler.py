@@ -234,14 +234,37 @@ def next_search_miss_streak(streak: int, exc: Exception | None) -> int:
 
 
 async def screen_text(page: Page) -> str:
-    """화면 글자 전부 — 본문과 하위 프레임까지. 오류 창이 프레임 안에 뜨면 본문만 읽어선 안 보인다."""
+    """화면 글자 전부 — 본문과 하위 프레임, 입력칸 값까지. 보안 차단 창 문구가 본문 글자(innerText)에는
+    안 잡혔다(10-03 새벽 거절 18건 중 인식 0건) — 창이 입력칸·프레임에 문구를 담는 것으로 보고 넓게 읽는다."""
     parts = [await page.locator("main, body").first.inner_text(timeout=5_000)]
-    for frame in page.frames[1:]:
+    for frame in page.frames:
         try:
-            parts.append(await frame.locator("body").inner_text(timeout=1_000))
+            parts.append(await frame.evaluate(
+                """() => [document.body ? document.body.innerText : '',
+                          ...[...document.querySelectorAll('textarea, input')].map((el) => el.value || '')].join('\\n')"""))
         except Exception:  # noqa: BLE001 - 덤으로 읽는 프레임이다
             pass
     return "\n".join(parts)
+
+
+BLOCK_EVIDENCE_DIR = Path("logs/blocks")
+BLOCK_EVIDENCE_PER_DAY = 20
+
+
+async def save_block_evidence(page: Page, court: str, case_no: str) -> None:
+    """세션 거절 순간의 화면 사진·HTML(프레임 포함)을 남긴다. 차단 창이 어디에 무슨 문구로 뜨는지
+    로그 글자로는 못 봤다 — 9월 내내 '없다고 함' 으로만 기록된 이유. 하루 BLOCK_EVIDENCE_PER_DAY 장까지."""
+    try:
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        BLOCK_EVIDENCE_DIR.mkdir(parents=True, exist_ok=True)
+        if len(list(BLOCK_EVIDENCE_DIR.glob(f"{stamp[:8]}-*.png"))) >= BLOCK_EVIDENCE_PER_DAY:
+            return
+        base = BLOCK_EVIDENCE_DIR / f"{stamp}-{safe_path_part(court)}-{safe_path_part(case_no)}"
+        await page.screenshot(path=str(base.with_suffix(".png")), full_page=True)
+        html = [f"<!-- frame {frame.url} -->\n" + await frame.content() for frame in page.frames]
+        base.with_suffix(".html").write_text("\n".join(html), encoding="utf-8")
+    except Exception as exc:  # noqa: BLE001 - 증거 남기기가 수집을 멈추면 안 된다
+        print(f"  (차단 증거 저장 실패: {exc})")
 
 
 async def site_message(page: Page) -> str:
@@ -421,6 +444,8 @@ class CourtAuctionDetailCrawler:
                                 self.store.mark_detail_failure(target["item_key"], error)
                                 summary.failed += 1
                             print(f"  !! 상세 수집 실패: {error}")
+                            if is_session_rejection(error):
+                                await save_block_evidence(page, court, case_no)
                             # 양성 실패는 사이트 건강에 대한 정보가 아니다.
                             # 성공으로도 세지 않는다 — record_healthy가 성공률 창을
                             # 채우고 distress를 지우는 탓에, 실패가 아무리 쌓여도
