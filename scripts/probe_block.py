@@ -2,7 +2,12 @@
 
 막히면 그 자리에서 끝낸다 — 새 세션으로 다시 들어가지 않는다. 인근매각 검색 버튼을 켜고/끄고 비교하는 데 쓴다.
 
-    .venv/bin/python scripts/probe_block.py --near on|off [--max 60] [--out logs/probe-tests]
+    .venv/bin/python scripts/probe_block.py --near on|off [--stage tabs|item|full] [--max 60] [--out logs/probe-tests]
+
+--stage 로 어디까지 할지 끊는다(무엇이 '비정상 접속' 판정을 부르는지 가리려고, 10-04):
+  tabs = 사건 검색 + 사건 화면 탭(기일내역·문건송달)까지. 물건 상세는 안 연다.
+  item = + 물건 상세 화면. 문서(명세서·현황조사서 뷰어)는 안 연다.
+  full = 수집기와 똑같이 전부.
 """
 from __future__ import annotations
 
@@ -49,15 +54,22 @@ def pick_cases(db: str, limit: int) -> list[tuple[tuple[str, str], list[dict]]]:
     return list(grouped.items())[:limit]
 
 
-async def run(near: bool, limit: int, out: Path, db: str) -> dict:
+async def run(near: bool, limit: int, out: Path, db: str, stage: str = "full") -> dict:
     detail_crawler.NEAR_SALES_SEARCH = "every" if near else "off"
-    crawler = CourtAuctionDetailCrawler(FakeStore(), asset_dir=out / "assets", delay=5)
+    crawler = CourtAuctionDetailCrawler(FakeStore(), asset_dir=out / "assets", delay=5,
+                                        collect_documents=stage == "full")
     cases = pick_cases(db, limit)
+    if stage == "tabs":  # 받을 물건이 없으면 수집기는 물건 버튼을 누르지 않는다(사건 화면·탭까지만)
+        cases = [(key, [{**t, "item_no": "__none__"} for t in targets]) for key, targets in cases]
     started = time.time()
-    result = {"near": near, "start": datetime.now().isoformat(timespec="seconds"), "ok": 0, "items": 0, "blocked_at": None}
+    result = {"near": near, "stage": stage, "start": datetime.now().isoformat(timespec="seconds"),
+              "ok": 0, "items": 0, "blocked_at": None, "requests": 0}
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(headless=True)
-        page = await (await browser.new_context(viewport={"width": 1440, "height": 1100})).new_page()
+        context = await browser.new_context(viewport={"width": 1440, "height": 1100})
+        context.on("request", lambda r: result.__setitem__("requests", result["requests"] + 1)
+                   if "courtauction.go.kr" in r.url else None)
+        page = await context.new_page()
         for i, ((court, case_no), targets) in enumerate(cases, 1):
             try:
                 r = await crawler._collect_case(page, court, case_no, targets)
@@ -77,13 +89,14 @@ async def run(near: bool, limit: int, out: Path, db: str) -> dict:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--near", choices=["on", "off"], required=True)
+    ap.add_argument("--stage", choices=["tabs", "item", "full"], default="full")
     ap.add_argument("--max", type=int, default=60)
     ap.add_argument("--out", default="logs/probe-tests")
     ap.add_argument("--db", default="data/auction.sqlite3")
     a = ap.parse_args()
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
-    result = asyncio.run(run(a.near == "on", a.max, out, a.db))
+    result = asyncio.run(run(a.near == "on", a.max, out, a.db, a.stage))
     line = json.dumps(result, ensure_ascii=False)
     print(line)
     with (out / "results.jsonl").open("a", encoding="utf-8") as f:
