@@ -171,6 +171,55 @@ def opposability(occupants: list[dict[str, Any]], senior: dict[str, Any] | None,
     return {"senior": senior, "tenants": tenants, "summary": summary}
 
 
+# ── ②-1 낙찰자가 떠안는 권리 ────────────────────────────────────────────────
+# 매각물건명세서의 '등기된 부동산에 관한 권리 또는 가처분으로 매각으로 그 효력이 소멸되지 아니하는 것' 칸 —
+# 법원이 **낙찰자가 떠안는 권리** 를 직접 적는다. 진행 4,005건에 내용이 있는데 2026-10-04 까지 안 썼다.
+# 권리 종류마다 따로 본다: 그 종류를 말한 문장에 '인수함·인수됨·말소되지 않' 이 있으면 떠안음, 없고 '말소 동의·
+# 확약서·포기' 가 있으면 해소, 둘 다 없으면 떠안음(모르면 위험 쪽). 손 정답 30건으로 세웠다.
+_INHERIT_KINDS = (("가처분", "가처분"), ("가등기", "가등기"), ("전세권", "전세권"), ("지역권", "지역권"),
+                  ("지상권", "지상권"), ("임차권", "임차권"), ("임차인", "임차권"))
+def _loose(word: str) -> str:
+    """PDF 가 줄을 바꾸며 낱말 가운데 빈칸을 넣는다('말소동 의서', '인 수됨') — 글자 사이 빈칸을 허용한다."""
+    return r"\s?".join(re.escape(ch) for ch in word)
+
+
+_INHERIT_YES = re.compile("|".join([_loose("인수") + r"\s?(?:함|됨|될|하)", r"매수인(?:이|에게)\s*" + _loose("인수"),
+                                    _loose("말소되지") + r"\s*(?:않|아니)", _loose("소멸하지") + r"\s*않", _loose("상실")]))
+_INHERIT_NO = re.compile("|".join([_loose("말소") + r"\s*" + _loose("동의"), _loose("확약서"),
+                                   r"대항력\S{0,3}\s*" + _loose("포기"), r"반환\s*(?:청구)?\s*권을?\s*" + _loose("포기")]))
+_CLAUSE = re.compile(r"(?<=[음됨함다])\.\s+|\s(?=\d+\.\s)|\s-\s|\s-(?=\S)")
+
+
+def inherited_section(spec_text: str) -> str:
+    t = str(spec_text or "")
+    a = t.find("효력이 소멸되지 아니하는 것")
+    if a < 0:
+        return ""
+    b = t.find("매각에 따라 설정된", a)
+    sec = re.sub(r"\s+", " ", t[a + 16: b if b > a else a + 600]).strip(" /")
+    return "" if re.fullmatch(r"(해당\s*사항\s*없음|없음|-)?", sec) else sec
+
+
+def inherited_rights(spec_text: str) -> dict[str, str]:
+    """{권리 종류: '떠안음' | '해소'}. 칸이 비었거나 '해당사항없음' 이면 {}."""
+    sec = inherited_section(spec_text)
+    if not sec:
+        return {}
+    clauses = [c for c in _CLAUSE.split(sec) if c.strip()]
+    out: dict[str, str] = {}
+    for needle, kind in _INHERIT_KINDS:
+        mine = [c for c in clauses if needle in c]
+        if not mine:
+            continue
+        if any(_INHERIT_YES.search(c) for c in mine):
+            out[kind] = "떠안음"
+        elif any(_INHERIT_NO.search(c) for c in mine):
+            out.setdefault(kind, "해소")
+        else:
+            out[kind] = "떠안음"
+    return out
+
+
 # ── ③ 비고 문구 규칙 ─────────────────────────────────────────────────────
 
 # 포기 문구를 걷어낸 뒤에도 '대항력' 이 남는데, 그게 **다른 임차인을 암시할 때만** 위험이
@@ -412,7 +461,7 @@ def mask_payload(node: Any, names: list[str]) -> Any:
     return node
 
 
-RIGHTS_VERSION = 6   # 6: 명세서 임차인을 합친다 · 5: 확정 안 된 부존재 승소는 남음 · 임대차관계 불분명 · 4: 문장 속 이름은 Jev 확인분만 · 2: 남의 호실 임차인을 뺀다 · 3: 문장에서 거둔 이름의 조사·낱말을 걸렀다
+RIGHTS_VERSION = 7   # 7: 낙찰자가 떠안는 권리 칸 · 6: 명세서 임차인을 합친다 · 5: 확정 안 된 부존재 승소는 남음 · 임대차관계 불분명 · 4: 문장 속 이름은 Jev 확인분만 · 2: 남의 호실 임차인을 뺀다 · 3: 문장에서 거둔 이름의 조사·낱말을 걸렀다
 
 
 def compute_rights(*, spec_text: str, survey_text: str, note: str,
@@ -443,6 +492,7 @@ def compute_rights(*, spec_text: str, survey_text: str, note: str,
         "lien": lien_status(note),
         "waiver_other_tenant": waiver_leaves_other_tenant(note) if WAIVER_RE.search(note) else None,
         "waived": tenant_waived(note, spec_text),
+        "inherited": inherited_rights(spec_text),
         "survey": {**occupancy_check(memo), "memo": memo},
         "names": {role: group for role, group in names.items() if group},
         "name_candidates": sorted({n for group in harvested["prose"].values() for n in group}),

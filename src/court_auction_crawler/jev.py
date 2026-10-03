@@ -54,6 +54,14 @@ QUESTIONS: dict[str, dict[str, Any]] = {
     "lien_remaining": {"version": "lien-check/1", "type": "noul",
                        "instructions": "아직 해소되지 않은 유치권 신고·주장·행사가 하나라도 남아 있는가?",
                        "criteria": {"true": "해소되지 않은 유치권이 남아 있음", "false": "남은 유치권이 없음"}},
+    # 규칙이 명세서 '떠안는 권리' 칸을 '해소' 라 했을 때 두 번째 의견(10-04).
+    # inherit-check/2: '다만 …의 말소동의 확약서가 제출됨' 을 남음이라 답했다(50건 중 5건, 가장 흔한 문구) → 정의를 못 박았다.
+    "inherit_remaining": {"version": "inherit-check/2", "type": "noul",
+                          "instructions": "이 글은 낙찰자가 떠안는 권리를 적은 칸이다. 어떤 권리 뒤에 '말소동의 확약서가 제출됨'·"
+                                          "'말소동의서가 제출되어 있음'·'포기' 가 붙어 있으면 그 권리는 해소된 것이라 남은 것이 아니다. "
+                                          "그런 말이 붙지 않은 채 낙찰자가 떠안는다고 적힌 권리(임차권·전세권·지상권·가등기·가처분 등)가 "
+                                          "하나라도 남아 있는가?",
+                          "criteria": {"true": "떠안는 권리가 남아 있음", "false": "모두 말소 동의·포기로 해소됨"}},
 }
 
 _DATE = re.compile(r"(?<!\d)(\d{4}|\d{2})\s?\.\s?(\d{1,2})\s?\.\s?(\d{1,2})\s?\.?")
@@ -124,7 +132,8 @@ def find_names(text: str, candidates: list[str], chunk: int = 40) -> list[str]:
 
 
 def second_opinion(note: str, kind: str) -> dict[str, float]:
-    names = ("waiver", "other_tenant") if kind == "waiver" else ("lien_resolved", "lien_remaining")
+    names = {"waiver": ("waiver", "other_tenant"), "lien": ("lien_resolved", "lien_remaining"),
+             "inherit": ("inherit_remaining",)}[kind]
     answers = ask(note, {n: _q(n) for n in names})
     return {n: answers[n]["noul"] for n in names}
 

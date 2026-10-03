@@ -164,6 +164,18 @@ class 최선순위와_대항력(unittest.TestCase):
         self.assertTrue(R.tenant_waived("", spec))
         self.assertFalse(R.tenant_waived("최선순위 지상권이 있으나 신청채권자로부터 말소동의서가 제출됨", ""))
 
+    def test_떠안는_권리_칸은_종류마다_따로(self):
+        def got(sec):
+            return R.inherited_rights("효력이 소멸되지 아니하는 것 " + sec + " 매각에 따라 설정된 것으로 보는 지상권의 개요")
+        self.assertEqual(got("1. 목록 1 을구 1번 지상권설정등기는 말소되지 않고 매수인이 인수함. 2. 갑구 17번 소유권이전등기청구권 "
+                             "가등기는 말소되지 않고 매수인이 인수함."), {"지상권": "떠안음", "가등기": "떠안음"})
+        self.assertEqual(got("을구 순위 3번 주택임차권등기(다만 주택도시보증공사의 말소동의 확약서가 제출됨)"), {"임차권": "해소"})
+        # PDF 가 낱말 가운데 빈칸을 넣는다
+        self.assertEqual(got("목록2 을구 2번 지상권 설정등기(2021. 11. 19.). 이에 대해 지상권자의 말소동 의서가 제출되어 있음."),
+                         {"지상권": "해소"})
+        self.assertEqual(got("갑구 15번 가처분 등기"), {"가처분": "떠안음"})    # 이 칸에 적혔다는 것 자체가 안 없어진다는 뜻
+        self.assertEqual(got("해당사항없음"), {})
+
     def test_소유자는_임차인이_아니다(self):
         got = R.opposability([{"name": "홍길동", "role": "채무자겸소유자", "전입일자": "2010.01.01"}], {"date": "2020-01-01"})
         self.assertEqual(got["summary"], "임차인 없음")
@@ -249,6 +261,17 @@ class 실명(unittest.TestCase):
         flags = public_auction_summary(waived)["auction"]["special_rights"]
         self.assertIn("대항력포기", flags)
         self.assertNotIn("대항력가능", flags)
+
+    def test_떠안는_가등기는_높음_지상권은_보통(self):
+        from court_auction_crawler.enrichment import build_screening
+        item = self._item(active=True, jev_seen=True)
+        r = __import__("json").loads(item["rights_json"]); r["inherited"] = {"가등기": "떠안음", "지상권": "떠안음", "가처분": "해소"}
+        flags = public_auction_summary({**item, "rights_json": __import__("json").dumps(r, ensure_ascii=False)})["auction"]["special_rights"]
+        self.assertIn("선순위가등기", flags)
+        self.assertIn("지상권인수", flags)
+        self.assertNotIn("선순위가처분", flags)
+        self.assertEqual(build_screening(["선순위가등기"])["risk_level"], "높음")
+        self.assertEqual(build_screening(["지상권인수"])["risk_level"], "보통")
 
     def test_목록에도_요약이_간다(self):
         got = public_auction_summary(self._item(active=True, jev_seen=True))["rights"]

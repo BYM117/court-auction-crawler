@@ -1538,18 +1538,24 @@ def run_enrich_rights(store: AuctionStore, *, limit: int = 5000, jev_budget: int
                         c for c in [*result["name_candidates"], *rights_rules.name_candidates(text)] if c not in known))
                     state["names"] = {"fp": fp, "found": jev_api.find_names(text, cands) if cands else []}
                     counts["jev_calls"] += bool(cands)
-                for kind, rule_safe in (("waiver", result.get("waiver_other_tenant") is False),
-                                        ("lien", result.get("lien") == "해소")):
+                inherit_text = rights_rules.inherited_section(spec)
+                for kind, rule_safe, about in (
+                        ("waiver", result.get("waiver_other_tenant") is False, note),
+                        ("lien", result.get("lien") == "해소", note),
+                        ("inherit", "해소" in (result.get("inherited") or {}).values(), inherit_text)):
                     if not rule_safe:
                         continue
-                    fp = jev_api.fingerprint(jev_api.QUESTIONS[kind if kind == "waiver" else "lien_resolved"]["version"], note)
+                    first = {"waiver": "waiver", "lien": "lien_resolved", "inherit": "inherit_remaining"}[kind]
+                    fp = jev_api.fingerprint(jev_api.QUESTIONS[first]["version"], about)
                     if (state.get(kind) or {}).get("fp") == fp:
                         continue
-                    opinion = jev_api.second_opinion(note, kind)
+                    opinion = jev_api.second_opinion(about, kind)
                     state[kind] = {"fp": fp, **opinion}
                     counts["jev_calls"] += 1
-                    risky = (opinion.get("other_tenant", 0) >= 0.5 or opinion.get("waiver", 1) < 0.5) if kind == "waiver" \
-                        else (opinion.get("lien_remaining", 0) >= 0.5 or opinion.get("lien_resolved", 1) < 0.5)
+                    risky = {"waiver": opinion.get("other_tenant", 0) >= 0.5 or opinion.get("waiver", 1) < 0.5,
+                             "lien": opinion.get("lien_remaining", 0) >= 0.5 or opinion.get("lien_resolved", 1) < 0.5,
+                             # 0.65: 정답 50건에서 '남음' 은 0.73 이상, '해소' 는 0.57 이하(가장 흔한 확약서 문구가 0.5 근처를 오간다)
+                             "inherit": opinion.get("inherit_remaining", 0) >= 0.65}[kind]
                     if risky:
                         review.append({"kind": kind, "rule": "안전", "jev": opinion, "fp": fp})
                 state.pop("error", None)

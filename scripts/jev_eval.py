@@ -132,6 +132,20 @@ def run(db, use_jev: bool) -> dict:
         rows.append((it["opposable"], got, None))
     results["movein"] = (*score(rows), len(rows), drift)
 
+    rows = []; drift = 0
+    for it in load("inherit")["items"]:
+        t = doc_text(db, key=it["key"], kind="매각물건명세서")
+        if t is None:
+            drift += 1
+            continue
+        got = sorted(k for k, v in R.inherited_rights(t).items() if v == "떠안음")
+        j = None
+        if use_jev:
+            sec = R.inherited_section(t)
+            j = (J.second_opinion(sec, "inherit")["inherit_remaining"] >= 0.65) == bool(it["open"]) if sec else None
+        rows.append((True, got == it["open"], j))
+    results["inherit"] = (*score(rows), len(rows), drift)
+
     if use_jev:
         items, drift = text_items("names", lambda it: note_of(db, it["key"]))
         tp = total = fp_count = 0
@@ -164,7 +178,7 @@ def main() -> int:
     # 정답지가 커지면(엇갈림 검토로 어려운 것이 들어온다) 규칙이 나아져도 비율은 떨어질 수 있다 —
     # 같은 정답지로 잰 기록끼리만 댄다. 정답지마다 지문을 남긴다.
     golden = {name: hashlib.sha256((ROOT / "jev_golden" / f"{name}.json").read_bytes()).hexdigest()[:12]
-              for name in ("waiver", "lien", "occupancy", "senior", "names", "movein")}
+              for name in ("waiver", "lien", "occupancy", "senior", "names", "movein", "inherit")}
     record = {"at": datetime.now(timezone.utc).isoformat(timespec="seconds"), "rules": R.RIGHTS_VERSION,
               "questions": versions, "jev": use_jev, "golden": golden,
               "scores": {k: {"rule": v[0] / v[3] if v[3] else None, "jev": (v[1] / v[2]) if v[2] else None}
