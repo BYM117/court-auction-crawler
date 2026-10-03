@@ -89,6 +89,7 @@ ITEM_LIST_SELECT = """
                        json_extract(NULLIF(rights_json, ''), '$.lien') AS rights_lien,
                        json_extract(NULLIF(rights_json, ''), '$.survey.confirmed') AS rights_occupant_met,
                        json_extract(NULLIF(rights_json, ''), '$.survey.label_unverified') AS rights_label_unverified,
+                       json_extract(NULLIF(rights_json, ''), '$.waived') AS rights_waived,
                        sold_amount, sold_date
                   FROM auction_items
                 """

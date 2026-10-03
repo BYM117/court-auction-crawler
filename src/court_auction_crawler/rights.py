@@ -93,6 +93,35 @@ def same_property(a: str, b: str) -> bool:
     return bool(left and right) and (left == right or left in right or right in left)
 
 
+# 매각물건명세서의 점유자 표 — PDF 글이라 칸이 뒤섞이지만 법원 양식의 칸 순서는 정해져 있다:
+# 보증금 → 차임 → **전입신고(사업자등록)일** → 확정일 → 배당요구일. 그래서 같은 줄에서 보증금(과 차임)
+# 바로 뒤 첫 날짜, 보증금이 없는 줄은 '현황조사' 바로 뒤 날짜가 전입일이다(손 정답 16건 중 15).
+# Jev 로 날짜 후보마다 물었더니 16건 중 3건 — 뒤섞인 표에서 칸을 못 이었다. 여긴 규칙이다.
+# '입원'(요양원 환자) 줄은 임차인이 아니라 뺀다.
+_MONEY = r"\d{1,3}(?:,\d{3})+\s*원?"
+_FILL = r"(?:\s+(?:" + _MONEY + r"|미상|없음|0))"
+_D = r"(\d{4})\s?\.\s?(\d{1,2})\s?\.\s?(\d{1,2})\.?"
+_SPEC_AFTER_MONEY = re.compile(_MONEY + _FILL + r"?\s+" + _D)
+_SPEC_AFTER_SURVEY = re.compile(r"현황조사(?:\s+(?:차|미상|없음|0|" + _MONEY + r")){0,4}\s+" + _D)
+
+
+def spec_moveins(spec_text: str) -> list[date]:
+    """매각물건명세서 점유자 표에서 전입신고(사업자등록)일들."""
+    t = str(spec_text or "")
+    a = t.find("록 신청일자")
+    a = a if a >= 0 else t.find("점유자")
+    if a < 0:
+        return []
+    body = t[a:].split("<비고>")[0]
+    found: list[date] = []
+    for line in body.split("\n"):
+        for m in (*_SPEC_AFTER_MONEY.finditer(line), *_SPEC_AFTER_SURVEY.finditer(line)):
+            d = parse_date(".".join(m.groups()[-3:]))
+            if d and d not in found:
+                found.append(d)
+    return found
+
+
 def opposability(occupants: list[dict[str, Any]], senior: dict[str, Any] | None,
                  spec_text: str = "", address: str = "", bulk: bool = False) -> dict[str, Any]:
     """점유인마다 대항력 있음/없음/모름, 그리고 물건 전체 요약.
@@ -119,6 +148,16 @@ def opposability(occupants: list[dict[str, Any]], senior: dict[str, Any] | None,
             verdict = "있음" if moved < base else "없음"
         tenants.append({"name": occ.get("name", ""), "role": role, "move_in": moved.isoformat() if moved else "",
                         "opposable": verdict})
+    # 명세서의 임차인도 더한다. 현황조사서 표엔 **지금 사는 사람**만 있고, 이사 나가며 임차권등기를 해 둔
+    # 세입자(보증공사가 넘겨받은 전세사기 유형)는 명세서에만 있다 — 표만 보면 '없음' 으로 틀린다(09-30
+    # 대조에서 표 '없음'·명세서 '있음' 720건, 열어 본 것 전부 명세서가 맞음). 명세서는 물건번호마다
+    # 따로라 옆 호실이 섞이지 않는다. 표에 같은 날짜가 있으면 같은 사람으로 본다.
+    seen = {t["move_in"] for t in tenants}
+    for moved in spec_moveins(spec_text):
+        if moved.isoformat() in seen:
+            continue
+        verdict = "모름" if base is None else ("있음" if moved < base else "없음")
+        tenants.append({"name": "", "role": "명세서", "move_in": moved.isoformat(), "opposable": verdict})
     verdicts = {t["opposable"] for t in tenants}
     if not tenants:
         spec_has_tenant = bool(_TENANT_SPEC.search(spec_text)) and not _NO_TENANT_SPEC.search(spec_text)
@@ -138,6 +177,17 @@ def opposability(occupants: list[dict[str, Any]], senior: dict[str, Any] | None,
 # 남는다. "대항력 있는 임차인 있음 … 단, 보증공사가 대항력 포기" 는 같은 임차인의 되풀이다.
 # 정답지 90건: 이 규칙 90/90, '남으면 무조건 높음' 85/90(헛경고 5).
 WAIVER_RE = re.compile(r"대항력\s*(?:은|을|의)?\s*포기")
+# 포기 확약은 '대항력' 이라는 말 없이도 쓰인다 — "잔존 보증금반환채권을 포기하고 주택임차권등기 말소에 동의".
+# 명세서 비고에만 적힌 일도 많다(09-30: 계산상 '대항력 있음' 3,363건 중 1,873건이 이랬다). '말소 동의' 만으로는
+# 안 본다 — 지상권 말소동의서 같은 다른 권리와 섞인다. 임차권·보증금반환이 붙어야 한다.
+_WAIVER_DOC_RE = re.compile(
+    r"대항력\s*(?:은|을|의)?\s*포기|보증금\s*반환\s*(?:청구)?\s*(?:채)?권을?\s*포기|임차권\s*등기[^.。]{0,12}말소[^.。]{0,12}동의")
+
+
+def tenant_waived(note: str, spec_text: str) -> bool:
+    """보증기관·임차인이 대항력(잔존 보증금 청구)을 포기했다는 확약 — 비고나 명세서 비고에."""
+    remark = spec_text.split("<비고>", 1)[1] if "<비고>" in spec_text else ""
+    return bool(_WAIVER_DOC_RE.search(note) or _WAIVER_DOC_RE.search(remark))
 _OTHER_TENANT_RE = re.compile(
     r"대항력[^.。]{0,20}(?:여지|있을\s*수|미상|주의)|임대차\s*관계\s*(?:미상|불분명)|미상의\s*(?:임차인|전입자)")
 
@@ -362,7 +412,7 @@ def mask_payload(node: Any, names: list[str]) -> Any:
     return node
 
 
-RIGHTS_VERSION = 5   # 5: 확정 안 된 부존재 승소는 남음 · 임대차관계 불분명 · 4: 문장 속 이름은 Jev 확인분만 · 2: 남의 호실 임차인을 뺀다 · 3: 문장에서 거둔 이름의 조사·낱말을 걸렀다
+RIGHTS_VERSION = 6   # 6: 명세서 임차인을 합친다 · 5: 확정 안 된 부존재 승소는 남음 · 임대차관계 불분명 · 4: 문장 속 이름은 Jev 확인분만 · 2: 남의 호실 임차인을 뺀다 · 3: 문장에서 거둔 이름의 조사·낱말을 걸렀다
 
 
 def compute_rights(*, spec_text: str, survey_text: str, note: str,
@@ -392,6 +442,7 @@ def compute_rights(*, spec_text: str, survey_text: str, note: str,
         "opposability": opposability(occupants, senior, spec_text, address, bulk="일괄매각" in note),
         "lien": lien_status(note),
         "waiver_other_tenant": waiver_leaves_other_tenant(note) if WAIVER_RE.search(note) else None,
+        "waived": tenant_waived(note, spec_text),
         "survey": {**occupancy_check(memo), "memo": memo},
         "names": {role: group for role, group in names.items() if group},
         "name_candidates": sorted({n for group in harvested["prose"].values() for n in group}),

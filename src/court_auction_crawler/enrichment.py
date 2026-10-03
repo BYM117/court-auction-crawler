@@ -524,6 +524,7 @@ def public_auction_enrichment(item: dict[str, Any]) -> dict[str, Any]:
                         else _json_bool(item.get("rights_occupant_met")),
         "label_unverified": bool((rights_full.get("survey") or {}).get("label_unverified") if rights_full
                                  else _json_bool(item.get("rights_label_unverified"))),
+        "waived": bool(rights_full.get("waived") if rights_full else _json_bool(item.get("rights_waived"))),
     }
     # 취하·철회·부존재 확정된 유치권은 높음이 아니라 보통(정답지 67건 중 66, 틀린 1건도 헛경고 쪽).
     if rights_brief["lien"] == "해소" and "유치권" in flags:
@@ -531,9 +532,10 @@ def public_auction_enrichment(item: dict[str, Any]) -> dict[str, Any]:
     # 전입이 최선순위보다 빠른 임차인이 있다고 **우리가 날짜로 계산한** 것(G19). 법원이 비고에 직접 쓴
     # '대항력 있는 임차인' 은 높음 그대로, 계산으로만 나온 것은 보통 — 배당에서 보증금을 다 받으면
     # 낙찰자가 안 떠안으니 확정이 아니라 가능성이다(사용자 결정 2026-09-28). 포기 확약이 있으면 더하지 않는다.
+    # 포기 확약(비고·명세서 비고)이 있으면 '떠안을 수 있다' 가 아니라 '포기' 다 — 둘 다 보통이지만 안내가 반대다.
     if rights_brief["opposable"] == "있음" and not any(
             tag in flags for tag in ("대항력있는임차인", "선순위임차인", "대항력포기")):
-        flags.append("대항력가능")
+        flags.append("대항력포기" if rights_brief["waived"] else "대항력가능")
 
     # 위험도는 권리상 함정만 본다 — 위에서 뽑은 특수권리 목록(flags)에서 파생한다.
     screening = build_screening(flags)

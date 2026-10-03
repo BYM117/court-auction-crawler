@@ -145,6 +145,25 @@ class 최선순위와_대항력(unittest.TestCase):
         occ = [{"name": "홍길동", "role": "임차인", "전입일자": "2019.01.01", "소재지": "전혀 다른 표기"}]
         self.assertEqual(R.opposability(occ, {"date": "2020-01-01"}, address="서울 강서구 화곡동 1-2")["summary"], "있음")
 
+    def test_명세서_점유자_표에서_전입일을_읽는다(self):
+        spec = ("록 신청일자\n김선명 주택임 2022.03.26 ~ 230,000,000 2022.03.25 2022.02.28\n"
+                "이동학 현황조사 2009.10.22.\n박효범 미상 2019.02.10.~ 30,000,000 미상 2019.02.13 2022.05.27\n"
+                "김복남 현황조사 입원 2023.02.17\n<비고>\n김선명: 주택임차권 등기일은 2024.04.03.임")
+        got = [d.isoformat() for d in R.spec_moveins(spec)]
+        self.assertEqual(got, ["2022-03-25", "2009-10-22", "2019-02-13"])   # 입원(요양원)·비고 날짜는 아니다
+
+    def test_현황조사서엔_없고_명세서에만_있는_등기_임차인도_센다(self):
+        # 표엔 지금 사는 사람(최선순위 뒤 전입)만, 명세서엔 이사 나간 임차권등기 세입자(앞 전입)가 있다.
+        occ = [{"name": "홍길동", "role": "임차인", "전입일자": "2024.10.10"}]
+        spec = "록 신청일자\n김철수 전부 2021.05.11. 160,000,000 2021.05.11. 2021.04.02.\n<비고>"
+        got = R.opposability(occ, {"date": "2022-04-04"}, spec)
+        self.assertEqual(got["summary"], "있음")
+
+    def test_명세서_비고의_반환채권_포기도_포기다(self):
+        spec = "록 신청일자\n<비고>\n주택도시보증공사: 잔존 임차보증금반환채권을 포기하고 주택임차권등기 말소에 동의한다는 취지의 확약서를 제출함"
+        self.assertTrue(R.tenant_waived("", spec))
+        self.assertFalse(R.tenant_waived("최선순위 지상권이 있으나 신청채권자로부터 말소동의서가 제출됨", ""))
+
     def test_소유자는_임차인이_아니다(self):
         got = R.opposability([{"name": "홍길동", "role": "채무자겸소유자", "전입일자": "2010.01.01"}], {"date": "2020-01-01"})
         self.assertEqual(got["summary"], "임차인 없음")
@@ -224,6 +243,12 @@ class 실명(unittest.TestCase):
         flags = public_auction_summary(stated)["auction"]["special_rights"]
         self.assertIn("대항력있는임차인", flags)
         self.assertNotIn("대항력가능", flags)             # 같은 위험을 두 번 세지 않는다
+        waived = json_waived = dict(item)
+        r = __import__("json").loads(item["rights_json"]); r["waived"] = True
+        waived = {**item, "rights_json": __import__("json").dumps(r, ensure_ascii=False)}
+        flags = public_auction_summary(waived)["auction"]["special_rights"]
+        self.assertIn("대항력포기", flags)
+        self.assertNotIn("대항력가능", flags)
 
     def test_목록에도_요약이_간다(self):
         got = public_auction_summary(self._item(active=True, jev_seen=True))["rights"]
