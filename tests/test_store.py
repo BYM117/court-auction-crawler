@@ -640,10 +640,42 @@ class StoreTests(unittest.TestCase):
         self.store.save_item_detail(key, {"tables": [{"caption": "물건기본정보", "rows": [["a"]]}, filled]})
         self.store.save_item_detail(key, {"tables": [{"caption": "물건기본정보", "rows": [["b"]]},
                                                      {"caption": "인근매각통계", "rows": [head]}]})
-        with self.store.connect() as conn:
-            tables = json.loads(conn.execute("SELECT detail_json FROM auction_items WHERE item_key = ?", (key,)).fetchone()[0])["tables"]
+        tables = self.store.get_item(key)["detail"]["tables"]
         self.assertIn(filled, tables)
         self.assertEqual(tables[0]["rows"], [["b"]])   # 다른 표는 새것으로
+
+    def test_detail_json_lives_in_its_own_table_and_legacy_rows_still_read(self):
+        # 상세 원문은 auction_item_details 에 둔다(2026-10-04) — auction_items 12번 칸에 두면 그 뒤 칸을 읽을
+        # 때마다 원문을 지나가 큐 조회가 34초였다. 옮기기 전 옛 칸에 있는 것도 같은 값으로 읽혀야 한다.
+        from court_auction_crawler.enrichment import public_auction_detail
+        from court_auction_crawler.store import move_detail_json
+
+        self.store.upsert_items([AuctionItem({"사건번호": "춘천지방법원 2026타경31", "물건번호": "1", "담당계": "경매1계"}),
+                                 AuctionItem({"사건번호": "춘천지방법원 2026타경32", "물건번호": "1"})])
+        new, old = "auction:춘천지방법원:2026타경31:1", "auction:춘천지방법원:2026타경32:1"
+        self.store.save_item_detail(new, {"tables": [{"caption": "물건기본정보", "rows": [["a"]]}]})
+        with self.store.connect() as conn:
+            self.assertEqual(conn.execute("SELECT detail_json FROM auction_items WHERE item_key = ?", (new,)).fetchone()[0], "{}")
+            # 옛 DB 를 흉내 낸다: 원문이 옛 칸에만 있다
+            conn.execute("DELETE FROM auction_item_details WHERE item_key = ?", (old,))
+            conn.execute("UPDATE auction_items SET detail_json = ? WHERE item_key = ?",
+                         (json.dumps({"tables": [{"caption": "옛표", "rows": [["x"]]}]}, ensure_ascii=False), old))
+        self.assertEqual(self.store.get_item(new)["detail"]["담당계"], "경매1계")   # 목록 칸 병합도 표에 남는다
+        before = public_auction_detail(self.store.get_item(old))
+        self.assertEqual(before["detail"]["tables"][0]["caption"], "옛표")
+
+        with self.store.connect() as conn:
+            self.assertEqual(move_detail_json(conn, 0, 10**9), 1)
+            self.assertEqual(move_detail_json(conn, 0, 10**9), 0)   # 다시 돌려도 같다
+            self.assertEqual(conn.execute("SELECT detail_json FROM auction_items WHERE item_key = ?", (old,)).fetchone()[0], "{}")
+        self.assertEqual(public_auction_detail(self.store.get_item(old)), before)   # 웹에 올라가는 내용이 글자까지 같다
+
+        # 옛 칸 원문 위에 새 상세를 저장하면 합쳐진다(옮기기 전에 새 코드가 먼저 돌아도 안 잃는다)
+        with self.store.connect() as conn:
+            conn.execute("DELETE FROM auction_item_details WHERE item_key = ?", (old,))
+            conn.execute("UPDATE auction_items SET detail_json = '{\"옛칸\": 1}' WHERE item_key = ?", (old,))
+        self.store.save_item_detail(old, {"새칸": 2})
+        self.assertEqual({k: v for k, v in self.store.get_item(old)["detail"].items() if k in ("옛칸", "새칸")}, {"옛칸": 1, "새칸": 2})
 
     def test_session_rejection_is_not_counted_against_the_item(self):
         # 세션 거절은 접속 탓이다 — 물건 실패 횟수를 안 올리고 1시간 뒤 다시 본다(기일 임박 물건이 밀리지 않게).

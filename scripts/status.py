@@ -196,9 +196,11 @@ def sample_details(limit: int, where: str = "detail_status='collected'"):
         return []
     try:
         con = ro_connect(10)
+        # 상세 원문은 auction_item_details 에 있다(2026-10-04~). 옮기기 전 옛 칸도 읽는다.
         rows = [r[0] for r in con.execute(
-            f"SELECT detail_json FROM auction_items WHERE {where} "
-            f"ORDER BY detail_collected_at DESC LIMIT {limit}")]
+            f"SELECT COALESCE(d.detail_json, i.detail_json) FROM auction_items i "
+            f"LEFT JOIN auction_item_details d ON d.item_key = i.item_key WHERE i.{where} "
+            f"ORDER BY i.detail_collected_at DESC LIMIT {limit}")]
         con.close()
         return rows
     except sqlite3.Error:

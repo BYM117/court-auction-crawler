@@ -306,6 +306,14 @@ class AuctionStore:
                     PRIMARY KEY (court, case_no)
                 );
 
+                -- 물건 상세 원문은 따로 둔다(2026-10-04). auction_items 12번 칸에 두면 그 뒤 칸을 읽을 때마다
+                -- 원문(전체 1.5GB)의 넘침 페이지를 다 지나가 — 상세 큐 조회 34초, 상태 칸 전체 읽기 30초
+                -- (원문 앞 칸은 2초). auction_items.detail_json 은 비워 두고('{}') 옛 DB 만 거기서 읽는다.
+                CREATE TABLE IF NOT EXISTS auction_item_details (
+                    item_key TEXT PRIMARY KEY,
+                    detail_json TEXT NOT NULL DEFAULT '{}'
+                );
+
                 CREATE TABLE IF NOT EXISTS auction_documents (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     item_key TEXT NOT NULL,
@@ -716,7 +724,7 @@ class AuctionStore:
                             extracted["status"],
                             extracted["detail_url"],
                             raw_json,
-                            json_dumps(extract_detail_fields(values)),
+                            "{}",
                             content_hash,
                             list_hash,
                             now,
@@ -729,6 +737,7 @@ class AuctionStore:
                             now,
                         ),
                     )
+                    _write_detail_json(conn, item_key, json_dumps(extract_detail_fields(values)))
                     conn.execute(
                         """
                         INSERT INTO auction_events(item_key, event_type, new_json, created_at)
@@ -765,7 +774,7 @@ class AuctionStore:
                             extracted["status"],
                             extracted["detail_url"],
                             raw_json,
-                            merge_detail_json(existing["detail_json"], extract_detail_fields(values)),
+                            "{}",
                             content_hash,
                             list_hash,
                             now,
@@ -777,6 +786,8 @@ class AuctionStore:
                             item_key,
                         ),
                     )
+                    _write_detail_json(conn, item_key, merge_detail_json(
+                        _read_detail_json(conn, item_key, existing["detail_json"]), extract_detail_fields(values)))
                     conn.execute(
                         """
                         INSERT INTO auction_events(item_key, event_type, old_json, new_json, created_at)
@@ -1101,7 +1112,7 @@ class AuctionStore:
             if row is None:
                 raise KeyError(item_key)
             try:
-                merged = json.loads(row["detail_json"] or "{}")
+                merged = json.loads(_read_detail_json(conn, item_key, row["detail_json"]) or "{}")
             except (TypeError, ValueError):
                 merged = {}
             kept = filled_near_stats(merged.get("tables"))
@@ -1127,7 +1138,7 @@ class AuctionStore:
                  WHERE item_key = ?
                 """,
                 (
-                    json_dumps(merged),
+                    "{}",
                     case_item["resale_reason"],
                     case_item["status_flow"],
                     case_item["deposit_amount"],
@@ -1143,6 +1154,7 @@ class AuctionStore:
                     item_key,
                 ),
             )
+            _write_detail_json(conn, item_key, json_dumps(merged))
 
     def near_stats_for(self, area: str, since_day: str) -> dict[str, Any] | None:
         """since_day 이후(포함)에 받은 그 동네 통계 중 가장 최근 것."""
@@ -1346,6 +1358,7 @@ class AuctionStore:
             row = conn.execute("SELECT * FROM auction_items WHERE item_key = ?", (item_key,)).fetchone()
             if row is None:
                 return None
+            detail_text = _read_detail_json(conn, item_key, row["detail_json"])
             events = conn.execute(
                 """
                 SELECT event_type, old_json, new_json, created_at
@@ -1392,7 +1405,8 @@ class AuctionStore:
 
         item = dict(row)
         item["raw"] = json.loads(item.pop("raw_json") or "{}")
-        item["detail"] = json.loads(item.pop("detail_json") or "{}")
+        item.pop("detail_json", None)
+        item["detail"] = json.loads(detail_text or "{}")
         item["building"] = json.loads(item.get("building_detail") or "{}")
         item["transactions"] = json.loads(item.get("transactions_detail") or "{}")
         item["land_use"] = json.loads(item.get("land_use_detail") or "{}")
@@ -2527,6 +2541,39 @@ def strip_address_label(address: str) -> str:
     '(현장표시 : …)'나 '[집합건물 건물의번호 : …]'처럼 주소 안에 콜론이 들어간 정상
     표기가 있어서, 통째로 자르면 멀쩡한 주소가 잘린다. 시작 위치의 알려진 라벨만 본다."""
     return ADDRESS_LABEL_RE.sub("", clean_text(address), count=1)
+
+
+def _read_detail_json(conn: sqlite3.Connection, item_key: str, fallback: str | None) -> str:
+    """상세 원문. 따로 둔 표(auction_item_details)에 없으면 옛 칸(auction_items.detail_json)을 쓴다 —
+    옮기기(move_detail_json) 전후 어느 쪽에서도 같은 값을 읽게."""
+    row = conn.execute("SELECT detail_json FROM auction_item_details WHERE item_key = ?", (item_key,)).fetchone()
+    return row[0] if row is not None else (fallback or "{}")
+
+
+def _write_detail_json(conn: sqlite3.Connection, item_key: str, text: str) -> None:
+    conn.execute(
+        "INSERT INTO auction_item_details(item_key, detail_json) VALUES(?, ?) "
+        "ON CONFLICT(item_key) DO UPDATE SET detail_json = excluded.detail_json",
+        (item_key, text),
+    )
+
+
+def move_detail_json(conn: sqlite3.Connection, rowid_from: int, rowid_to: int) -> int:
+    """옛 칸의 상세 원문을 따로 둔 표로 옮기고 옛 칸을 비운다(rowid 구간 하나). 옮긴 수를 돌려준다.
+
+    이미 표에 있는 것(새 코드가 그사이 쓴 것)은 덮지 않는다. 몇 번을 다시 돌려도 결과가 같다."""
+    moved = conn.execute(
+        "INSERT OR IGNORE INTO auction_item_details(item_key, detail_json) "
+        "SELECT item_key, detail_json FROM auction_items "
+        "WHERE rowid BETWEEN ? AND ? AND detail_json NOT IN ('', '{}')",
+        (rowid_from, rowid_to),
+    ).rowcount
+    conn.execute(
+        "UPDATE auction_items SET detail_json = '{}' "
+        "WHERE rowid BETWEEN ? AND ? AND detail_json NOT IN ('', '{}')",
+        (rowid_from, rowid_to),
+    )
+    return moved
 
 
 def merge_detail_json(existing_text: str | None, list_fields: dict[str, str]) -> str:

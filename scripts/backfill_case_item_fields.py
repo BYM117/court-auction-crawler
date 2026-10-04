@@ -51,10 +51,12 @@ def main() -> int:
     write = sqlite3.connect(a.db)
     write.execute("PRAGMA busy_timeout=30000")
 
+    # 상세 원문은 auction_item_details 에 있다(2026-10-04~). 옮기기 전 옛 칸도 읽는다.
     sql = (
-        "SELECT item_key, item_no, detail_json, resale_reason, item_status_flow, "
-        "deposit_amount, deposit_rate, item_note, case_type, closing_result, "
-        "closing_date, parties_json FROM auction_items "
+        "SELECT * FROM (SELECT i.item_key, i.item_no, COALESCE(d.detail_json, i.detail_json) AS detail_json, "
+        "i.resale_reason, i.item_status_flow, i.deposit_amount, i.deposit_rate, i.item_note, i.case_type, "
+        "i.closing_result, i.closing_date, i.parties_json FROM auction_items i "
+        "LEFT JOIN auction_item_details d ON d.item_key = i.item_key) "
         "WHERE detail_json IS NOT NULL AND detail_json != '' AND detail_json != '{}'"
     )
     if a.limit:
