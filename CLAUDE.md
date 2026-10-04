@@ -124,6 +124,7 @@ python3 scripts/check_daemon_fresh.py --fix   # 낡았으면 재시작까지
 **⑧ 감정평가서는 법원 서버에 없다.** 한국감정평가사협회(`ca.kapanet.or.kr`) 뷰어를 iframe으로 띄우는 구조이고 Adobe Reader 기반이라 본문이 DOM에 안 들어온다. **2026-09-30 부터 감정평가서 버튼을 아예 누르지 않는다**(`DOCUMENT_TYPES` 에서 뺌, 큐 조건에서 `RESTRICTED_DOCUMENTS` 제외) — 본문 0건인데 12시간마다 재시도해 큐의 절반을 차지하고 하루 약 2,800번 협회 뷰어를 불렀다. 화면용 감정평가 내용은 물건상세의 요항표(`appraisal_summary`)에서 받는다. `gaps/G06`.
 
 **⑨ 큰 표의 조회 키에 색인이 있는지 먼저 본다.** 2026-09-30·10-02 에 두 번 밟았다. `auction_items(pnu)` 색인이 없어 건축물대장 저장이 한 번에 62초씩 쓰기 잠금을 쥐었고(DB 잠김 97%, 상세 크래시), `auction_events(item_key)` 색인이 없어 R2 푸시가 물건마다 28만 행을 훑었다(1만 건에 6~10시간 → 7분). 새 `WHERE x = ?` 를 쓰면 `EXPLAIN QUERY PLAN` 에 `SCAN` 이 없는지 시험으로 박는다(`tests/test_store.py`).
+**큰 값은 자주 읽는 칸 앞에 두지 않는다** — `auction_items.detail_json`(1.5GB)이 12번 칸이라 그 뒤 칸을 읽을 때마다 원문을 지나가 큐 조회가 34초였다. 2026-10-04 에 `auction_item_details` 표로 뺐다(1.4초). 상세 원문은 `_read_detail_json`·`_write_detail_json` 으로만 읽고 쓴다 — `auction_items.detail_json` 은 비어 있다(`'{}'`).
 
 **⑩ 목록 수집기를 멈추면 웹 푸시도 멈춘다. 재시작하면 곧바로 한 바퀴를 돈다.** R2 푸시는 collect-loop 안에서만 돈다(회차 끝 + 쉬는 사이 3시간마다) — 09-29~30 에 collect 를 멈춰 웹이 27시간 낡았다. 또 collect 를 재시작하면 정해진 시각(02:30·08:00·12:30)을 안 기다리고 바로 출발한다 — 쉬는 중에 재시작하면 회차가 하나 더 생긴다(10-01). 재시작은 다음 출발 직전이나 어차피 출발할 때 한다.
 ## 내보내면 안 되는 것

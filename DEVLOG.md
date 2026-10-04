@@ -6,6 +6,22 @@
 
 ---
 
+## 2026-10-04 15:00 — 상세 원문을 따로 된 표로: 큐 조회 34초 → 1.4초 (세션 B, 사용자 결정 '나')
+
+**원인(01:10 항목):** `auction_items` 12번 칸 `detail_json`(1.5GB) 뒤의 칸을 읽을 때마다 원문 넘침 페이지를 다 지나갔다.
+**고침 `990e9bf` `60772d1`:** 새 표 `auction_item_details(item_key PK, detail_json)`. `upsert_items`·`save_item_detail` 은 여기에 쓰고
+옛 칸은 `'{}'`, 읽기(`_read_detail_json`)는 표에 없으면 옛 칸 — 그래서 **데몬을 안 멈추고** 옮겼다.
+**순서(지킬 것):** ① 백업 `data/backup-20261004-before-detail-split.sqlite3`(5.0GB, quick_check ok — 며칠 뒤 지워도 됨) ② 웹에 올라갈
+내용 지문 400개 ③ collect·server 를 새 코드로 재시작(옛 코드는 옛 칸에 다시 쓴다; 상세는 정지 중) ④ `scripts/migrate_detail_json.py`
+— **67,656건 65초, 옛 칸 남은 것 0** ⑤ 지문 비교 396 같음 · 4 다름 — 4개 모두 바뀐 칸은 `last_seen_at`·`next_check_at` 뿐(재시작한
+collect 가 그사이 서울 목록을 읽음). **상세 내용은 400/400 같다.** ⑥ quick_check ok · WAL 정리됨 · collect 오류 0.
+| 조회 | 전 | 후 |
+|---|---|---|
+| list_detail_targets(500) | 34초 | **1.44초** |
+| pending_item_pushes(500) | 17초 | **0.43초** |
+| list_missing_official_price / building / land_use | 12~15초 | **0.07~0.10초** |
+웹·꽁지맵은 R2 만 읽어 무관하다(R2 에 올리는 내용은 같다). 다음 후보였던 '쪽지함(바뀐 것만)' 은 이 숫자면 필요 없다고 본다.
+
 ## 2026-10-04 — 명세서의 안 읽던 두 칸: 지상권 개요·비고란 (규칙 v9, Jev 세션)
 
 사용자: *"1, 2 둘 다 진행해"* (v8 푸시 + 이 작업).
