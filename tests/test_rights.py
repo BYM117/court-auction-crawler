@@ -184,6 +184,21 @@ class 최선순위와_대항력(unittest.TestCase):
         self.assertEqual(got("을구 순위 1번 주택임차권등기(다만 주택도시보증공사의 말소동의 확약서가 제출됨) "
                              "별도등기(대지권 목적토지1 을구1번 지상권설정등기)"), {"임차권": "해소", "지상권": "떠안음"})
 
+    def test_명세서_지상권_개요와_비고란_딱지(self):
+        def got(sup, rem):
+            return R.spec_flags(f"지상권의 개요 {sup} 비고란 {rem} 1: 매각목적물에서 제외되는 미등기건물 등이 있을 경우")
+        self.assertEqual(got("매각에서 제외되는 제시외 건물을 위한 법정지상권 성립 여지 있음", ""), ["법정지상권"])
+        self.assertEqual(got("지상 분묘에 대한 분묘기지권 성립여부 불분명", ""), ["분묘기지권"])
+        self.assertEqual(got("분묘를 위하여 분묘기지권 성립여지 있음.(성립여부는 불분명)", ""), ["분묘기지권"])  # 토막은 되풀이
+        self.assertEqual(got("법정지상권 성립하지 않음", "해당사항없음"), [])
+        self.assertEqual(got("", "지적도상 맹지임. 목록3 지분매각. 위반건축물 등재. 대지권 미등기"),
+                         ["위반건축물", "맹지", "대지권미등기", "지분매각"])
+        # 부정 — 필요 없다·완료됐다
+        self.assertEqual(got("", "농지취득자격증명 없이 취득 가능"), [])
+        self.assertEqual(got("", "개시결정 당시에는 대지권 미등기이나, 이후 대지권등기가 완료됨"), [])
+        # 서식 안내문의 '미등기건물'·'가등기' 는 안 읽는다
+        self.assertEqual(got("", ""), [])
+
     def test_소유자는_임차인이_아니다(self):
         got = R.opposability([{"name": "홍길동", "role": "채무자겸소유자", "전입일자": "2010.01.01"}], {"date": "2020-01-01"})
         self.assertEqual(got["summary"], "임차인 없음")

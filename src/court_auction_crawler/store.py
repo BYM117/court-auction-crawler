@@ -91,6 +91,7 @@ ITEM_LIST_SELECT = """
                        json_extract(NULLIF(rights_json, ''), '$.survey.label_unverified') AS rights_label_unverified,
                        json_extract(NULLIF(rights_json, ''), '$.waived') AS rights_waived,
                        json_extract(NULLIF(rights_json, ''), '$.inherited') AS rights_inherited,
+                       json_extract(NULLIF(rights_json, ''), '$.spec_flags') AS rights_spec_flags,
                        sold_amount, sold_date
                   FROM auction_items
                 """

@@ -222,6 +222,50 @@ def inherited_rights(spec_text: str) -> dict[str, str]:
     return out
 
 
+# 명세서의 다른 두 칸. 목록 비고에는 없고 여기에만 적힌 것이 있다(10-04: 진행 물건 중 법정지상권 473·
+# 분묘 97, 비고란의 위반건축물 145·맹지 118 등이 딱지에 없었다).
+# '매각에 따라 설정된 것으로 보는 지상권의 개요' 는 법정지상권 칸이다 — 분묘 얘기면 분묘기지권, 그 밖의
+# 내용은 전부 법정지상권. "성립 여부 불분명" 도 딱지를 단다(법원이 주의를 준 것이고, 목록 비고에 같은 말이
+# 있을 때도 그렇게 해 왔다). 성립하지 않는다고 못 박은 것만 뺀다.
+_SPEC_NEG = re.compile(r"(?:성립하지|성립되지)\s*(?:않|아니)|성립\s*(?:할\s*)?여지\s*(?:가\s*)?없|해당\s*(?:사항\s*)?없|^\W*없음")
+# 비고란은 법원 메모다. 뜻이 분명한 낱말만 딱지로 — 대항력·유치권은 위의 규칙이 따로 본다.
+_SPEC_REMARK = ((r"위반\s*건축물", "위반건축물"), ("맹지", "맹지"), (r"대지권\s*미등기", "대지권미등기"),
+                (r"별도\s*등기", "별도등기"), (r"지분\s*매각", "지분매각"), (r"농지\s*취득", "농지취득자격증명"),
+                ("제시외", "제시외건물"), ("분묘", "분묘기지권"), (r"법정\s*지상권", "법정지상권"))
+# "농지취득자격증명 없이 취득 가능"·"발급받지 않고" · "대지권 미등기이나, 이후 대지권등기가 완료"
+_REMARK_NEG = r"[^.。]{0,16}?(?:아님|없음|아니|해당\s*없|불요|불필요|없이|않고|완료)"
+
+
+def spec_sections(spec_text: str) -> tuple[str, str]:
+    """(지상권 개요 칸, 비고란) — 서식 안내문('1: 매각목적물에서 제외되는…')은 뺀다."""
+    t = str(spec_text or "")
+    a, b = t.find("지상권의 개요"), t.find("비고란")
+    if b < 0:
+        return "", ""
+    c = t.find("매각목적물에서 제외되는 미등기건물", b)
+    clean = lambda x: re.sub(r"\s+", " ", x).strip(" -:·※1")
+    sup = clean(t[a + 7: b]) if 0 <= a < b else ""
+    return ("" if re.fullmatch(r"[\s\-:·.]*(?:해당\s*사항\s*)?(?:없음|무)?[\s.]*", sup) else sup), clean(t[b + 3: c if c > b else b + 600])
+
+
+def spec_flags(spec_text: str) -> list[str]:
+    """명세서 지상권 개요 칸 + 비고란에서 뽑은 딱지."""
+    sup, remark = spec_sections(spec_text)
+    out: list[str] = []
+    for clause in re.split(r"(?<=[음함다])[.,]\s*|\s(?=목록\s*\d)", sup):
+        if clause.strip(" .") and not _SPEC_NEG.search(clause):
+            # 낱말 없는 토막("(성립여부는 불분명)")은 앞 문장의 되풀이다 — 딱지를 새로 만들지 않는다
+            label = "분묘기지권" if "분묘" in clause else "법정지상권" if re.search(
+                r"건물|지상권|구축물|공작물|컨테이너|창고|주택", clause) else None
+            if label and label not in out:
+                out.append(label)
+    for pattern, label in _SPEC_REMARK:
+        hits = [m for m in re.finditer(pattern, remark) if not re.match(_REMARK_NEG, remark[m.end():])]
+        if hits and label not in out:
+            out.append(label)
+    return out
+
+
 # ── ③ 비고 문구 규칙 ─────────────────────────────────────────────────────
 
 # 포기 문구를 걷어낸 뒤에도 '대항력' 이 남는데, 그게 **다른 임차인을 암시할 때만** 위험이
@@ -463,7 +507,7 @@ def mask_payload(node: Any, names: list[str]) -> Any:
     return node
 
 
-RIGHTS_VERSION = 8   # 8: 부존재확인 청구기각은 남음 · 새 등기 자리에서 끊는다 · 7: 낙찰자가 떠안는 권리 칸 · 6: 명세서 임차인을 합친다 · 5: 확정 안 된 부존재 승소는 남음 · 임대차관계 불분명 · 4: 문장 속 이름은 Jev 확인분만 · 2: 남의 호실 임차인을 뺀다 · 3: 문장에서 거둔 이름의 조사·낱말을 걸렀다
+RIGHTS_VERSION = 9   # 9: 명세서 지상권 개요 칸·비고란 딱지 · 8: 부존재확인 청구기각은 남음 · 새 등기 자리에서 끊는다 · 7: 낙찰자가 떠안는 권리 칸 · 6: 명세서 임차인을 합친다 · 5: 확정 안 된 부존재 승소는 남음 · 임대차관계 불분명 · 4: 문장 속 이름은 Jev 확인분만 · 2: 남의 호실 임차인을 뺀다 · 3: 문장에서 거둔 이름의 조사·낱말을 걸렀다
 
 
 def compute_rights(*, spec_text: str, survey_text: str, note: str,
@@ -495,6 +539,7 @@ def compute_rights(*, spec_text: str, survey_text: str, note: str,
         "waiver_other_tenant": waiver_leaves_other_tenant(note) if WAIVER_RE.search(note) else None,
         "waived": tenant_waived(note, spec_text),
         "inherited": inherited_rights(spec_text),
+        "spec_flags": spec_flags(spec_text),
         "survey": {**occupancy_check(memo), "memo": memo},
         "names": {role: group for role, group in names.items() if group},
         "name_candidates": sorted({n for group in harvested["prose"].values() for n in group}),

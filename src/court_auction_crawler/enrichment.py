@@ -56,6 +56,7 @@ _TRAP_HIGH = frozenset({   # 낙찰자가 권리를 인수하거나 목적물을
 _TRAP_MEDIUM = frozenset({  # 흠이지만 인수·상실로 바로 이어지진 않는 주의 항목
     "맹지", "농지취득자격증명", "위반건축물", "제시외건물", "재매각", "형식적경매",
     "대항력포기", "유치권해소", "대항력가능", "지상권인수", "지역권인수",
+    "대지권미등기",   # 명세서 비고란(10-04) — 대지 지분을 따로 다퉈야 할 수 있다
 })
 
 # "주택도시보증공사가 … 우선변제권만 주장하고 대항력은 포기" · "매수인에 대한 대항력 포기조건
@@ -528,6 +529,8 @@ def public_auction_enrichment(item: dict[str, Any]) -> dict[str, Any]:
         "waived": bool(rights_full.get("waived") if rights_full else _json_bool(item.get("rights_waived"))),
         # 명세서 '매각으로 효력이 소멸되지 아니하는 것' — 법원이 직접 쓴 낙찰자가 떠안는 권리 {종류: 떠안음|해소}
         "inherited": (rights_full.get("inherited") if rights_full else _load_json(item.get("rights_inherited"))) or {},
+        # 명세서 지상권 개요 칸·비고란에서 뽑은 딱지 — 목록 비고에 없는 것이 있다
+        "spec_flags": (rights_full.get("spec_flags") if rights_full else _load_json(item.get("rights_spec_flags"))) or [],
     }
     # 취하·철회·부존재 확정된 유치권은 높음이 아니라 보통(정답지 67건 중 66, 틀린 1건도 헛경고 쪽).
     if rights_brief["lien"] == "해소" and "유치권" in flags:
@@ -550,6 +553,7 @@ def public_auction_enrichment(item: dict[str, Any]) -> dict[str, Any]:
             if "대항력가능" in flags:
                 flags.remove("대항력가능")   # 법원이 직접 썼으니 계산 추정은 뺀다
         flags.append(label)
+    flags += [label for label in rights_brief["spec_flags"] if label not in flags]
 
     # 위험도는 권리상 함정만 본다 — 위에서 뽑은 특수권리 목록(flags)에서 파생한다.
     screening = build_screening(flags)
