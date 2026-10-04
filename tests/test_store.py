@@ -155,6 +155,8 @@ class StoreTests(unittest.TestCase):
                 return conn.execute("SELECT rights_at, updated_at FROM auction_items WHERE item_key = ?", (key,)).fetchone()
         self.assertEqual(at()[0], "2026-10-01T00:00:00+00:00")   # 판정이 같으면 그대로
         self.assertNotIn(key, [r["item_key"] for r in self.store.list_rights_targets(version=8)])
+        self.store.update_rights(key, {"v": 9, "lien": None, "spec_flags": []})   # 빈 새 칸도 같은 판정
+        self.assertEqual(at()[0], "2026-10-01T00:00:00+00:00")
         self.store.update_rights(key, {"v": 8, "lien": "남음"})
         self.assertGreater(at()[0], "2026-10-01T00:00:00+00:00")  # 바뀌면 지금 시각
 
