@@ -17,11 +17,21 @@
   <string>/Users/bymsub/Library/Logs/court-auction/notices.launchd.log</string>
   <key>StandardErrorPath</key>
   <string>/Users/bymsub/Library/Logs/court-auction/notices.launchd.err.log</string>
+  <!-- 2026-10-04 사용자 결정: 매일 → 주 2회(월·목). 공고는 한 번 올라오면 안 바뀌고 목록에 중앙 75일 남는다.
+       새 공고는 평일에 올라오고 월요일 회차에 가장 많이 잡혔다(296~504건). Weekday 1=월 4=목. -->
   <key>StartCalendarInterval</key>
-  <dict>
-    <key>Hour</key><integer>5</integer>
-    <key>Minute</key><integer>40</integer>
-  </dict>
+  <array>
+    <dict>
+      <key>Weekday</key><integer>1</integer>
+      <key>Hour</key><integer>5</integer>
+      <key>Minute</key><integer>40</integer>
+    </dict>
+    <dict>
+      <key>Weekday</key><integer>4</integer>
+      <key>Hour</key><integer>5</integer>
+      <key>Minute</key><integer>40</integer>
+    </dict>
+  </array>
   <key>RunAtLoad</key>
   <false/>
 </dict>

@@ -59,7 +59,7 @@ launchd가 이 저장소 몫으로 일곱 개를 띄운다. `launchctl kickstart
 | `com.court-auction.server` | 로컬 대시보드 | 상시 |
 | `com.court-auction.logrotate` | 로그를 날짜별로 분리 | 매일 00:05 |
 | `com.court-auction.baseline` | 법원 공식 통계와 대조 (G11) | 매달 1일 10:00 |
-| `com.court-auction.notices` | 배당요구종기공고 수집 (G15, `scripts/run_notices.sh` → `logs/notices.log`). 법원 60곳 경매계마다 검색, 약 2만 건을 통째로 다시 받는다(새 것은 하루 300건 안팎) | 매일 05:40 (약 1.5~2시간) |
+| `com.court-auction.notices` | 배당요구종기공고 수집 (G15, `scripts/run_notices.sh` → `logs/notices.log`). 법원 60곳 경매계마다 검색, 약 2만 건을 통째로 다시 받는다(새 것은 하루 300건 안팎) | 월·목 05:40 (약 1.5~2시간, 10-04 매일에서 주 2회로) |
 | `com.court-auction.maintenance-watch` | 일부러 멈춘 수집기를 때가 되면 켠다 — `data/maintenance_pause`(점검 끝나면 상세) · `data/detail_pause`(UNTIL 시각에 상세) · `data/collect_pause`(조건·시각에 목록). 표시 파일이 없으면 아무것도 안 적고 끝난다 | 30분마다 |
 
 **법원 사이트 점검 때**(추석·설 등): `touch data/maintenance_pause` 후 상세 수집기만
