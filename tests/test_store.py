@@ -142,6 +142,22 @@ class StoreTests(unittest.TestCase):
                 (seen, collected, collected, key),
             )
 
+    def test_판정이_같으면_버전만_올라도_다시_올리지_않는다(self):
+        key = "auction:서울중앙지방법원:2025타경1234:1"
+        self.store.upsert_items([self._item()])
+        self.store.update_rights(key, {"v": 7, "lien": None})
+        with self.store.connect() as conn:
+            conn.execute("UPDATE auction_items SET rights_at = '2026-10-01T00:00:00+00:00',"
+                         " updated_at = '2026-09-30T00:00:00+00:00', detail_collected_at = NULL WHERE item_key = ?", (key,))
+        self.store.update_rights(key, {"v": 8, "lien": None})
+        def at():
+            with self.store.connect() as conn:
+                return conn.execute("SELECT rights_at, updated_at FROM auction_items WHERE item_key = ?", (key,)).fetchone()
+        self.assertEqual(at()[0], "2026-10-01T00:00:00+00:00")   # 판정이 같으면 그대로
+        self.assertNotIn(key, [r["item_key"] for r in self.store.list_rights_targets(version=8)])
+        self.store.update_rights(key, {"v": 8, "lien": "남음"})
+        self.assertGreater(at()[0], "2026-10-01T00:00:00+00:00")  # 바뀌면 지금 시각
+
     def test_vanished_item_is_looked_at_once_more(self):
         """취하된 물건은 상태 변화 없이 그냥 사라진다. 왜 사라졌는지는 사건 화면의
         종국결과만 안다(G03). 사라진 뒤로 상세를 안 받았으면 딱 한 번 더 받는다."""

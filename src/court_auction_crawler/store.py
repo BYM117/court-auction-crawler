@@ -1607,11 +1607,22 @@ class AuctionStore:
         return out
 
     def update_rights(self, item_key: str, rights: dict[str, Any]) -> None:
-        """판정을 저장한다. updated_at 은 건드리지 않는다 — rights_at 이 푸시 후보를 만든다."""
+        """판정을 저장한다. updated_at 은 건드리지 않는다 — rights_at 이 푸시 후보를 만든다.
+
+        버전만 오르고 판정이 같으면 rights_at 을 '판정 근거보다 늦은 시각' 까지만 민다. 그래야 다시
+        판정 대상이 안 되고, 푸시 후보도 안 된다 — 안 그러면 규칙 버전을 올릴 때마다 6.7만 건을
+        통째로 R2 에 다시 올린다(v7 때 그랬다. 10-04 v8 은 실제로 바뀐 게 3건이었다)."""
+        body = json.dumps(rights, ensure_ascii=False)
         with self.connect() as conn:
             conn.execute(
-                "UPDATE auction_items SET rights_json = ?, rights_at = ? WHERE item_key = ?",
-                (json.dumps(rights, ensure_ascii=False), utc_now(), item_key),
+                """UPDATE auction_items
+                      SET rights_at = CASE WHEN json_remove(NULLIF(rights_json, ''), '$.v') = json_remove(?, '$.v')
+                                           THEN MAX(COALESCE(rights_at, ''), COALESCE(detail_collected_at, ''),
+                                                    COALESCE(updated_at, ''))
+                                           ELSE ? END,
+                          rights_json = ?
+                    WHERE item_key = ?""",
+                (body, utc_now(), body, item_key),
             )
 
     def update_land_use(

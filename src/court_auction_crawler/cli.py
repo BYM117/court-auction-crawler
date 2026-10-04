@@ -1542,7 +1542,9 @@ def run_enrich_rights(store: AuctionStore, *, limit: int = 5000, jev_budget: int
                 for kind, rule_safe, about in (
                         ("waiver", result.get("waiver_other_tenant") is False, note),
                         ("lien", result.get("lien") == "해소", note),
-                        ("inherit", "해소" in (result.get("inherited") or {}).values(), inherit_text)):
+                        # Jev 는 칸 전체에 '남은 게 있나' 를 묻는다. 규칙도 칸 전체가 해소일 때만 댄다 —
+                        # 임차권만 해소고 가등기가 남은 칸을 대면 둘 다 맞는데 엇갈림으로 잡힌다(10-04, 17건 중 대부분).
+                        ("inherit", set((result.get("inherited") or {}).values()) == {"해소"}, inherit_text)):
                     if not rule_safe:
                         continue
                     first = {"waiver": "waiver", "lien": "lien_resolved", "inherit": "inherit_remaining"}[kind]
