@@ -544,18 +544,7 @@ class CourtAuctionDetailCrawler:
         if not match:
             raise ValueError(f"사건번호 형식 오류: {case_no}")
 
-        await self._open_case_search(page)
-        await self._select_court_option(page, court)
-        await page.locator(CASE_YEAR_SELECTOR).select_option(label=match.group("year"))
-        await page.locator(CASE_NUMBER_SELECTOR).fill(match.group("number"))
-        await page.locator(CASE_SEARCH_BUTTON_SELECTOR).click()
-        # 고정 1초 대기는 응답이 늦으면 '검색 결과 없음' 오탐으로 케이스 전체를
-        # 실패 처리한다. 버튼이 붙을 때까지 기다린다.
-        try:
-            await page.wait_for_selector(ITEM_DETAIL_BUTTON_SELECTOR, state="attached", timeout=15_000)
-        except PlaywrightTimeoutError:
-            pass
-        await page.wait_for_timeout(300)
+        await self._search_case(page, court, match)
 
         buttons = page.locator(ITEM_DETAIL_BUTTON_SELECTOR)
         button_count = await buttons.count()
@@ -630,14 +619,21 @@ class CourtAuctionDetailCrawler:
 
         enabled_indices = [index for index, (_no, disabled) in enumerate(button_states) if not disabled]
         for position, button_index in enumerate(enabled_indices):
-            current_buttons = page.locator(ITEM_DETAIL_BUTTON_SELECTOR)
-            if button_index >= await current_buttons.count():
-                break
-            button = current_buttons.nth(button_index)
             button_item_no = button_states[button_index][0]
             if button_item_no and button_item_no not in target_by_no:
                 # 받을 물건이 아니면 열지 않는다 — 물건 여러 개인 사건에서 대상 아닌 물건까지 다 열었다(하루 100~250번).
                 continue
+            current_buttons = page.locator(ITEM_DETAIL_BUTTON_SELECTOR)
+            if button_index >= await current_buttons.count() and position > 0:
+                # 앞 물건의 문서 창(명세서·현황조사서)을 열고 나면 '사건상세조회' 로 못 돌아와 검색 첫 화면에
+                # 떨어진다(_return_to_case_detail 의 마지막 수). 그러면 남은 물건을 전부 '버튼을 찾지 못함' 으로
+                # 실패시켜, 물건 여럿인 사건은 한 번에 하나씩만 받혔다(창원 2026타경10616 3·4번 13번 실패,
+                # 10-05). 받을 물건이 남았으면 사건을 다시 연다 — 따로 다시 찾아오는 것보다 요청이 적다.
+                await self._search_case(page, court, match)
+                current_buttons = page.locator(ITEM_DETAIL_BUTTON_SELECTOR)
+            if button_index >= await current_buttons.count():
+                break
+            button = current_buttons.nth(button_index)
             planned = target_by_no.get(button_item_no) or {}
             area = near_area_key(planned.get("address", ""), planned.get("category", ""))
             today = date.today().isoformat()
@@ -1154,6 +1150,21 @@ class CourtAuctionDetailCrawler:
         except Exception as exc:
             print(f"  -- {document_type} 화면 대체 저장 실패: {str(exc)[:200]}")
             return None
+
+    async def _search_case(self, page: Page, court: str, match: re.Match[str]) -> None:
+        """사건검색 화면에서 사건 하나를 연다."""
+        await self._open_case_search(page)
+        await self._select_court_option(page, court)
+        await page.locator(CASE_YEAR_SELECTOR).select_option(label=match.group("year"))
+        await page.locator(CASE_NUMBER_SELECTOR).fill(match.group("number"))
+        await page.locator(CASE_SEARCH_BUTTON_SELECTOR).click()
+        # 고정 1초 대기는 응답이 늦으면 '검색 결과 없음' 오탐으로 케이스 전체를
+        # 실패 처리한다. 버튼이 붙을 때까지 기다린다.
+        try:
+            await page.wait_for_selector(ITEM_DETAIL_BUTTON_SELECTOR, state="attached", timeout=15_000)
+        except PlaywrightTimeoutError:
+            pass
+        await page.wait_for_timeout(300)
 
     async def _return_to_case_detail(self, page: Page) -> None:
         button = page.locator(CASE_DETAIL_BUTTON_SELECTOR)
