@@ -4,10 +4,12 @@
 
     .venv/bin/python scripts/probe_block.py --near on|off [--stage tabs|item|full] [--max 60] [--out logs/probe-tests]
 
---stage 로 어디까지 할지 끊는다(무엇이 '비정상 접속' 판정을 부르는지 가리려고, 10-04):
+--stage 로 어디까지 할지 끊는다(무엇이 '비정상 접속' 판정을 부르는지 가리려고, 10-04~06, gaps/G20):
   tabs = 사건 검색 + 사건 화면 탭(기일내역·문건송달)까지. 물건 상세는 안 연다.
   item = + 물건 상세 화면. 문서(명세서·현황조사서 뷰어)는 안 연다.
-  full = 수집기와 똑같이 전부.
+  full = 수집기와 똑같이 전부(10-06 부터 수집기는 사건 화면 탭을 안 누른다).
+  schedule / filing = 사건 화면에서 그 탭 하나만 누르고 돌아온다(물건 상세 안 엶).
+  notabs = full 과 같되 사건 화면 탭을 확실히 안 누른다(10-06 새벽 40/40 무사).
 """
 from __future__ import annotations
 
@@ -59,7 +61,20 @@ async def run(near: bool, limit: int, out: Path, db: str, stage: str = "full") -
     crawler = CourtAuctionDetailCrawler(FakeStore(), asset_dir=out / "assets", delay=5,
                                         collect_documents=stage == "full")
     cases = pick_cases(db, limit)
-    if stage == "tabs":  # 받을 물건이 없으면 수집기는 물건 버튼을 누르지 않는다(사건 화면·탭까지만)
+    detail_crawler.CASE_TABS = stage == "tabs"  # 'tabs' 단계만 옛 수집기처럼 두 탭을 누른다
+    if stage == "notabs":  # 수집기와 똑같이 하되 사건 화면 탭은 안 누른다(첫 화면=사건내역 표만 읽음)
+        async def no_tabs(page):
+            return {"case_tables": await detail_crawler.extract_tables(page), "schedule_tables": [], "filing_and_service_tables": []}
+        crawler._extract_case_shared = no_tabs
+        crawler.collect_documents = True
+    if stage in ("schedule", "filing"):  # 탭 하나만 누르고 사건내역 탭으로 돌아온다
+        only = detail_crawler.SCHEDULE_TAB_SELECTOR if stage == "schedule" else detail_crawler.FILING_TAB_SELECTOR
+        async def one_tab(page, _only=only):
+            await crawler._click_if_present(page, _only)
+            await crawler._click_if_present(page, detail_crawler.CASE_TAB_SELECTOR)
+            return {"case_tables": [], "schedule_tables": [], "filing_and_service_tables": []}
+        crawler._extract_case_shared = one_tab
+    if stage in ("tabs", "schedule", "filing"):  # 받을 물건이 없으면 수집기는 물건 버튼을 누르지 않는다(사건 화면·탭까지만)
         cases = [(key, [{**t, "item_no": "__none__"} for t in targets]) for key, targets in cases]
     started = time.time()
     result = {"near": near, "stage": stage, "start": datetime.now().isoformat(timespec="seconds"),
@@ -89,7 +104,7 @@ async def run(near: bool, limit: int, out: Path, db: str, stage: str = "full") -
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--near", choices=["on", "off"], required=True)
-    ap.add_argument("--stage", choices=["tabs", "item", "full"], default="full")
+    ap.add_argument("--stage", choices=["tabs", "item", "full", "schedule", "filing", "notabs"], default="full")
     ap.add_argument("--max", type=int, default=60)
     ap.add_argument("--out", default="logs/probe-tests")
     ap.add_argument("--db", default="data/auction.sqlite3")
