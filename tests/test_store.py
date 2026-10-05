@@ -617,6 +617,60 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(self.store.near_stats_for("경기도 시흥시 배곧동|근린상가", "2026-10-03"), table)
         self.assertIsNone(self.store.near_stats_for("경기도 시흥시 배곧동|근린상가", "2026-10-04"))
 
+    def test_recollection_without_case_tabs_keeps_old_schedule_tables(self):
+        # 사건 화면 탭을 안 누르면(10-06) 기일내역 표가 빈 채로 온다 — 받아 둔 것을 덮지 않는다(웹 '기일내역 원문').
+        self.store.upsert_items([AuctionItem({"사건번호": "청주지방법원 2026타경1", "물건번호": "1"})])
+        key = "auction:청주지방법원:2026타경1:1"
+        old_schedule = [{"caption": "기일내역", "rows": [["기일"], ["2026.09.15 유찰"]]}]
+        self.store.save_item_detail(key, {"case": {"case_tables": [{"caption": "a"}], "schedule_tables": old_schedule,
+                                                   "filing_and_service_tables": []}})
+        self.store.save_item_detail(key, {"case": {"case_tables": [{"caption": "b"}], "schedule_tables": [],
+                                                   "filing_and_service_tables": []}})
+        with self.store.connect() as conn:
+            row = conn.execute("SELECT detail_json FROM auction_item_details WHERE item_key = ?", (key,)).fetchone()
+        case = json.loads(row[0])["case"]
+        self.assertEqual(case["schedule_tables"], old_schedule)
+        self.assertEqual(case["case_tables"], [{"caption": "b"}])
+
+    def test_spec_from_previous_round_is_refetched_in_new_sale_window(self):
+        # 유찰로 새 기일이 잡히면 법원은 명세서를 새로 낸다 — 지난 기일 때 받은 것은 'stale' 로 다시 받는다(10-06).
+        from datetime import date as _date
+        sale = (_date.today() + timedelta(days=5)).strftime("%Y.%m.%d")
+        self.store.upsert_items([AuctionItem({"사건번호": "천안지원 2024타경1780", "물건번호": "1", "매각기일": sale})])
+        key = "auction:천안지원:2024타경1780:1"
+        self.store.save_item_detail(key, {"tables": []})
+        self.store.save_document_status(key, "매각물건명세서", status="collected", metadata={"text": "x" * 50})
+        self.assertEqual(self.store.document_statuses(key, sale_date=sale)["매각물건명세서"], "collected")  # 이번 창에서 받음
+        with self.store.connect() as conn:
+            conn.execute("UPDATE auction_documents SET collected_at = '2026-09-08T00:00:00+00:00' WHERE item_key = ?", (key,))
+            conn.execute("UPDATE auction_items SET detail_collected_at = ?, last_changed_at = '2026-09-01T00:00:00+00:00' "
+                         "WHERE item_key = ?", (datetime.now(timezone.utc).isoformat(timespec="seconds"), key))
+        self.assertEqual(self.store.document_statuses(key, sale_date=sale)["매각물건명세서"], "stale")
+        self.assertIn(key, [t["item_key"] for t in self.store.list_detail_targets()])
+        # 다시 받다 실패해도 '받음' 은 지키고(웹에서 옛 명세서가 안 사라짐), 다음 시도 시각을 적어 패스마다 부르지 않는다
+        later = (datetime.now(timezone.utc) + timedelta(hours=12)).isoformat(timespec="seconds")
+        self.store.save_document_status(key, "매각물건명세서", status="pending", next_retry_at=later)
+        with self.store.connect() as conn:
+            status = conn.execute("SELECT status FROM auction_documents WHERE item_key = ?", (key,)).fetchone()[0]
+        self.assertEqual(status, "collected")
+        self.assertNotIn(key, [t["item_key"] for t in self.store.list_detail_targets()])
+
+    def test_summary_backfill_is_capped_per_day(self):
+        from datetime import date as _date
+        far = (_date.today() + timedelta(days=20)).strftime("%Y.%m.%d")
+        self.store.upsert_items([AuctionItem({"사건번호": f"광주지방법원 2026타경{i}", "물건번호": "1", "매각기일": far}) for i in range(1, 4)])
+        keys = [f"auction:광주지방법원:2026타경{i}:1" for i in range(1, 4)]
+        for key in keys:
+            self.store.save_item_detail(key, {"tables": []})
+        with self.store.connect() as conn:
+            conn.execute("UPDATE auction_items SET detail_collected_at = '2026-09-10T00:00:00+00:00', last_changed_at = '2026-09-09T00:00:00+00:00'")
+        self.assertEqual(len(self.store.list_detail_targets(summary_backfill_per_day=2)), 2)
+        self.store.spend_summary_backfill(_date.today().isoformat())
+        rows = self.store.list_detail_targets(summary_backfill_per_day=2)
+        self.assertEqual(len(rows), 1)
+        self.assertTrue(rows[0]["summary_backfill"])
+        self.assertEqual(len(self.store.list_detail_targets()), 3)   # 상한을 안 주면 그대로
+
     def test_only_meaningful_list_changes_queue_detail_again(self):
         # 소재지목록·상세URL·수집구분은 읽은 화면에 따라 흔들린다 — 그것만 바뀌면 상세를 다시 열지 않는다.
         row = {"사건번호": "인천지방법원 2025타경510258", "물건번호": "1", "매각기일": "2099.01.01",

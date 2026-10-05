@@ -1217,6 +1217,11 @@ def run_collect_loop(
                     push_once()
                     last_push = time.monotonic()
                     print(f"===== 다음 자동 수집까지 대기 ({next_at:%m-%d %H:%M} 출발) =====", flush=True)
+            # 회차 출발 직전에도 한 번 올린다(2026-10-06). 회차(약 2~4시간) 동안엔 푸시가 없어 밤 23:30 푸시 뒤 06:20 까지
+            # 웹이 약 7시간 묵었다. 출발 직전 푸시면 23:30 → 02:30 → 회차 끝 으로 4시간 안에 든다.
+            if push_dest and controller.enabled and time.monotonic() - last_push >= 3600:
+                print(f"===== 회차 출발 전 웹 푸시 {time.strftime('%Y-%m-%d %H:%M:%S')} =====", flush=True)
+                push_once()
 
 
 def build_snapshot_payload(store: AuctionStore) -> dict[str, Any]:

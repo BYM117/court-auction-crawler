@@ -34,6 +34,17 @@ CASE_SEARCH_BUTTON_SELECTOR = "#mf_wfm_mainFrame_btn_auctnCsSrchBtn"
 CASE_TAB_SELECTOR = "#mf_wfm_mainFrame_tac_srchRsltDvs_tab_tabs1_tabHTML"
 SCHEDULE_TAB_SELECTOR = "#mf_wfm_mainFrame_tac_srchRsltDvs_tab_tabs2_tabHTML"
 FILING_TAB_SELECTOR = "#mf_wfm_mainFrame_tac_srchRsltDvs_tab_tabs3_tabHTML"
+# 사건 화면의 기일내역·문건송달 탭을 누르나. 2026-10-06 끔: 탭을 누르면 법원이 몇 건 만에 '비정상 접속' 으로 막는다
+# (탐침: 기일내역만 9·문건송달만 4번째에 막힘, 탭 없이 나머지 전부는 40/40 무사 — 새벽 최악 시간대). 첫 화면(사건내역)
+# 표는 그대로 읽는다. 잃는 것: 사건 화면 기일내역(낙찰가 보충·웹 '기일내역 원문'), 문건송달(안 씀). 매각결과 보충 모드
+# (results_only)만 기일내역 탭을 누른다 — 그것만이 목적이라서.
+CASE_TABS = False
+# 목록에서 사라진 물건을 '한 번 더 보기'(G03 종국 훑기) 기간. 0 = 끔(2026-10-06). 종국결과는 2만 건 넘게 훑어 0건이었고,
+# 실제로 건지던 낙찰가(10-01 뒤 하루 약 40건)는 기일내역 탭에서만 나온다 — 탭을 끄면 이 방문은 헛걸음이다.
+CLOSING_SWEEP_DAYS = 0
+# 요항표(감정평가 요약) 보충으로만 여는 물건의 하루 상한(사용자 결정 2026-10-04). 새 물건·진짜 바뀐 물건·서류 방문 때는
+# 요항표가 어차피 같이 채워지므로, 이것은 '그것만 받으러 가는' 방문만 묶는다.
+SUMMARY_BACKFILL_PER_DAY = 1000
 ITEM_DETAIL_BUTTON_SELECTOR = "input[value='물건상세조회']"
 # '인근매각물건사례' 절의 조회 버튼과, 그 결과로 나타나는 탭 묶음(G08).
 NEAR_SALES_SEARCH_SELECTOR = "#mf_wfm_mainFrame_btn_srchNearHist"
@@ -250,6 +261,41 @@ def next_search_miss_streak(streak: int, exc: Exception | None) -> int:
     return streak + 1 if str(exc).startswith("사건 검색 결과 없음") else streak
 
 
+VIEWER_PROBE_PATH = Path("logs/streamdocs-viewer-probe.jsonl")
+
+
+def record_viewer_responses_once(popup: Page) -> None:
+    """명세서 뷰어가 스스로 받는 응답의 종류를 **한 번만** 남긴다(Jev 세션 부탁, 2026-10-04). 법원에 요청을 더하지 않는다 —
+    이미 오는 응답을 엿볼 뿐이다. 알고 싶은 것: `/document` 가 PDF(`%PDF-`)인가, 글자 좌표가 실린 응답이 있는가.
+    결과 파일이 있으면 아무것도 안 한다(한 번이면 된다)."""
+    if VIEWER_PROBE_PATH.exists():
+        return
+
+    async def on_response(response: Any) -> None:
+        try:
+            if "/documents/" not in response.url and "streamdocs" not in response.url.lower():
+                return
+            body = await response.body()
+            head = body[:300].decode("utf-8", errors="replace")
+            row = {
+                "at": datetime.now().isoformat(timespec="seconds"),
+                "url": re.sub(r"\?.*$", "", response.url)[-160:],
+                "status": response.status,
+                "content_type": response.headers.get("content-type", ""),
+                "size": len(body),
+                "starts_with_pdf": body[:5] == b"%PDF-",
+                "has_coordinates": bool(re.search(r'"(x|y|left|top|bbox|rect)"\s*:', head)),
+                "head": head[:160],
+            }
+            VIEWER_PROBE_PATH.parent.mkdir(parents=True, exist_ok=True)
+            with VIEWER_PROBE_PATH.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(row, ensure_ascii=False) + "\n")
+        except Exception:  # noqa: BLE001 - 덤으로 엿보는 것이다
+            pass
+
+    popup.on("response", lambda r: asyncio.ensure_future(on_response(r)))
+
+
 async def screen_text(page: Page) -> str:
     """화면 글자 전부 — 본문과 하위 프레임, 입력칸 값까지. 보안 차단 창 문구가 본문 글자(innerText)에는
     안 잡혔다(10-03 새벽 거절 18건 중 인식 0건) — 창이 입력칸·프레임에 문구를 담는 것으로 보고 넓게 읽는다."""
@@ -407,6 +453,8 @@ class CourtAuctionDetailCrawler:
                 include_inactive=include_inactive,
                 force=force,
                 item_key=item_key,
+                closing_sweep_days=CLOSING_SWEEP_DAYS,
+                summary_backfill_per_day=SUMMARY_BACKFILL_PER_DAY,
             )
         )
         summary = DetailCollectionSummary(targets=len(targets))
@@ -672,6 +720,8 @@ class CourtAuctionDetailCrawler:
                     detail["case"] = shared
                     self.store.save_item_detail(target["item_key"], detail)
                     counts["collected"] += 1
+                    if target.get("summary_backfill"):
+                        self.store.spend_summary_backfill(date.today().isoformat())
                     if self.collect_documents:
                         doc_counts = await self._collect_item_documents(page, target)
                         counts["documents_collected"] += doc_counts["collected"]
@@ -764,6 +814,8 @@ class CourtAuctionDetailCrawler:
 
     async def _extract_case_shared(self, page: Page) -> dict[str, Any]:
         case_tables = await extract_tables(page)
+        if not (CASE_TABS or self.results_only):
+            return {"case_tables": case_tables, "schedule_tables": [], "filing_and_service_tables": []}
         await self._click_if_present(page, SCHEDULE_TAB_SELECTOR)
         schedule_tables = await extract_tables(page)
         await self._click_if_present(page, FILING_TAB_SELECTOR)
@@ -874,7 +926,7 @@ class CourtAuctionDetailCrawler:
         target: dict[str, Any],
     ) -> dict[str, int]:
         result = {"collected": 0, "pending": 0}
-        existing = self.store.document_statuses(target["item_key"])
+        existing = self.store.document_statuses(target["item_key"], sale_date=target.get("sale_date", ""))
         pending_documents = [
             (document_type, lead_days)
             for document_type, lead_days in DOCUMENT_TYPES.items()
@@ -917,6 +969,7 @@ class CourtAuctionDetailCrawler:
                     async with page.expect_popup(timeout=20_000) as popup_info:
                         await visible_button.click()
                     popup = await popup_info.value
+                    record_viewer_responses_once(popup)
                     await popup.wait_for_load_state("domcontentloaded", timeout=20_000)
                     try:
                         await popup.wait_for_function(

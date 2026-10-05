@@ -249,6 +249,13 @@ class AuctionStore:
                     error TEXT
                 );
 
+                CREATE TABLE IF NOT EXISTS detail_daily_budget (
+                    day TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    used INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY (day, kind)
+                );
+
                 CREATE TABLE IF NOT EXISTS near_stats_cache (
                     area TEXT NOT NULL,
                     day TEXT NOT NULL,
@@ -964,6 +971,7 @@ class AuctionStore:
         force: bool = False,
         item_key: str = "",
         closing_sweep_days: int = 30,
+        summary_backfill_per_day: int | None = None,
     ) -> list[dict[str, Any]]:
         clauses = ["court != ''", "case_no != ''", "item_no != ''"]
         params: list[Any] = []
@@ -1026,6 +1034,20 @@ class AuctionStore:
                     -- 감정평가 요항표(appraisal_summary)를 받기 전에 상세를 받고 다시 안 연 물건을 한 번
                     -- 더 본다(2026-09-30: 활성 22,315건이 요항표 0%). 보고 나면 detail_collected_at 이
                     -- 기준보다 뒤라 스스로 빠진다. 기일 사흘 안은 뺀다 — 그 앞줄은 명세서 몫이다.
+                    -- 새 기일 1주 창인데 명세서가 그보다 전(지난 기일)에 받은 것 — 법원은 기일마다 명세서를 새로 낸다.
+                    -- 한 번 'collected' 면 다시 안 받아, 열린 기일의 27~37% 가 옛 명세서뿐이었다(2026-10-04 실측).
+                    OR (
+                        is_active = 1
+                        AND REPLACE(SUBSTR(sale_date, 1, 10), '.', '-') BETWEEN date('now', 'localtime') AND date('now', 'localtime', '+7 day')
+                        AND EXISTS (
+                            SELECT 1 FROM auction_documents AS spec
+                             WHERE spec.item_key = auction_items.item_key
+                               AND spec.document_type = '매각물건명세서'
+                               AND spec.status = 'collected'
+                               AND SUBSTR(spec.collected_at, 1, 10) < date(REPLACE(SUBSTR(sale_date, 1, 10), '.', '-'), '-8 day')
+                               AND (spec.next_retry_at IS NULL OR spec.next_retry_at = '' OR spec.next_retry_at <= ?)
+                        )
+                    )
                     OR (
                         is_active = 1
                         AND detail_status = 'collected'
@@ -1042,7 +1064,7 @@ class AuctionStore:
                 )
             )
             now = utc_now()
-            params.extend([now, now, now])
+            params.extend([now, now, now, now])
             if closing_sweep_days > 0:
                 params.append(closing_sweep_cutoff(closing_sweep_days))
             # 물건에 다음 방문 시각이 잡혀 있으면 어느 이유로도 그 전엔 부르지 않는다. '밀린 문서' 조건과
@@ -1057,7 +1079,7 @@ class AuctionStore:
                 f"""
                 SELECT item_key, court, case_no, item_no, sale_date, status,
                        detail_status, detail_collected_at, detail_next_retry_at,
-                       detail_fail_count, last_changed_at, address, category
+                       detail_fail_count, last_changed_at, address, category, is_active
                   FROM auction_items
                  WHERE {' AND '.join(f'({clause})' for clause in clauses)}
                  -- **시한이 있는 것이 먼저다.** 사라진 물건은 종국 후 30일이 지나면
@@ -1100,7 +1122,7 @@ class AuctionStore:
                  (date.today() + timedelta(days=7)).isoformat(),
                  date.today().isoformat(), row_limit],
             ).fetchall()
-        return [dict(row) for row in rows]
+        return self._cap_summary_backfill([dict(row) for row in rows], summary_backfill_per_day)
 
     def save_item_detail(self, item_key: str, detail: dict[str, Any]) -> None:
         now = utc_now()
@@ -1116,7 +1138,14 @@ class AuctionStore:
             except (TypeError, ValueError):
                 merged = {}
             kept = filled_near_stats(merged.get("tables"))
+            old_case = merged.get("case") if isinstance(merged.get("case"), dict) else {}
             merged.update(detail)
+            # 사건 화면 탭을 안 누르면(detail_crawler.CASE_TABS) 기일내역·문건송달 표가 빈 채로 온다 — 받아 둔 것을 덮지 않는다.
+            new_case = merged.get("case") if isinstance(merged.get("case"), dict) else None
+            if new_case is not None:
+                for key in ("schedule_tables", "filing_and_service_tables"):
+                    if not new_case.get(key) and old_case.get(key):
+                        new_case[key] = old_case[key]
             # 인근매각 검색을 안 누르면(detail_crawler.NEAR_SALES_SEARCH) 머리글만 온다 — 받아 둔 통계를 덮지 않는다.
             if kept is not None and filled_near_stats(merged.get("tables")) is None:
                 merged["tables"] = [kept if NEAR_STATS_CAPTION in (t.get("caption") or "") else t
@@ -1155,6 +1184,32 @@ class AuctionStore:
                 ),
             )
             _write_detail_json(conn, item_key, json_dumps(merged))
+
+    def _cap_summary_backfill(self, rows: list[dict[str, Any]], per_day: int | None) -> list[dict[str, Any]]:
+        """요항표 보충'만'으로 줄 선 활성 물건(새 물건 아님·진짜 바뀜 아님·기일 7일 밖)을 하루 상한까지만 남기고 표시한다.
+        서류·바뀜 등 다른 이유로 여는 물건은 요항표가 어차피 같이 채워지므로 세지 않는다."""
+        if per_day is None:
+            return rows
+        today = date.today()
+        left = max(0, per_day - self.summary_backfill_used(today.isoformat()))
+        kept: list[dict[str, Any]] = []
+        for row in rows:
+            collected = row.get("detail_collected_at") or ""
+            changed = row.get("last_changed_at") or ""
+            try:
+                sale = date.fromisoformat((row.get("sale_date") or "")[:10].replace(".", "-"))
+                far = (sale - today).days > 7
+            except ValueError:
+                far = True
+            only_summary = (row.get("is_active") and row.get("detail_status") == "collected" and collected
+                            and collected < APPRAISAL_SUMMARY_SINCE and not changed > collected and far)
+            if only_summary:
+                if left <= 0:
+                    continue
+                left -= 1
+                row["summary_backfill"] = True
+            kept.append(row)
+        return kept
 
     def near_stats_for(self, area: str, since_day: str) -> dict[str, Any] | None:
         """since_day 이후(포함)에 받은 그 동네 통계 중 가장 최근 것."""
@@ -1234,13 +1289,35 @@ class AuctionStore:
                 (now, str(reason)[:500], now, item_key),
             )
 
-    def document_statuses(self, item_key: str) -> dict[str, str]:
+    def document_statuses(self, item_key: str, sale_date: str = "") -> dict[str, str]:
+        """문서 종류 → 상태. 기일 1주 창인데 명세서가 그 창보다 전에 받은 것이면 'stale'(새 기일 명세서를 다시 받는다)."""
         with self.connect() as conn:
             rows = conn.execute(
-                "SELECT document_type, status FROM auction_documents WHERE item_key = ?",
+                "SELECT document_type, status, collected_at FROM auction_documents WHERE item_key = ?",
                 (item_key,),
             ).fetchall()
-        return {row["document_type"]: row["status"] for row in rows}
+        statuses = {row["document_type"]: row["status"] for row in rows}
+        try:
+            sale = date.fromisoformat(sale_date.replace(" ", "")[:10].replace(".", "-"))
+        except ValueError:
+            return statuses
+        if not 0 <= (sale - date.today()).days <= 7:
+            return statuses
+        for row in rows:
+            if (row["document_type"] == "매각물건명세서" and row["status"] == "collected"
+                    and (row["collected_at"] or "")[:10] < (sale - timedelta(days=8)).isoformat()):
+                statuses["매각물건명세서"] = "stale"
+        return statuses
+
+    def spend_summary_backfill(self, day: str) -> None:
+        with self.connect() as conn:
+            conn.execute("INSERT INTO detail_daily_budget(day, kind, used) VALUES(?, 'summary', 1) "
+                         "ON CONFLICT(day, kind) DO UPDATE SET used = used + 1", (day,))
+
+    def summary_backfill_used(self, day: str) -> int:
+        with self.connect() as conn:
+            row = conn.execute("SELECT used FROM detail_daily_budget WHERE day = ? AND kind = 'summary'", (day,)).fetchone()
+        return int(row[0]) if row else 0
 
     def save_document_status(
         self,
@@ -1266,6 +1343,9 @@ class AuctionStore:
                 (item_key, document_type),
             ).fetchone()
             if existing is not None and existing["status"] == "collected" and status != "collected":
+                if next_retry_at:
+                    conn.execute("UPDATE auction_documents SET checked_at = ?, next_retry_at = ? "
+                                 "WHERE item_key = ? AND document_type = ?", (now, next_retry_at, item_key, document_type))
                 return
             fail_count = 0
             if status != "collected" and existing is not None:
