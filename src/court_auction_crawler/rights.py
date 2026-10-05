@@ -233,6 +233,7 @@ _SPEC_REMARK = ((r"위반\s*건축물", "위반건축물"), ("맹지", "맹지")
                 (r"별도\s*등기", "별도등기"), (r"지분\s*매각", "지분매각"), (r"농지\s*취득", "농지취득자격증명"),
                 ("제시외", "제시외건물"), ("분묘", "분묘기지권"), (r"법정\s*지상권", "법정지상권"))
 # "농지취득자격증명 없이 취득 가능"·"발급받지 않고" · "대지권 미등기이나, 이후 대지권등기가 완료"
+_TENANT_STATED = re.compile(r"대항할\s*수\s*있는\s*(?:주택\s*|상가\s*)?(?:임차인|임차권|전세권)(?!\S{0,3}\s*없)")
 _REMARK_NEG = r"[^.。]{0,16}?(?:아님|없음|아니|해당\s*없|불요|불필요|없이|않고|완료)"
 
 
@@ -259,6 +260,10 @@ def spec_flags(spec_text: str) -> list[str]:
                 r"건물|지상권|구축물|공작물|컨테이너|창고|주택", clause) else None
             if label and label not in out:
                 out.append(label)
+    # 법원이 '대항력' 대신 "매수인에게 대항할 수 있는 임차인 있음" 이라고 쓰는 일이 많다(10-05: 진행 34건이
+    # 이 문장만 있어 높음이 아니었다). 포기 확약이 같이 적혔으면 enrichment 의 대항력포기 몫이다.
+    if _TENANT_STATED.search(remark) and not _WAIVER_DOC_RE.search(remark):
+        out.append("대항력있는임차인")
     for pattern, label in _SPEC_REMARK:
         hits = [m for m in re.finditer(pattern, remark) if not re.match(_REMARK_NEG, remark[m.end():])]
         if hits and label not in out:
@@ -507,7 +512,7 @@ def mask_payload(node: Any, names: list[str]) -> Any:
     return node
 
 
-RIGHTS_VERSION = 9   # 9: 명세서 지상권 개요 칸·비고란 딱지 · 8: 부존재확인 청구기각은 남음 · 새 등기 자리에서 끊는다 · 7: 낙찰자가 떠안는 권리 칸 · 6: 명세서 임차인을 합친다 · 5: 확정 안 된 부존재 승소는 남음 · 임대차관계 불분명 · 4: 문장 속 이름은 Jev 확인분만 · 2: 남의 호실 임차인을 뺀다 · 3: 문장에서 거둔 이름의 조사·낱말을 걸렀다
+RIGHTS_VERSION = 10   # 10: '대항할 수 있는 임차인' 문장 · 9: 명세서 지상권 개요 칸·비고란 딱지 · 8: 부존재확인 청구기각은 남음 · 새 등기 자리에서 끊는다 · 7: 낙찰자가 떠안는 권리 칸 · 6: 명세서 임차인을 합친다 · 5: 확정 안 된 부존재 승소는 남음 · 임대차관계 불분명 · 4: 문장 속 이름은 Jev 확인분만 · 2: 남의 호실 임차인을 뺀다 · 3: 문장에서 거둔 이름의 조사·낱말을 걸렀다
 
 
 def compute_rights(*, spec_text: str, survey_text: str, note: str,

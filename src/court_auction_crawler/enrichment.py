@@ -232,6 +232,9 @@ def parse_special_rights(*texts: Any) -> list[str]:
     for keyword, label in SPECIAL_RIGHT_KEYWORDS:
         if keyword in haystack and label not in found:
             found.append(label)
+    # '대항력' 이라는 낱말 없이 "매수인에게 대항할 수 있는 임차인 있음" 으로만 쓰는 법원도 있다(10-05)
+    if "대항력있는임차인" not in found and _rights._TENANT_STATED.search(haystack):
+        found.append("대항력있는임차인")
     # 포기 문구를 지우고도 '대항력' 이 남는 건 대개 같은 임차인의 되풀이다("대항력 있는 임차인
     # 있음 … 단, 보증공사가 포기"). 여지·있을 수·미상·주의처럼 **다른** 임차인을 암시할 때만
     # 높음에 둔다 — 정답지 90건: 이 규칙 90/90, '남으면 높음' 85/90(Jev 세션, 2026-09-23).
@@ -530,7 +533,9 @@ def public_auction_enrichment(item: dict[str, Any]) -> dict[str, Any]:
         # 명세서 '매각으로 효력이 소멸되지 아니하는 것' — 법원이 직접 쓴 낙찰자가 떠안는 권리 {종류: 떠안음|해소}
         "inherited": (rights_full.get("inherited") if rights_full else _load_json(item.get("rights_inherited"))) or {},
         # 명세서 지상권 개요 칸·비고란에서 뽑은 딱지 — 목록 비고에 없는 것이 있다
-        "spec_flags": (rights_full.get("spec_flags") if rights_full else _load_json(item.get("rights_spec_flags"))) or [],
+        # 목록 스냅샷엔 rights_json 이 없고 json_extract 한 '["…"]' 글자만 온다. _load_json 은 dict 만 받아
+        # 목록을 버린다 — 10-04~05 이틀 동안 목록·지도에만 이 딱지가 하나도 안 붙었다(상세엔 붙고).
+        "spec_flags": (rights_full.get("spec_flags") if rights_full else _load_list(item.get("rights_spec_flags"))) or [],
     }
     # 취하·철회·부존재 확정된 유치권은 높음이 아니라 보통(정답지 67건 중 66, 틀린 1건도 헛경고 쪽).
     if rights_brief["lien"] == "해소" and "유치권" in flags:
@@ -553,7 +558,14 @@ def public_auction_enrichment(item: dict[str, Any]) -> dict[str, Any]:
             if "대항력가능" in flags:
                 flags.remove("대항력가능")   # 법원이 직접 썼으니 계산 추정은 뺀다
         flags.append(label)
-    flags += [label for label in rights_brief["spec_flags"] if label not in flags]
+    for label in rights_brief["spec_flags"]:
+        if label == "대항력있는임차인":
+            if rights_brief["waived"] or "대항력포기" in flags:
+                continue
+            if "대항력가능" in flags:
+                flags.remove("대항력가능")   # 법원이 직접 썼으니 계산 추정은 뺀다
+        if label not in flags:
+            flags.append(label)
 
     # 위험도는 권리상 함정만 본다 — 위에서 뽑은 특수권리 목록(flags)에서 파생한다.
     screening = build_screening(flags)
@@ -684,6 +696,14 @@ def _load_json(value: Any) -> dict[str, Any]:
     except (TypeError, ValueError):
         return {}
     return loaded if isinstance(loaded, dict) else {}
+
+
+def _load_list(value: Any) -> list[Any]:
+    try:
+        loaded = value if isinstance(value, list) else json.loads(value or "[]")
+    except (TypeError, ValueError):
+        return []
+    return loaded if isinstance(loaded, list) else []
 
 
 def _json_bool(value: Any) -> bool | None:

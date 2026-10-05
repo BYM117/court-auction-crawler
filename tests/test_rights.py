@@ -199,6 +199,16 @@ class 최선순위와_대항력(unittest.TestCase):
         # 서식 안내문의 '미등기건물'·'가등기' 는 안 읽는다
         self.assertEqual(got("", ""), [])
 
+    def test_대항할_수_있는_임차인_문장도_높음(self):
+        from court_auction_crawler.enrichment import parse_special_rights
+        stated = "매수인에게 대항할 수 있는 임차인 있음(보증금 1억). 배당에서 전액 변제되지 않으면 잔액을 매수인이 인수함"
+        self.assertIn("대항력있는임차인", R.spec_flags(f"비고란 {stated} 1: 매각목적물에서 제외되는 미등기건물"))
+        self.assertIn("대항력있는임차인", parse_special_rights(stated))
+        self.assertNotIn("대항력있는임차인", R.spec_flags("비고란 매수인에게 대항할 수 있는 임차인 없음 1: 매각목적물에서 제외되는"))
+        waived = stated + " 주택도시보증공사가 대항력을 포기하는 확약서 제출"
+        self.assertNotIn("대항력있는임차인", R.spec_flags(f"비고란 {waived} 1: 매각목적물에서 제외되는"))
+        self.assertEqual(parse_special_rights(waived), ["대항력포기"])
+
     def test_소유자는_임차인이_아니다(self):
         got = R.opposability([{"name": "홍길동", "role": "채무자겸소유자", "전입일자": "2010.01.01"}], {"date": "2020-01-01"})
         self.assertEqual(got["summary"], "임차인 없음")
@@ -295,6 +305,14 @@ class 실명(unittest.TestCase):
         self.assertNotIn("선순위가처분", flags)
         self.assertEqual(build_screening(["선순위가등기"])["risk_level"], "높음")
         self.assertEqual(build_screening(["지상권인수"])["risk_level"], "보통")
+
+    def test_목록_스냅샷의_요약_칸만으로도_딱지가_붙는다(self):
+        # 스냅샷 행엔 rights_json 이 없다 — store 가 json_extract 한 칸(글자)만 온다
+        item = {**self._item(active=True, jev_seen=True), "rights_json": "",
+                "rights_spec_flags": '["법정지상권", "대지권미등기"]', "rights_inherited": '{"가등기": "떠안음"}'}
+        flags = public_auction_summary(item)["auction"]["special_rights"]
+        for label in ("법정지상권", "대지권미등기", "선순위가등기"):
+            self.assertIn(label, flags)
 
     def test_목록에도_요약이_간다(self):
         got = public_auction_summary(self._item(active=True, jev_seen=True))["rights"]
