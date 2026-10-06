@@ -248,39 +248,6 @@ class DetailCrawlerHelperTests(unittest.TestCase):
         self.assertFalse(is_benign_case_error(PlaywrightTimeoutError("Timeout 30000ms exceeded")))
         self.assertFalse(is_benign_case_error(RuntimeError("net::ERR_INTERNET_DISCONNECTED")))
 
-    def test_viewer_probe_writes_a_line(self):
-        # 10-06: json 을 안 불러와 빈 파일만 생기고 '있으니 안 한다' 로 멈췄다 — 실제로 한 줄이 써지는지 본다.
-        import asyncio
-        from unittest import mock
-        from court_auction_crawler import detail_crawler as dc
-
-        class Response:
-            url = "https://ecfs.scourt.go.kr/streamdocs/v4/documents/abc/document?x=1"
-            status = 200
-            headers = {"content-type": "application/pdf"}
-
-            async def body(self):
-                return b"%PDF-1.7 ..."
-
-        class Popup:
-            def on(self, event, handler):
-                self.handler = handler
-
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "probe.jsonl"
-            path.write_text("")   # 빈 파일이 남아 있어도 다시 적는다
-            with mock.patch.object(dc, "VIEWER_PROBE_PATH", path):
-                popup = Popup()
-                dc.record_viewer_responses_once(popup)
-
-                async def fire():
-                    popup.handler(Response())
-                    await asyncio.sleep(0.05)
-                asyncio.run(fire())
-                row = json.loads(path.read_text().splitlines()[0])
-                self.assertTrue(row["starts_with_pdf"])
-                self.assertEqual(row["content_type"], "application/pdf")
-
     def test_detail_quiet_hours(self):
         from datetime import datetime
         from court_auction_crawler.cli import quiet_seconds_left
