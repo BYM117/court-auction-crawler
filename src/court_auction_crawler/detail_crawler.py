@@ -11,6 +11,7 @@ from datetime import date, datetime, timedelta, timezone
 import hashlib
 import mimetypes
 from pathlib import Path
+import json
 import re
 import time
 from typing import Any, Iterator
@@ -267,8 +268,9 @@ VIEWER_PROBE_PATH = Path("logs/streamdocs-viewer-probe.jsonl")
 def record_viewer_responses_once(popup: Page) -> None:
     """명세서 뷰어가 스스로 받는 응답의 종류를 **한 번만** 남긴다(Jev 세션 부탁, 2026-10-04). 법원에 요청을 더하지 않는다 —
     이미 오는 응답을 엿볼 뿐이다. 알고 싶은 것: `/document` 가 PDF(`%PDF-`)인가, 글자 좌표가 실린 응답이 있는가.
-    결과 파일이 있으면 아무것도 안 한다(한 번이면 된다)."""
-    if VIEWER_PROBE_PATH.exists():
+    결과가 이미 적혀 있으면 아무것도 안 한다(한 번이면 된다). 10-06: json 을 안 불러와 파일만 빈 채로 생기고
+    '있으니 안 한다' 로 영영 멈췄다 — 그래서 '비어 있지 않을 때' 만 멈추고, 쓸 줄은 파일을 열기 전에 만든다."""
+    if VIEWER_PROBE_PATH.exists() and VIEWER_PROBE_PATH.stat().st_size > 0:
         return
 
     async def on_response(response: Any) -> None:
@@ -287,9 +289,10 @@ def record_viewer_responses_once(popup: Page) -> None:
                 "has_coordinates": bool(re.search(r'"(x|y|left|top|bbox|rect)"\s*:', head)),
                 "head": head[:160],
             }
+            line = json.dumps(row, ensure_ascii=False) + "\n"
             VIEWER_PROBE_PATH.parent.mkdir(parents=True, exist_ok=True)
             with VIEWER_PROBE_PATH.open("a", encoding="utf-8") as f:
-                f.write(json.dumps(row, ensure_ascii=False) + "\n")
+                f.write(line)
         except Exception:  # noqa: BLE001 - 덤으로 엿보는 것이다
             pass
 
