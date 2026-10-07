@@ -80,6 +80,17 @@ def senior_candidates(text: Any) -> tuple[str, list[str]]:
 # 이 판정은 '가능성' 이다. 배당요구·확정일자로 보증금을 다 받으면 낙찰자가 안 떠안는다.
 
 _NOT_TENANT = ("소유자", "채무자")
+# 현황조사서 전입일 칸에 날짜 대신 글자가 오는 일이 있다(10-07: 진행 '모름' 중 미전입 368·확정일자 1,121·미상 422).
+# '미전입·미등재·미등록·해당없음' 은 전입을 안 했다는 뜻 — **주거 세입자만** 대항력 없음으로 본다. 점포·사무실은
+# 대항력이 사업자등록으로 생기고 농지·창고는 법이 달라, 이 칸만으로 '없음' 이라 하면 위험한 쪽으로 틀린다.
+_NO_MOVE_IN = re.compile(r"^(?:미전입|미등재|미등록|해당\s*없음)\.?$")
+_KO_DATE = re.compile(r"(\d{4})\s*년\s*(\d{1,2})\s*월\s*(\d{1,2})\s*일")
+
+
+def _move_in(value: Any) -> date | None:
+    """전입일 칸 — 점 날짜와 '2021년10월7일' 꼴."""
+    m = _KO_DATE.search(str(value or ""))
+    return parse_date(value) or (parse_date(f"{m[1]}.{m[2]}.{m[3]}") if m else None)
 
 
 _NO_TENANT_SPEC = re.compile(r"조사된\s*임차\s*내역\s*없|임차\s*내역\s*없음|임차인\s*없음")
@@ -141,8 +152,11 @@ def opposability(occupants: list[dict[str, Any]], senior: dict[str, Any] | None,
         role = str(occ.get("role") or "")
         if any(word in role for word in _NOT_TENANT):
             continue
-        moved = parse_date(occ.get("전입일자"))
-        if base is None or moved is None:
+        moved = _move_in(occ.get("전입일자"))
+        if base is not None and moved is None and "주거" in str(occ.get("용도") or "") \
+                and _NO_MOVE_IN.match(str(occ.get("전입일자") or "").strip()):
+            verdict = "없음"
+        elif base is None or moved is None:
             verdict = "모름"
         else:
             verdict = "있음" if moved < base else "없음"
@@ -512,7 +526,7 @@ def mask_payload(node: Any, names: list[str]) -> Any:
     return node
 
 
-RIGHTS_VERSION = 10   # 10: '대항할 수 있는 임차인' 문장 · 9: 명세서 지상권 개요 칸·비고란 딱지 · 8: 부존재확인 청구기각은 남음 · 새 등기 자리에서 끊는다 · 7: 낙찰자가 떠안는 권리 칸 · 6: 명세서 임차인을 합친다 · 5: 확정 안 된 부존재 승소는 남음 · 임대차관계 불분명 · 4: 문장 속 이름은 Jev 확인분만 · 2: 남의 호실 임차인을 뺀다 · 3: 문장에서 거둔 이름의 조사·낱말을 걸렀다
+RIGHTS_VERSION = 11   # 11: 주거 '미전입' 은 대항력 없음 · 한글 날짜 · 10: '대항할 수 있는 임차인' 문장 · 9: 명세서 지상권 개요 칸·비고란 딱지 · 8: 부존재확인 청구기각은 남음 · 새 등기 자리에서 끊는다 · 7: 낙찰자가 떠안는 권리 칸 · 6: 명세서 임차인을 합친다 · 5: 확정 안 된 부존재 승소는 남음 · 임대차관계 불분명 · 4: 문장 속 이름은 Jev 확인분만 · 2: 남의 호실 임차인을 뺀다 · 3: 문장에서 거둔 이름의 조사·낱말을 걸렀다
 
 
 def compute_rights(*, spec_text: str, survey_text: str, note: str,

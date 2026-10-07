@@ -209,6 +209,20 @@ class 최선순위와_대항력(unittest.TestCase):
         self.assertNotIn("대항력있는임차인", R.spec_flags(f"비고란 {waived} 1: 매각목적물에서 제외되는"))
         self.assertEqual(parse_special_rights(waived), ["대항력포기"])
 
+    def test_전입일_칸의_글자(self):
+        senior = {"date": "2020-01-01"}
+        def got(value, use):
+            return R.opposability([{"name": "홍길동", "role": "임차인", "용도": use, "전입일자": value}], senior)["summary"]
+        self.assertEqual(got("미전입", "주거"), "없음")
+        self.assertEqual(got("해당없음.", "주거"), "없음")
+        self.assertEqual(got("미전입", "점포"), "모름")          # 상가는 사업자등록으로 대항력 — 이 칸만으론 모른다
+        self.assertEqual(got("미등록", "기타 - 사무실"), "모름")
+        self.assertEqual(got("미상", "주거"), "모름")
+        self.assertEqual(got("확정일자", "주거"), "모름")        # 칸이 밀려 머리글이 들어온 것 — 빈칸이다
+        self.assertEqual(got("2019년10월7일", "주거"), "있음")
+        self.assertEqual(got("2021년 10월 7일", "점포"), "없음")
+        self.assertEqual(R.opposability([{"role": "임차인", "용도": "주거", "전입일자": "미전입"}], None)["summary"], "모름")
+
     def test_소유자는_임차인이_아니다(self):
         got = R.opposability([{"name": "홍길동", "role": "채무자겸소유자", "전입일자": "2010.01.01"}], {"date": "2020-01-01"})
         self.assertEqual(got["summary"], "임차인 없음")
