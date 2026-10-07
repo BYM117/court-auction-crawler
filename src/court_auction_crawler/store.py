@@ -1200,14 +1200,15 @@ class AuctionStore:
         kept: list[dict[str, Any]] = []
         for row in rows:
             collected = row.get("detail_collected_at") or ""
-            changed = row.get("last_changed_at") or ""
             try:
                 sale = date.fromisoformat((row.get("sale_date") or "")[:10].replace(".", "-"))
                 far = (sale - today).days > 7
             except ValueError:
                 far = True
+            # 기일 1주 밖이면 '바뀜'(유찰)이어도 요항표 보충으로 센다 — 그런 바뀜은 1주 창까지 미루므로(10-07) 줄에 든 이유는
+            # 요항표뿐이다. 안 세면 유찰된 요항표 미보유 7,669건이 상한 없이 새 물건보다 앞에 섰다(10-07 실측).
             only_summary = (row.get("is_active") and row.get("detail_status") == "collected" and collected
-                            and collected < APPRAISAL_SUMMARY_SINCE and not changed > collected and far)
+                            and collected < APPRAISAL_SUMMARY_SINCE and far)
             if only_summary:
                 if left <= 0:
                     continue

@@ -681,6 +681,10 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertTrue(rows[0]["summary_backfill"])
         self.assertEqual(len(self.store.list_detail_targets()), 3)   # 상한을 안 주면 그대로
+        # 유찰로 바뀐(1주 밖) 요항표 미보유 물건도 보충으로 세어 상한에 든다(10-07)
+        with self.store.connect() as conn:
+            conn.execute("UPDATE auction_items SET last_changed_at = '2026-09-11T00:00:00+00:00'")
+        self.assertEqual(len(self.store.list_detail_targets(summary_backfill_per_day=2)), 1)
 
     def test_only_meaningful_list_changes_queue_detail_again(self):
         # 소재지목록·상세URL·수집구분은 읽은 화면에 따라 흔들린다 — 그것만 바뀌면 상세를 다시 열지 않는다.
