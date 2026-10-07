@@ -17,7 +17,10 @@ PACE_FILE="$PROJECT_ROOT/data/detail_pace.env"
 [ -f "$PACE_FILE" ] && source "$PACE_FILE"
 WORKERS="${DETAIL_WORKERS:-2}"
 DELAY="${DETAIL_DELAY:-3.0}"
-echo "[$(date '+%Y-%m-%d %H:%M:%S')] 상세 수집 시작 — 워커 $WORKERS · 지연 ${DELAY}초"
+# 한 번에 짜는 할 일 목록 크기(물건 수). 다 끝나면 새로 짠다 — 2026-10-07: 차단이 사라지자 한 번 짠 목록(1.5만 건)을
+# 이틀 넘게 붙잡아 새로 급해진 기일·새 물건이 밀렸다. 워커 2 기준 약 2시간마다 새로 짜는 크기.
+LIMIT="${DETAIL_LIMIT:-1000}"
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] 상세 수집 시작 — 워커 $WORKERS · 지연 ${DELAY}초 · 목록 ${LIMIT}건씩"
 
 # ⚠ 주석을 exec 의 인자 줄 사이에 끼우지 말 것. `\` 로 이어지는 명령 중간의 `#` 은
 #   그 뒤 인자를 통째로 잘라먹는다. 2026-09-20 에 이렇게 망가져 --workers·--delay·
@@ -35,4 +38,5 @@ exec .venv/bin/python -m court_auction_crawler.cli collect-details \
   --asset-dir data/auction-assets \
   --workers "$WORKERS" \
   --delay "$DELAY" \
+  --limit "$LIMIT" \
   --loop

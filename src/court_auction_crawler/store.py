@@ -1006,6 +1006,11 @@ class AuctionStore:
                         AND last_changed_at IS NOT NULL
                         AND last_changed_at > detail_collected_at
                         AND (detail_next_retry_at IS NULL OR detail_next_retry_at <= ?)
+                        -- 바뀐 물건(대개 유찰 → 새 기일·새 최저가)은 새 기일 1주 창에 들어와서 연다(사용자 결정 2026-10-07).
+                        -- 가격·기일·유찰 횟수는 목록이 이미 웹에 올리고, 새 명세서는 기일 1주 전에야 나온다 — 유찰 직후에 열면
+                        -- 1주 전에 또 열어 두 번 갔다(10-07 대기 12,411건). 기일을 못 읽으면 예전처럼 바로 연다.
+                        AND (REPLACE(SUBSTR(sale_date, 1, 10), '.', '-') NOT GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'
+                             OR REPLACE(SUBSTR(sale_date, 1, 10), '.', '-') <= date('now', 'localtime', '+7 day'))
                     )
                     OR (
                         detail_status IN ('failed', 'metadata_only')

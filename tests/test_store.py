@@ -618,7 +618,8 @@ class StoreTests(unittest.TestCase):
             conn.execute("UPDATE auction_items SET detail_collected_at = '2026-09-20T00:00:00+00:00', "
                          "last_changed_at = '2026-09-21T00:00:00+00:00' WHERE item_key = ?", (keys["changed"],))
         order = [row["item_key"] for row in self.store.list_detail_targets()]
-        self.assertEqual(order, [keys["week"], keys["new"], keys["changed"], keys["backfill"]])
+        # 10-07: 기일이 1주 밖인 '바뀜'(대개 유찰)은 새 기일 1주 창에 들어와서 연다 — 지금은 줄에 없다
+        self.assertEqual(order, [keys["week"], keys["new"], keys["backfill"]])
 
     def test_near_stats_cache_roundtrip(self):
         table = {"caption": "인근매각통계", "rows": [["기간"], ["3개월"]]}
@@ -683,7 +684,9 @@ class StoreTests(unittest.TestCase):
 
     def test_only_meaningful_list_changes_queue_detail_again(self):
         # 소재지목록·상세URL·수집구분은 읽은 화면에 따라 흔들린다 — 그것만 바뀌면 상세를 다시 열지 않는다.
-        row = {"사건번호": "인천지방법원 2025타경510258", "물건번호": "1", "매각기일": "2099.01.01",
+        from datetime import date as _date
+        near = (_date.today() + timedelta(days=5)).strftime("%Y.%m.%d")
+        row = {"사건번호": "인천지방법원 2025타경510258", "물건번호": "1", "매각기일": near,
                "최저매각가격": "14,823,000 (8%)", "진행상태": "유찰 7회", "수집구분": "예정", "소재지목록": "a"}
         key = "auction:인천지방법원:2025타경510258:1"
         self.store.upsert_items([AuctionItem(row)])
@@ -696,6 +699,10 @@ class StoreTests(unittest.TestCase):
         self.assertFalse(queued())
         self.store.upsert_items([AuctionItem({**row, "최저매각가격": "11,858,000 (6%)", "진행상태": "유찰 8회"})])
         self.assertTrue(queued())
+        # 유찰로 새 기일이 1주 밖이면 그 창에 들어올 때까지 미룬다(10-07)
+        far = (_date.today() + timedelta(days=30)).strftime("%Y.%m.%d")
+        self.store.upsert_items([AuctionItem({**row, "매각기일": far, "최저매각가격": "9,486,000 (5%)", "진행상태": "유찰 9회"})])
+        self.assertFalse(queued())
 
     def test_recollection_without_near_sales_search_keeps_old_stats(self):
         # 인근매각 검색을 안 누르면 머리글만 온다 — 받아 둔 통계를 덮으면 웹 탭이 빈다.

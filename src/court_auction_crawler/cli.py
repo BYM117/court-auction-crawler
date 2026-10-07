@@ -16,7 +16,7 @@ from . import jev as jev_api
 from . import rights as rights_rules
 from .common import RateLimitError, index_problems, self_restart, singleton_lock
 from .crawler import collect_all_sync, collect_popularity_sync, collect_results_sync, collect_sync
-from .detail_crawler import collect_details_sync
+from .detail_crawler import DETAIL_QUIET_HOURS, collect_details_sync, quiet_seconds_left
 from .notices import collect_notices_sync
 from .transactions import classify_transaction_kind, fetch_transactions
 from .web_push import apply_prune, build_uploader, plan_prune, push_once
@@ -341,19 +341,6 @@ def _notice_courts(only: str | None, limit: int | None) -> list[str]:
     return courts
 
 
-# 상세 수집기를 쉬게 하는 시간대(맥 시계 = KST, [시작, 끝)). 자정~02시는 09-30·10-02·10-03 모두 최악이었다(10-02 시각별
-# 거절 56~70%, 10-03 01시대 세션당 사건 3건). 이 시간에 법원에 가는 건 상세 수집기뿐이다 — 목록 02:30·08:00·12:30, 공고 05:40.
-DETAIL_QUIET_HOURS = (0, 2)
-
-
-def quiet_seconds_left(now: datetime) -> float:
-    """지금이 쉬는 시간대면 끝날 때까지 남은 초, 아니면 0."""
-    start, end = DETAIL_QUIET_HOURS
-    if not start <= now.hour < end:
-        return 0
-    return (now.replace(hour=end, minute=0, second=0, microsecond=0) - now).total_seconds()
-
-
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
 
@@ -524,6 +511,7 @@ def main(argv: list[str] | None = None) -> int:
                 collect_documents=not args.skip_documents,
                 download_document_files=args.download_document_files,
                 workers=args.workers,
+                stop_in_quiet_hours=args.loop,
             )
             if args.backfill_results:
                 print(

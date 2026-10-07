@@ -250,7 +250,7 @@ class DetailCrawlerHelperTests(unittest.TestCase):
 
     def test_detail_quiet_hours(self):
         from datetime import datetime
-        from court_auction_crawler.cli import quiet_seconds_left
+        from court_auction_crawler.detail_crawler import quiet_seconds_left
         self.assertEqual(quiet_seconds_left(datetime(2026, 10, 3, 1, 30)), 1800)
         self.assertEqual(quiet_seconds_left(datetime(2026, 10, 3, 2, 0)), 0)
         self.assertEqual(quiet_seconds_left(datetime(2026, 10, 3, 23, 59)), 0)
