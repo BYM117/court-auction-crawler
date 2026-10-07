@@ -666,6 +666,20 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(status, "collected")
         self.assertNotIn(key, [t["item_key"] for t in self.store.list_detail_targets()])
 
+    def test_pending_documents_wait_for_their_window(self):
+        # 유찰로 기일이 밀리면 옛 기일 기준 재시도 시각이 지나 있다 — 새 기일 공개 창(2주) 밖이면 서류 받으러 가지 않는다(10-07).
+        from datetime import date as _date
+        far = (_date.today() + timedelta(days=25)).strftime("%Y.%m.%d")
+        self.store.upsert_items([AuctionItem({"사건번호": "수원지방법원 2026타경9", "물건번호": "1", "매각기일": far})])
+        key = "auction:수원지방법원:2026타경9:1"
+        self.store.save_item_detail(key, {"tables": [], "appraisal_summary": "1)"})
+        self.store.save_document_status(key, "매각물건명세서", status="pending", next_retry_at="2026-09-01T00:00:00+00:00")
+        self.assertNotIn(key, [t["item_key"] for t in self.store.list_detail_targets()])
+        near = (_date.today() + timedelta(days=5)).strftime("%Y.%m.%d")
+        with self.store.connect() as conn:
+            conn.execute("UPDATE auction_items SET sale_date = ? WHERE item_key = ?", (near, key))
+        self.assertIn(key, [t["item_key"] for t in self.store.list_detail_targets()])
+
     def test_summary_backfill_is_capped_per_day(self):
         from datetime import date as _date
         far = (_date.today() + timedelta(days=20)).strftime("%Y.%m.%d")

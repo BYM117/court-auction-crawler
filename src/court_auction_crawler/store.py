@@ -1035,6 +1035,10 @@ class AuctionStore:
                                AND document.document_type NOT IN ({restricted})
                                AND (document.next_retry_at IS NULL OR document.next_retry_at <= ?)
                         )
+                        -- 서류는 공개 창(명세서 기일 1주 전·현황조사서 2주 전) 안에서만 받으러 간다. 유찰로 기일이 밀리면 옛 기일
+                        -- 기준 '다시 시도' 시각이 이미 지나 있어, 새 기일이 한참 남았는데 헛걸음을 했다(10-07 대기 1,051건).
+                        AND (REPLACE(SUBSTR(sale_date, 1, 10), '.', '-') NOT GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'
+                             OR REPLACE(SUBSTR(sale_date, 1, 10), '.', '-') <= date('now', 'localtime', '+14 day'))
                     )
                     -- 감정평가 요항표(appraisal_summary)를 받기 전에 상세를 받고 다시 안 연 물건을 한 번
                     -- 더 본다(2026-09-30: 활성 22,315건이 요항표 0%). 보고 나면 detail_collected_at 이
