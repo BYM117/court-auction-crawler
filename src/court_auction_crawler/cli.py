@@ -925,7 +925,9 @@ def run_collect_cycle(
         if not deals.get("no_key"):
             print(f"실거래가: 확보 {deals['ok']}개, 대상 {deals['targets']}개")
     try:
-        print(format_rights_result(run_enrich_rights(store, quiet=True)))
+        # 새 기일마다 명세서를 새로 받으면서(10-06) 회차마다 재판정이 수천 건이 됐다. Jev 예산 1,500 이면
+        # 나머지가 대기로 쌓인다 — 실제 호출은 글이 바뀐 것만이라 회차당 수백 번 안쪽이다.
+        print(format_rights_result(run_enrich_rights(store, limit=8000, jev_budget=8000, quiet=True)))
     except Exception as exc:  # noqa: BLE001 - 판정 실패로 사이클을 멈추지 않는다(규칙 판정은 다음에 다시)
         print(f"!! 권리 판정 건너뜀: {str(exc)[:150]}")
     return {"items": items, "totals": totals}

@@ -1671,7 +1671,10 @@ class AuctionStore:
                       WHERE rights_json <> ''
                         -- NULLIF: 판정 전 물건은 빈 문자열이다. SQLite 는 AND 를 앞에서 끊는다는 보장이
                         -- 없어 json_extract('') 가 'malformed JSON' 으로 터질 수 있다(2026-09-29 확인 질의에서 밟음).
-                        AND json_extract(NULLIF(rights_json, ''), '$.jev.names.fp') IS NULL
+                        -- jev_pending: 예산이 모자라 Jev 를 못 받은 것. 예전에 받은 적이 있으면 names.fp 가 남아
+                        -- 위 조건에 안 걸려, 다음에 글이 또 바뀔 때까지 대기로 남았다(10-07 진행 9,050건).
+                        AND (json_extract(NULLIF(rights_json, ''), '$.jev.names.fp') IS NULL
+                             OR json_extract(NULLIF(rights_json, ''), '$.jev_pending') = 1)
                       ORDER BY is_active ASC, updated_at DESC
                       LIMIT ?"""
             params: tuple[Any, ...] = (self._push_limit(limit),)

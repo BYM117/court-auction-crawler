@@ -142,6 +142,16 @@ class StoreTests(unittest.TestCase):
                 (seen, collected, collected, key),
             )
 
+    def test_Jev_대기는_예전에_받은_적이_있어도_다시_뽑힌다(self):
+        key = "auction:서울중앙지방법원:2025타경1234:1"
+        self.store.upsert_items([self._item()])
+        self.store.update_rights(key, {"v": 99, "jev": {"names": {"fp": "옛것"}}, "jev_pending": True})
+        keys = [r["item_key"] for r in self.store.list_rights_targets(version=99, jev_missing=True)]
+        self.assertIn(key, keys)
+        self.store.update_rights(key, {"v": 99, "jev": {"names": {"fp": "옛것"}}, "jev_pending": False})
+        keys = [r["item_key"] for r in self.store.list_rights_targets(version=99, jev_missing=True)]
+        self.assertNotIn(key, keys)
+
     def test_판정이_같으면_버전만_올라도_다시_올리지_않는다(self):
         key = "auction:서울중앙지방법원:2025타경1234:1"
         self.store.upsert_items([self._item()])
