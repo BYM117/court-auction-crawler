@@ -680,6 +680,21 @@ class StoreTests(unittest.TestCase):
             conn.execute("UPDATE auction_items SET sale_date = ? WHERE item_key = ?", (near, key))
         self.assertIn(key, [t["item_key"] for t in self.store.list_detail_targets()])
 
+    def test_unavailable_item_is_not_requeued_for_stale_spec(self):
+        # 10-08: 조회불가 물건이 '옛 명세서 다시 받기' 에 걸려 목록마다 되풀이 열렸다.
+        from datetime import date as _date
+        sale = (_date.today() + timedelta(days=1)).strftime("%Y.%m.%d")
+        self.store.upsert_items([AuctionItem({"사건번호": "울산지방법원 2025타경12413", "물건번호": "1", "매각기일": sale})])
+        key = "auction:울산지방법원:2025타경12413:1"
+        self.store.save_item_detail(key, {"tables": [], "appraisal_summary": "1)"})
+        self.store.save_document_status(key, "매각물건명세서", status="collected", metadata={"text": "x" * 50})
+        with self.store.connect() as conn:
+            conn.execute("UPDATE auction_documents SET collected_at = '2026-08-26T00:00:00+00:00' WHERE item_key = ?", (key,))
+            conn.execute("UPDATE auction_items SET last_changed_at = '2026-08-01T00:00:00+00:00' WHERE item_key = ?", (key,))
+        self.assertIn(key, [t["item_key"] for t in self.store.list_detail_targets()])
+        self.store.mark_detail_unavailable(key, "상세 버튼 비활성")
+        self.assertNotIn(key, [t["item_key"] for t in self.store.list_detail_targets()])
+
     def test_summary_backfill_is_capped_per_day(self):
         from datetime import date as _date
         far = (_date.today() + timedelta(days=20)).strftime("%Y.%m.%d")

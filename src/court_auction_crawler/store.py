@@ -1047,6 +1047,9 @@ class AuctionStore:
                     -- 한 번 'collected' 면 다시 안 받아, 열린 기일의 27~37% 가 옛 명세서뿐이었다(2026-10-04 실측).
                     OR (
                         is_active = 1
+                        -- 조회불가(상세 버튼이 막힘 — 팔렸거나 취하)는 가도 명세서를 못 받아 상태가 안 바뀐다. 빼지 않으면 목록마다
+                        -- 다시 들어와 같은 사건을 되풀이해 열었다(10-08 하루 69번, 대기열 641 중 411).
+                        AND detail_status != 'unavailable'
                         AND REPLACE(SUBSTR(sale_date, 1, 10), '.', '-') BETWEEN date('now', 'localtime') AND date('now', 'localtime', '+7 day')
                         AND EXISTS (
                             SELECT 1 FROM auction_documents AS spec
