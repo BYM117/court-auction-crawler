@@ -3,7 +3,9 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
+from court_auction_crawler import enrichment
 from court_auction_crawler.models import AuctionItem
 from court_auction_crawler.store import AuctionStore
 from court_auction_crawler.common import asset_object_name
@@ -200,6 +202,7 @@ class PushPipelineTests(unittest.TestCase):
         self.assertIsNone(prop["building"]["hhld_cnt"])
         # 구역을 조회하지 않은 물건은 개발 구역이 빈 목록이다(없음 = 못 찾음이 아니라 해당 없음).
         self.assertEqual(prop["land_use"]["plans"], [])
+        self.assertIsNone(prop["land_use"]["redevelopment"])
 
     def test_snapshot_carries_only_development_plan_districts(self):
         # 웹 '개발 구역' 찾기의 재료. 구역 이름 전체가 아니라 개발 계획 이름만 실린다 —
@@ -219,6 +222,38 @@ class PushPipelineTests(unittest.TestCase):
         plans = payload["items"][0]["property"]["land_use"]["plans"]
 
         self.assertEqual(plans, ["주택재개발정비구역", "제1종지구단위계획구역"])
+
+    def test_snapshot_marks_items_inside_redevelopment_sites(self):
+        # 신속통합기획 구역: 경계가 있으면 경계 안(boundary), 없으면 대표지번 반경 안(estimated).
+        # 정사각 경계 하나(127.00~127.01, 37.50~37.51)와 면적 10,000π ㎡(반경 100m) 반경 구역 하나.
+        sites = self.root / "sites.geojson"
+        sites.write_text(json.dumps({"type": "FeatureCollection", "features": [
+            {"type": "Feature", "properties": {"program": "신속통합기획", "site": "네모 구역", "selected": "2025.04 수시선정",
+                                               "area_m2": 1.0},
+             "geometry": {"type": "Polygon", "coordinates": [[[127.0, 37.5], [127.01, 37.5], [127.01, 37.51], [127.0, 37.51]]]}},
+            {"type": "Feature", "properties": {"program": "신속통합기획", "site": "점 구역", "selected": "2026 수시선정",
+                                               "area_m2": 10000 * 3.141592653589793},
+             "geometry": {"type": "Point", "coordinates": [127.1, 37.6]}},
+        ]}), encoding="utf-8")
+        patcher = mock.patch.object(enrichment, "REDEVELOPMENT_SITES_PATH", sites)
+        patcher.start()
+        enrichment._redevelopment_sites.cache_clear()
+        self.addCleanup(enrichment._redevelopment_sites.cache_clear)
+        self.addCleanup(patcher.stop)
+
+        self.store.update_coordinates(self.item_key, lat=37.505, lng=127.005)
+        push_once(self.store, self.uploader, skip_assets=True)
+        payload = json.loads(gzip.decompress((self.dest / SNAPSHOT_KEY).read_bytes()).decode("utf-8"))
+        self.assertEqual(payload["items"][0]["property"]["land_use"]["redevelopment"], {
+            "program": "신속통합기획", "site": "네모 구역", "selected": "2025.04 수시선정", "match": "boundary"})
+
+        def site(lat, lng, quality="verified"):
+            return enrichment.redevelopment_site({"lat": lat, "lng": lng, "coordinate_quality": quality})
+
+        self.assertEqual(site(37.6005, 127.1)["match"], "estimated")   # 약 55m
+        self.assertIsNone(site(37.6015, 127.1))                         # 약 166m — 반경 밖
+        self.assertIsNone(site(37.515, 127.005))                        # 네모 위쪽 밖
+        self.assertIsNone(site(37.505, 127.005, quality="approximate"))  # 좌표가 확실하지 않으면 대조 안 함
 
     def test_photo_is_uploaded_once_and_skipped_afterwards(self):
         photo = self.root / "photo.png"

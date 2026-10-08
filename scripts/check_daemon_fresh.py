@@ -49,7 +49,9 @@ def import_closure(entry: str = "cli.py") -> tuple[str, ...]:
     return tuple(f"src/court_auction_crawler/{n}" for n in sorted(seen))
 
 
-_SOURCES = import_closure()
+# 코드가 아니어도 프로세스가 한 번 읽어 쥐고 있는 파일 — 바꾸면 재시작해야 반영된다.
+_DATA_FILES = ("reference/redevelopment_sites.geojson",)   # enrichment 가 처음 한 번만 읽는다
+_SOURCES = import_closure() + _DATA_FILES
 WATCHED = {label: _SOURCES for label in ("collect", "collect-details", "server")}
 # 일부러 꺼 둔 데몬 — --fix 가 켜면 안 된다(2026-09-29: 09-30 명세서를 받으려고 collect 정지).
 PAUSE_FLAGS = {"collect": ROOT / "data" / "collect_pause"}

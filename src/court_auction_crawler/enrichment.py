@@ -6,7 +6,10 @@ web.py가 이 모듈을 re-export하므로 `from .web import public_auction_deta
 from __future__ import annotations
 
 import json
+import math
 import re
+from functools import lru_cache
+from pathlib import Path
 from typing import Any, Iterator
 from urllib.parse import urlparse
 
@@ -383,6 +386,68 @@ def development_plans(districts: Any) -> list[str]:
     return picked
 
 
+# 서울 신속통합기획 재개발 구역. `scripts/build_redevelopment_sites.py` 가 만든다(두세 달마다 손으로).
+# 경계가 있는 구역은 경계 안이면 'boundary', 경계가 없는 구역은 대표지번에서 반경 sqrt(면적/π) 안이면
+# 'estimated'. 프로세스가 처음 한 번 읽으므로 파일을 바꾸면 데몬을 재시작한다(check_daemon_fresh 가 본다).
+REDEVELOPMENT_SITES_PATH = Path(__file__).resolve().parents[2] / "reference" / "redevelopment_sites.geojson"
+_M_PER_DEG_LAT = 110540
+
+
+@lru_cache(maxsize=1)
+def _redevelopment_sites() -> tuple[tuple[tuple[float, float, float, float], dict[str, Any], dict[str, Any]], ...]:
+    """(bbox, 도형, 공개 필드) 묶음. 반경 구역은 도형에 대표점과 반경(m)을 둔다."""
+    sites = []
+    for feature in json.loads(REDEVELOPMENT_SITES_PATH.read_text(encoding="utf-8"))["features"]:
+        geometry, props = feature["geometry"], feature["properties"]
+        public = {"program": props["program"], "site": props["site"], "selected": props["selected"]}
+        if geometry["type"] == "Point":
+            lng, lat = geometry["coordinates"]
+            radius = math.sqrt(props["area_m2"] / math.pi)
+            dlat = radius / _M_PER_DEG_LAT
+            dlng = radius / (111320 * math.cos(math.radians(lat)))
+            bbox = (lng - dlng, lat - dlat, lng + dlng, lat + dlat)
+            sites.append((bbox, {"point": (lng, lat), "radius": radius}, {**public, "match": "estimated"}))
+        else:
+            polygons = geometry["coordinates"] if geometry["type"] == "MultiPolygon" else [geometry["coordinates"]]
+            xs = [x for polygon in polygons for x, _ in polygon[0]]
+            ys = [y for polygon in polygons for _, y in polygon[0]]
+            bbox = (min(xs), min(ys), max(xs), max(ys))
+            sites.append((bbox, {"polygons": polygons}, {**public, "match": "boundary"}))
+    return tuple(sites)
+
+
+def _in_ring(lng: float, lat: float, ring: list[list[float]]) -> bool:
+    inside = False
+    for (x1, y1), (x2, y2) in zip(ring, ring[1:] + ring[:1]):
+        if (y1 > lat) != (y2 > lat) and lng < (x2 - x1) * (lat - y1) / (y2 - y1) + x1:
+            inside = not inside
+    return inside
+
+
+def redevelopment_site(item: dict[str, Any]) -> dict[str, Any] | None:
+    """좌표가 verified 인 물건이 신속통합기획 구역 안이면 그 구역, 아니면 None.
+
+    경계 판정이 반경 추정보다 앞선다 — 두 구역에 걸치면 경계 안인 쪽을 낸다."""
+    if item.get("coordinate_quality") != "verified":
+        return None
+    lat, lng = parse_optional_float(item.get("lat")), parse_optional_float(item.get("lng"))
+    if lat is None or lng is None:
+        return None
+    estimated = None
+    for (x1, y1, x2, y2), shape, public in _redevelopment_sites():
+        if not (x1 <= lng <= x2 and y1 <= lat <= y2):
+            continue
+        if "polygons" in shape:
+            if any(_in_ring(lng, lat, p[0]) and not any(_in_ring(lng, lat, h) for h in p[1:])
+                   for p in shape["polygons"]):
+                return dict(public)
+        elif estimated is None:
+            cx, cy = shape["point"]
+            if math.hypot((lng - cx) * 111320 * math.cos(math.radians(cy)), (lat - cy) * _M_PER_DEG_LAT) <= shape["radius"]:
+                estimated = dict(public)
+    return estimated
+
+
 def build_registry_summary(item: dict[str, Any]) -> dict[str, Any]:
     """목록에도 싣는 공공 부가정보 최소 필드(건축물대장 주용도, 용도지역).
 
@@ -401,6 +466,8 @@ def build_registry_summary(item: dict[str, Any]) -> dict[str, Any]:
             "zone": land_use.get("zone") or item.get("land_use_zone") or None,
             # 개발 계획 구역(정비구역·택지개발지구·지구단위계획구역 등). 없으면 빈 목록.
             "plans": development_plans(land_use.get("districts") or item.get("land_use_districts")),
+            # 서울 신속통합기획 구역 안이면 {program, site, selected, match}, 아니면 None.
+            "redevelopment": redevelopment_site(item),
         },
     }
 
