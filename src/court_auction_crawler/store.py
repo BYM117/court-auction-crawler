@@ -912,7 +912,7 @@ class AuctionStore:
         }
 
     def iter_public_rows(
-        self, *, active: bool | None = None, sold_since: str = ""
+        self, *, active: bool | None = None, sold_since: str = "", vehicles: bool = False
     ) -> Iterator[dict[str, Any]]:
         """스냅샷용 전량 조회. 페이징 없이 커서로 흘려보낸다.
 
@@ -927,7 +927,13 @@ class AuctionStore:
         if sold_since:
             clauses.append("sold_amount IS NOT NULL AND COALESCE(sold_date, '') >= ?")
             params.append(sold_since)
-        clauses.append("lat IS NOT NULL AND lng IS NOT NULL")
+        if vehicles:
+            # 자동차·중기는 주소가 아니라 사용본거지·보관장소라 좌표가 없다. 지도용 스냅샷에는 못 넣고
+            # 웹 목록 전용 파일(vehicles)로만 나간다 — 꽁지맵(지도)은 이 파일을 읽지 않는다.
+            clauses.append("lat IS NULL OR lng IS NULL")
+            clauses.append("category LIKE '%자동차%' OR category LIKE '%중기%'")
+        else:
+            clauses.append("lat IS NOT NULL AND lng IS NOT NULL")
         where = "WHERE " + " AND ".join(f"({clause})" for clause in clauses)
         with self.connect() as conn:
             for row in conn.execute(f"""{ITEM_LIST_SELECT}

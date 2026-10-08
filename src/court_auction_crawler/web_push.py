@@ -31,6 +31,8 @@ from .store import AuctionStore
 
 SNAPSHOT_KEY = "v1/snapshot.json.gz"
 SOLD_SNAPSHOT_KEY = "v1/sold.json.gz"
+# 좌표 없는 진행 차량·중기. 웹 목록 전용 — 지도(꽁지맵)는 snapshot 만 읽으니 이 파일과 무관하다.
+VEHICLES_KEY = "v1/vehicles.json.gz"
 ITEM_KEY_TEMPLATE = "v1/items/{digest}.json"
 ASSET_KEY_TEMPLATE = "v1/assets/{digest}{suffix}"
 
@@ -266,16 +268,25 @@ def build_sold_snapshot(store: AuctionStore) -> dict[str, Any]:
     return _wrap(_snapshot_page(store, sold_since="1900.01.01"))
 
 
+def build_vehicle_snapshot(store: AuctionStore) -> dict[str, Any]:
+    """진행 중인 자동차·중기 목록(좌표 없음). 구조는 snapshot 과 같다.
+
+    차량은 좌표가 없어 snapshot(활성+좌표)에서 빠진다. 웹 목록·검색은 차량도 보여야 해서 따로 올린다.
+    snapshot 에 섞지 않는 까닭: 지도 소비자(꽁지맵)가 좌표 없는 물건을 받을 준비가 돼 있지 않다."""
+    return _wrap(_snapshot_page(store, active=True, vehicles=True))
+
+
 def _wrap(items: list[dict[str, Any]]) -> dict[str, Any]:
     return {"generated_at": utc_now(), "total": len(items), "items": items}
 
 
 def push_snapshot(store: AuctionStore, uploader: Uploader, *, dry_run: bool = False) -> tuple[bool, int]:
-    """진행 물건 스냅샷과 낙찰 물건 스냅샷을 함께 올린다."""
+    """진행 물건 스냅샷, 낙찰 물건 스냅샷, 웹 전용 차량 목록을 함께 올린다."""
     total = 0
     for key, payload in (
         (SNAPSHOT_KEY, build_snapshot(store)),
         (SOLD_SNAPSHOT_KEY, build_sold_snapshot(store)),
+        (VEHICLES_KEY, build_vehicle_snapshot(store)),
     ):
         digest = payload_digest(payload)
         body = gzip.compress(

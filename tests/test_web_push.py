@@ -101,6 +101,34 @@ class PushPipelineTests(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
+    def test_vehicles_go_to_web_only_file_not_map_snapshot(self):
+        # 차량은 좌표가 없어 지도 스냅샷에 못 들어간다. 웹 목록용 vehicles 파일로만 나가야 하고,
+        # 지도 소비자(꽁지맵)가 읽는 snapshot 에는 절대 섞이면 안 된다.
+        from court_auction_crawler.web_push import VEHICLES_KEY
+        self.store.update_coordinates(self.item_key, lat=37.5, lng=127.0, pnu="1114010300")
+        self.store.upsert_items([
+            AuctionItem({
+                "수집구분": "진행",
+                "사건번호": "수원지방법원 2026타경50085",
+                "물건번호": "1",
+                "소재지": "사용본거지 : 경기도 화성시 월문길 46-2",
+                "용도": "자동차",
+                "감정평가액": "23,000,000원",
+                "최저매각가격": "16,100,000원",
+                "매각기일": "2026.10.02",
+                "진행상태": "유찰 1회",
+            })
+        ])
+
+        push_once(self.store, self.uploader, skip_assets=True)
+        read = lambda key: json.loads(gzip.decompress((self.dest / key).read_bytes()).decode("utf-8"))
+        snapshot = read(SNAPSHOT_KEY)
+        vehicles = read(VEHICLES_KEY)
+
+        self.assertEqual([i["category"] for i in snapshot["items"]], ["아파트"])
+        self.assertEqual([i["category"] for i in vehicles["items"]], ["자동차"])
+        self.assertEqual(vehicles["total"], 1)
+
     def test_first_push_uploads_snapshot_and_item(self):
         summary = push_once(self.store, self.uploader, skip_assets=True)
 
