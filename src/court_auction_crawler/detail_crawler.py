@@ -44,7 +44,8 @@ CASE_TABS = False
 CLOSING_SWEEP_DAYS = 0
 # 요항표(감정평가 요약) 보충으로만 여는 물건의 하루 상한(사용자 결정 2026-10-04). 새 물건·진짜 바뀐 물건·서류 방문 때는
 # 요항표가 어차피 같이 채워지므로, 이것은 '그것만 받으러 가는' 방문만 묶는다.
-SUMMARY_BACKFILL_PER_DAY = 1000
+# 10-08 1000 → 3000(사용자 결정): 급한 일·새 물건을 다 받고 대기열이 572건으로 비어 일손이 남는다. 남은 8,646건을 약 3일에.
+SUMMARY_BACKFILL_PER_DAY = 3000
 ITEM_DETAIL_BUTTON_SELECTOR = "input[value='물건상세조회']"
 # '인근매각물건사례' 절의 조회 버튼과, 그 결과로 나타나는 탭 묶음(G08).
 NEAR_SALES_SEARCH_SELECTOR = "#mf_wfm_mainFrame_btn_srchNearHist"
@@ -54,7 +55,7 @@ NEAR_SALES_GROUP_SELECTOR = "#mf_wfm_mainFrame_tac_aroundGdsExmGrp"
 # 시켰다(09-17 19시~). 사람은 거의 안 누르는 버튼이고, 세션이 막히기 전 받는 물건 수가 09-18 193 → 10-02 8 로
 # 무너진 시점과 겹친다. 끈 뒤 수명이 돌아오는지 보고 '동네별 하루 한 번' 으로 바꾼다. 받아 둔 통계는
 # store.save_item_detail 이 지킨다(안 누르면 머리글만 온다).
-NEAR_SALES_SEARCH = "off"
+NEAR_SALES_SEARCH = "area"  # 10-08 off → area(사용자 결정): 차단이 하루 넘게 0번으로 안정. 켠 뒤 하루 막힘을 다시 잰다
 # "area" 일 때 받은 통계를 며칠 나눠 쓰나. 1 = 그날만(사용자 결정 '동네별 하루 한 번'). 통계는 3·6·12개월 평균이라 하루 새 거의
 # 안 바뀐다. 활성 동네 키 11,589개에 물건 평균 2.8개라 하루 한 번이면 검색이 약 3분의 1만 준다 — 늘리면 더 준다.
 NEAR_STATS_REUSE_DAYS = 1
