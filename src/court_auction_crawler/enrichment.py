@@ -357,6 +357,31 @@ def public_auction_summary(item: dict[str, Any]) -> dict[str, Any]:
 
 BUILDING_SUMMARY_FIELDS = ("main_purpose", "use_apr_day", "hhld_cnt", "grnd_flr_cnt")
 
+# 토지이용계획의 지구·구역 이름 가운데 '개발 계획이 걸린 땅'을 가리키는 것. 웹 첫 화면의
+# '개발 구역' 찾기가 쓴다. 이름 전체(물건당 평균 10개 남짓)를 실으면 스냅샷이 불어나므로 이것만 고른다.
+# '개발제한구역'(그린벨트)·'개발행위허가제한지역'은 개발을 막는 쪽이라 넣지 않는다.
+DEVELOPMENT_PLAN_WORDS = (
+    "정비구역", "정비예정구역", "재정비촉진", "재개발", "재건축", "주거환경개선",
+    "도시개발구역", "택지개발", "공공주택지구", "지구단위계획", "도시재생",
+    "산업단지", "경제자유구역", "관광단지", "물류단지", "역세권개발", "도시관리계획 입안중",
+)
+
+
+def development_plans(districts: Any) -> list[str]:
+    """지구·구역 이름 목록에서 개발 관련 이름만. 목록 조회는 JSON 글자로, 상세는 리스트로 온다."""
+    if isinstance(districts, str):
+        try:
+            districts = json.loads(districts) if districts else []
+        except (ValueError, TypeError):
+            districts = []
+    if not isinstance(districts, list):
+        return []
+    picked: list[str] = []
+    for name in districts:
+        if isinstance(name, str) and any(word in name for word in DEVELOPMENT_PLAN_WORDS) and name not in picked:
+            picked.append(name)
+    return picked
+
 
 def build_registry_summary(item: dict[str, Any]) -> dict[str, Any]:
     """목록에도 싣는 공공 부가정보 최소 필드(건축물대장 주용도, 용도지역).
@@ -372,7 +397,11 @@ def build_registry_summary(item: dict[str, Any]) -> dict[str, Any]:
             field: building.get(field) or item.get(f"building_{field}") or None
             for field in BUILDING_SUMMARY_FIELDS
         },
-        "land_use": {"zone": land_use.get("zone") or item.get("land_use_zone") or None},
+        "land_use": {
+            "zone": land_use.get("zone") or item.get("land_use_zone") or None,
+            # 개발 계획 구역(정비구역·택지개발지구·지구단위계획구역 등). 없으면 빈 목록.
+            "plans": development_plans(land_use.get("districts") or item.get("land_use_districts")),
+        },
     }
 
 

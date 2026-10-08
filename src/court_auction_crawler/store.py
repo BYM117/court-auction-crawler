@@ -84,6 +84,8 @@ ITEM_LIST_SELECT = """
                        json_extract(NULLIF(building_detail, ''), '$.hhld_cnt') AS building_hhld_cnt,
                        json_extract(NULLIF(building_detail, ''), '$.grnd_flr_cnt') AS building_grnd_flr_cnt,
                        json_extract(NULLIF(land_use_detail, ''), '$.zone') AS land_use_zone,
+                       -- 지구·구역 이름 전체(JSON 배열 글자). 스냅샷엔 개발 관련 이름만 골라 싣는다(enrichment).
+                       json_extract(NULLIF(land_use_detail, ''), '$.districts') AS land_use_districts,
                        -- 권리 판정 요약. 실명·메모는 상세에만 — 스냅샷엔 필터에 쓸 값만.
                        json_extract(NULLIF(rights_json, ''), '$.opposability.summary') AS rights_opposable,
                        json_extract(NULLIF(rights_json, ''), '$.lien') AS rights_lien,

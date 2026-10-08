@@ -170,6 +170,27 @@ class PushPipelineTests(unittest.TestCase):
         self.assertEqual(prop["land_use"]["zone"], "일반상업지역")
         # 대장에 없는 값은 0이 아니라 '모름'으로 나가야 한다.
         self.assertIsNone(prop["building"]["hhld_cnt"])
+        # 구역을 조회하지 않은 물건은 개발 구역이 빈 목록이다(없음 = 못 찾음이 아니라 해당 없음).
+        self.assertEqual(prop["land_use"]["plans"], [])
+
+    def test_snapshot_carries_only_development_plan_districts(self):
+        # 웹 '개발 구역' 찾기의 재료. 구역 이름 전체가 아니라 개발 계획 이름만 실린다 —
+        # 전부 실으면 스냅샷이 불어나고, 개발제한구역(그린벨트)은 개발과 반대다.
+        self.store.update_coordinates(self.item_key, lat=37.5, lng=127.0, pnu="1114010300")
+        self.store.update_land_use(
+            self.item_key,
+            detail={
+                "zone": "제2종일반주거지역",
+                "districts": ["가축사육제한구역", "주택재개발정비구역", "개발제한구역", "제1종지구단위계획구역", "과밀억제권역"],
+            },
+            status="ok",
+        )
+
+        push_once(self.store, self.uploader, skip_assets=True)
+        payload = json.loads(gzip.decompress((self.dest / SNAPSHOT_KEY).read_bytes()).decode("utf-8"))
+        plans = payload["items"][0]["property"]["land_use"]["plans"]
+
+        self.assertEqual(plans, ["주택재개발정비구역", "제1종지구단위계획구역"])
 
     def test_photo_is_uploaded_once_and_skipped_afterwards(self):
         photo = self.root / "photo.png"
