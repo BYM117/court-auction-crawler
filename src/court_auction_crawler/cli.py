@@ -326,7 +326,15 @@ def _notice_courts(only: str | None, limit: int | None) -> list[str]:
             browser = await p.chromium.launch(headless=True)
             page = await browser.new_page(viewport={"width": 1440, "height": 1000})
             await page.goto(NOTICE_URL, wait_until="domcontentloaded", timeout=30_000)
-            await page.wait_for_timeout(2000)
+            # 고정 2초만 기다리면 화면이 늦게 뜬 날 법원 0곳으로 조용히 끝났다(10-04·10-08).
+            # 법원 이름이 실제로 붙을 때까지 기다린다 — 끝내 안 붙으면 아래 0곳 검사가 오류로 끝낸다.
+            try:
+                await page.wait_for_function(
+                    "(sel) => { const e = document.querySelector(sel);"
+                    " return !!e && [...e.options].some((o) => o.text.trim().endsWith('지방법원')); }",
+                    arg=COURT_SELECT, timeout=60_000)
+            except Exception:  # noqa: BLE001 - 0곳이면 호출자가 오류로 끝낸다
+                pass
             names = await page.evaluate(
                 "(sel) => { const e = document.querySelector(sel);"
                 " return e ? [...e.options].map((o) => o.text.trim()) : []; }", COURT_SELECT)
@@ -575,6 +583,9 @@ def main(argv: list[str] | None = None) -> int:
 
         courts = _notice_courts(args.court, args.court_limit)
         print(f"배당요구종기공고 수집: 법원 {len(courts)}곳")
+        if not courts:
+            print("!! 공고 화면에서 법원 목록을 못 읽었다 — 수집 안 함(실패)", flush=True)
+            return 1
 
         # **법원 하나가 끝날 때마다 쓴다.** 60곳을 다 돌고 마지막에 한 번 쓰면
         # 55번째에서 죽을 때 앞의 54곳을 통째로 날린다. 공고는 종기가 지나면

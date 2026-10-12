@@ -20,6 +20,7 @@ from playwright.async_api import Page, TimeoutError as PlaywrightTimeoutError, a
 
 from .common import CASE_NO_RE, self_restart, singleton_lock, utc_now
 from .crawler import _prefer_local_browser_cache
+from .enrichment import parse_case_closing
 from .store import NEAR_STATS_CAPTION, AuctionStore, filled_near_stats, representative_case_no
 
 
@@ -613,6 +614,15 @@ class CourtAuctionDetailCrawler:
             }
 
         if button_count == 0:
+            # 종국 뒤 30일이 지나면 법원은 물건 목록 없이 '기본사항만' 보여 준다. 그 기본사항에
+            # 종국결과가 남는다(10-12 탐침: 평택 2024타경1116·인천 2025타경1424 둘 다 '취하').
+            # 실패로 세면 종국결과를 버리고 헛 재시도만 한다.
+            case = {"case_tables": await extract_tables(page)}
+            if parse_case_closing({"case": case})["result"] not in ("", "미종국"):
+                for target in targets:
+                    self.store.mark_detail_unavailable(target["item_key"], "사건 종국 — 물건 목록 없음", case)
+                return {"collected": 0, "failed": 0, "unavailable": len(targets), "documents_collected": 0,
+                        "documents_pending": 0, "results_filled": 0}
             text = await screen_text(page)
             raise case_search_error(
                 court,
@@ -737,7 +747,7 @@ class CourtAuctionDetailCrawler:
                 continue
             if disabled_by_no.get(item_no) is True:
                 self.store.mark_detail_unavailable(
-                    target["item_key"], "물건상세조회 버튼 비활성 (종결·취하 등으로 조회 불가)"
+                    target["item_key"], "물건상세조회 버튼 비활성 (종결·취하 등으로 조회 불가)", shared
                 )
                 counts["unavailable"] += 1
             else:

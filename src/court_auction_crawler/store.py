@@ -1294,20 +1294,28 @@ class AuctionStore:
                 ),
             )
 
-    def mark_detail_unavailable(self, item_key: str, reason: str) -> None:
+    def mark_detail_unavailable(self, item_key: str, reason: str, case: dict[str, Any] | None = None) -> None:
         """종결·취하 등으로 상세조회 버튼이 비활성인 물건. 재시도해도 소용없으므로
         failed와 달리 재시도 큐에서 제외한다. 물건이 다시 변경되면(재공고 등)
-        list_detail_targets가 다시 대상으로 올린다."""
+        list_detail_targets가 다시 대상으로 올린다.
+
+        `case` 는 그때 읽은 사건 화면 표다. **취하된 사건은 물건 버튼이 바로 이 비활성이 된다** —
+        종국결과를 여기서 안 적어 사라진 물건 2만 번 훑기에 종국 0건이었다(평택 2024타경1116:
+        법원은 '취하', 우리는 '미종국'). 값이 있을 때만 덮는다."""
         now = utc_now()
+        closing = parse_case_closing({"case": case}) if case else {"result": "", "date": ""}
         with self.connect() as conn:
             conn.execute(
                 """
                 UPDATE auction_items
                    SET detail_status = 'unavailable', detail_checked_at = ?,
-                       detail_next_retry_at = NULL, detail_error = ?, updated_at = ?
+                       detail_next_retry_at = NULL, detail_error = ?, updated_at = ?,
+                       closing_result = CASE WHEN ? != '' THEN ? ELSE closing_result END,
+                       closing_date = CASE WHEN ? != '' THEN ? ELSE closing_date END
                  WHERE item_key = ?
                 """,
-                (now, str(reason)[:500], now, item_key),
+                (now, str(reason)[:500], now,
+                 closing["result"], closing["result"], closing["result"], closing["date"], item_key),
             )
 
     def document_statuses(self, item_key: str, sale_date: str = "") -> dict[str, str]:

@@ -221,6 +221,22 @@ class StoreTests(unittest.TestCase):
             {"result": "취하", "date": "2026.09.09"},
         )
 
+    def test_withdrawn_case_closing_is_saved_when_item_button_is_disabled(self):
+        """취하된 사건은 물건 버튼이 비활성이라 상세 대신 unavailable 로 끝난다. 그 길에서
+        종국결과를 버려 2만 번 훑기에 종국 0건이었다(평택 2024타경1116 — 법원 '취하', 우리 '미종국')."""
+        key = "auction:서울중앙지방법원:2025타경1234:1"
+        self.store.upsert_items([self._item()])
+        self.store.save_item_detail(key, {"case": {"case_tables": [
+            {"caption": "사건기본내역", "rows": [["종국결과", "미종국", "종국일자", ""]]}]}})
+        withdrawn = {"case_tables": [{"caption": "사건 기본 내역 검색결과",
+                                      "rows": [["종국결과", "취하", "종국일자", "2026.09.09"]]}]}
+        self.store.mark_detail_unavailable(key, "물건상세조회 버튼 비활성", withdrawn)
+        item = self.store.get_item(key)
+        self.assertEqual((item["closing_result"], item["closing_date"]), ("취하", "2026.09.09"))
+        # 사건 표를 못 읽었으면 받아 둔 값을 지키고 빈칸으로 덮지 않는다.
+        self.store.mark_detail_unavailable(key, "물건상세조회 버튼 비활성", {"case_tables": []})
+        self.assertEqual(self.store.get_item(key)["closing_result"], "취하")
+
     def test_case_item_fields_reach_the_list_payload(self):
         """재매각·보증금은 목록에서 보여야 한다(G04). 목록 조회는 detail_json을 읽지
         않으므로(763MB) 상세를 저장할 때 컬럼으로 뽑아 둔다. 그 길이 실제로 이어지는지
