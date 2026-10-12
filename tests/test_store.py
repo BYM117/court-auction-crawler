@@ -711,6 +711,31 @@ class StoreTests(unittest.TestCase):
         self.store.mark_detail_unavailable(key, "상세 버튼 비활성")
         self.assertNotIn(key, [t["item_key"] for t in self.store.list_detail_targets()])
 
+    def test_vehicle_auctions_are_not_queued_for_documents(self):
+        # 10-12: 자동차·중기는 명세서·현황조사서를 찾지 않는다(현황조사서 575·명세서 208 헛걸음).
+        from datetime import date as _date
+        sale = (_date.today() + timedelta(days=5)).strftime("%Y.%m.%d")
+        self.store.upsert_items([AuctionItem({"사건번호": "창원지방법원 2025타경888", "물건번호": "1", "매각기일": sale, "용도": "자동차"})])
+        key = "auction:창원지방법원:2025타경888:1"
+        self.store.save_item_detail(key, {"tables": [], "appraisal_summary": "1)"})
+        self.store.save_document_status(key, "현황조사서", status="pending", next_retry_at="2026-09-01T00:00:00+00:00")
+        self.assertNotIn(key, [t["item_key"] for t in self.store.list_detail_targets()])
+        from court_auction_crawler.store import is_vehicle_auction
+        self.assertTrue(is_vehicle_auction("자동차,중기", ""))
+        self.assertTrue(is_vehicle_auction("기타", "건설기계임의경매"))
+        self.assertFalse(is_vehicle_auction("기타", "소형선박임의경매"))   # 선박은 현황조사서가 있다
+
+    def test_upcoming_notices_exclude_listed_cases_and_names(self):
+        self.store.upsert_items([AuctionItem({"사건번호": "서울중앙지방법원 2026타경1", "물건번호": "1"})])
+        self.store.upsert_notices([
+            {"court": "서울중앙지방법원", "case_no": "서울중앙지방법원 2026타경1", "address": "a", "owner": "김철수", "debtor": "이영희", "notice_date": "2026.09.01"},
+            {"court": "서울중앙지방법원", "case_no": "서울중앙지방법원 2026타경2", "address": "b", "owner": "박민수", "debtor": "최지우", "notice_date": "2026.09.02"},
+        ])
+        rows = self.store.list_upcoming_notices()
+        self.assertEqual([r["case_no"] for r in rows], ["서울중앙지방법원 2026타경2"])
+        self.assertNotIn("owner", rows[0])
+        self.assertNotIn("debtor", rows[0])
+
     def test_summary_backfill_is_capped_per_day(self):
         from datetime import date as _date
         far = (_date.today() + timedelta(days=20)).strftime("%Y.%m.%d")

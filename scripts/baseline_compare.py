@@ -84,6 +84,8 @@ async def fetch(ym: str) -> dict:
     saved[ym] = got
     STATS_PATH.write_text(json.dumps(saved, ensure_ascii=False, indent=1))
     print(f"{len(got)}개 법원 저장 → {STATS_PATH}")
+    if not got:  # 10-01: 0곳인데 조용히 끝나 열하루 동안 아무도 몰랐다 — 실패로 끝내 로그·관제실에 보이게 한다
+        sys.exit(f"!! {ym} 통계를 한 곳도 못 받았다 — 법원이 아직 안 올렸을 수 있다. 며칠 뒤 --fetch {ym} 로 다시")
     return got
 
 

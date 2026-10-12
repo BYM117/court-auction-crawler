@@ -17,8 +17,9 @@
        지난달치를 그날 받는다(10/1에 202609). 맥이 자고 있었으면 깨어난 직후 한 번 돈다. -->
   <key>StartCalendarInterval</key>
   <dict>
+    <!-- 1일 → 5일(2026-10-12): 10-01 10:00 엔 법원이 9월 통계를 아직 안 올려 0곳이었다. 10-12 다시 받으니 58곳. -->
     <key>Day</key>
-    <integer>1</integer>
+    <integer>5</integer>
     <key>Hour</key>
     <integer>10</integer>
     <key>Minute</key>

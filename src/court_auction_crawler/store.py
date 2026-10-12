@@ -1032,6 +1032,7 @@ class AuctionStore:
                     )
                     OR (
                         detail_status != 'unavailable'
+                        AND NOT {vehicle}
                         AND EXISTS (
                             SELECT 1
                               FROM auction_documents AS document
@@ -1058,6 +1059,7 @@ class AuctionStore:
                         -- 조회불가(상세 버튼이 막힘 — 팔렸거나 취하)는 가도 명세서를 못 받아 상태가 안 바뀐다. 빼지 않으면 목록마다
                         -- 다시 들어와 같은 사건을 되풀이해 열었다(10-08 하루 69번, 대기열 641 중 411).
                         AND detail_status != 'unavailable'
+                        AND NOT {vehicle}
                         AND REPLACE(SUBSTR(sale_date, 1, 10), '.', '-') BETWEEN date('now', 'localtime') AND date('now', 'localtime', '+7 day')
                         AND EXISTS (
                             SELECT 1 FROM auction_documents AS spec
@@ -1081,6 +1083,7 @@ class AuctionStore:
                     closing_sweep=CLOSING_SWEEP_SQL if closing_sweep_days > 0 else "0",
                     restricted=", ".join(f"'{name}'" for name in RESTRICTED_DOCUMENTS),
                     summary_since=APPRAISAL_SUMMARY_SINCE,
+                    vehicle=VEHICLE_SQL,
                 )
             )
             now = utc_now()
@@ -1099,7 +1102,7 @@ class AuctionStore:
                 f"""
                 SELECT item_key, court, case_no, item_no, sale_date, status,
                        detail_status, detail_collected_at, detail_next_retry_at,
-                       detail_fail_count, last_changed_at, address, category, is_active
+                       detail_fail_count, last_changed_at, address, category, is_active, case_type
                   FROM auction_items
                  WHERE {' AND '.join(f'({clause})' for clause in clauses)}
                  -- **시한이 있는 것이 먼저다.** 사라진 물건은 종국 후 30일이 지나면
@@ -1849,6 +1852,24 @@ class AuctionStore:
         out = {court: cnt.most_common(1)[0][0]
                for court, cnt in 표.items() if sum(cnt.values()) >= min_samples}
         return out
+
+    def list_upcoming_notices(self, seen_within_days: int = 14) -> list[dict[str, Any]]:
+        """곧 경매 나올 사건 — 배당요구종기 공고에 떴고 아직 물건 목록에 없는 것(웹 'v1/upcoming.json.gz').
+
+        소유자·채무자 이름은 싣지 않는다(개인정보, PRIVACY-MASKING.md). 최근 공고 수집에서 본 것만(목록에서 내려간 공고는 뺀다)."""
+        with self.connect() as conn:
+            listed = {" ".join((row[0] or "").split()[:2]) for row in conn.execute("SELECT case_no FROM auction_items")}
+            last = conn.execute("SELECT MAX(last_seen_at) FROM auction_notices").fetchone()[0] or ""
+            rows = conn.execute(
+                """
+                SELECT court, case_no, address, notice_date, dept, opened_at, dividend_deadline, first_seen_at
+                  FROM auction_notices
+                 WHERE julianday(last_seen_at) >= julianday(?) - ?
+                 ORDER BY notice_date DESC, court, case_no
+                """,
+                (last, seen_within_days),
+            ).fetchall()
+        return [dict(row) for row in rows if " ".join((row["case_no"] or "").split()[:2]) not in listed]
 
     def notice_funnel(self) -> dict[str, Any]:
         """공고로 먼저 안 사건이 실제 물건으로 넘어오는 흐름.
@@ -2979,6 +3000,17 @@ def meaningful_list_change(old_raw_json: str | None, new_values: dict[str, Any])
     except (TypeError, ValueError):
         return True
     return any(str(old.get(k) or "").strip() != str(new_values.get(k) or "").strip() for k in MEANINGFUL_LIST_FIELDS)
+
+
+# 자동차·중기(건설기계) 사건 — 명세서·현황조사서를 찾지 않는다(사용자 결정 2026-10-12). 현황조사서는 땅·건물·선박에만
+# 작성되고(함정 ⑦) 명세서도 '문서 보기 버튼 없음' 으로 12시간마다 헛걸음했다(10-12 3번 넘게 찾은 활성: 현황조사서 575·명세서 208).
+# 선박은 현황조사서가 있으므로 넣지 않는다.
+VEHICLE_SQL = "(COALESCE(category, '') LIKE '%자동차%' OR COALESCE(category, '') LIKE '%중기%' OR COALESCE(case_type, '') LIKE '%자동차%' OR COALESCE(case_type, '') LIKE '%건설기계%')"
+
+
+def is_vehicle_auction(category: str | None, case_type: str | None) -> bool:
+    글 = f"{category or ''} {case_type or ''}"
+    return any(말 in 글 for 말 in ("자동차", "중기", "건설기계"))
 
 
 NEAR_STATS_CAPTION = "인근매각통계"

@@ -33,6 +33,8 @@ SNAPSHOT_KEY = "v1/snapshot.json.gz"
 SOLD_SNAPSHOT_KEY = "v1/sold.json.gz"
 # 좌표 없는 진행 차량·중기. 웹 목록 전용 — 지도(꽁지맵)는 snapshot 만 읽으니 이 파일과 무관하다.
 VEHICLES_KEY = "v1/vehicles.json.gz"
+# 곧 경매 나올 사건(배당요구종기 공고, 사용자 결정 2026-10-12). 물건 단위가 아니라 사건 단위 — 감정가·기일이 아직 없다.
+UPCOMING_KEY = "v1/upcoming.json.gz"
 ITEM_KEY_TEMPLATE = "v1/items/{digest}.json"
 ASSET_KEY_TEMPLATE = "v1/assets/{digest}{suffix}"
 
@@ -276,6 +278,12 @@ def build_vehicle_snapshot(store: AuctionStore) -> dict[str, Any]:
     return _wrap(_snapshot_page(store, active=True, vehicles=True))
 
 
+def build_upcoming(store: AuctionStore) -> dict[str, Any]:
+    """곧 경매 나올 사건. 한 줄 = 사건 하나(법원·사건번호·주소·공고일·경매계·개시일·배당요구종기).
+    아직 감정평가 전이라 감정가·최저가·매각기일이 없다 — 기일이 잡히면 물건 목록(snapshot)으로 옮겨 가고 여기서 빠진다."""
+    return _wrap(store.list_upcoming_notices())
+
+
 def _wrap(items: list[dict[str, Any]]) -> dict[str, Any]:
     return {"generated_at": utc_now(), "total": len(items), "items": items}
 
@@ -287,6 +295,7 @@ def push_snapshot(store: AuctionStore, uploader: Uploader, *, dry_run: bool = Fa
         (SNAPSHOT_KEY, build_snapshot(store)),
         (SOLD_SNAPSHOT_KEY, build_sold_snapshot(store)),
         (VEHICLES_KEY, build_vehicle_snapshot(store)),
+        (UPCOMING_KEY, build_upcoming(store)),
     ):
         digest = payload_digest(payload)
         body = gzip.compress(

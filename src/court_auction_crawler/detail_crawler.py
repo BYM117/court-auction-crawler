@@ -21,7 +21,7 @@ from playwright.async_api import Page, TimeoutError as PlaywrightTimeoutError, a
 from .common import CASE_NO_RE, self_restart, singleton_lock, utc_now
 from .crawler import _prefer_local_browser_cache
 from .enrichment import parse_case_closing
-from .store import NEAR_STATS_CAPTION, AuctionStore, filled_near_stats, representative_case_no
+from .store import NEAR_STATS_CAPTION, AuctionStore, filled_near_stats, is_vehicle_auction, representative_case_no
 
 
 COURT_CASE_SEARCH_URL = (
@@ -919,6 +919,8 @@ class CourtAuctionDetailCrawler:
         target: dict[str, Any],
     ) -> dict[str, int]:
         result = {"collected": 0, "pending": 0}
+        if is_vehicle_auction(target.get("category"), target.get("case_type")):
+            return result  # 자동차·중기는 명세서·현황조사서를 찾지 않는다(store.VEHICLE_SQL)
         existing = self.store.document_statuses(target["item_key"], sale_date=target.get("sale_date", ""))
         pending_documents = [
             (document_type, lead_days)

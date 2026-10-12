@@ -23,7 +23,7 @@ import sqlite3
 import time
 import subprocess
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -585,6 +585,58 @@ def load_window(lines: list[str], min_attempts: int = 300):
     return 창, [sum(p[i] for p in passes) for i in range(3)]
 
 
+def freshness_lines() -> list[str]:
+    """신선도 목표(사용자와 정함, 2026-10-12). 사용자가 보는 것이 얼마나 최신인가를 결과로 잰다(G20 L8).
+
+    웹 목록 4시간 이내 · 이번 입찰용 명세서 95%↑ · 현황조사서(땅·건물) 97%↑ · 새 물건 24시간 안 상세 95%↑ · 하루 막힘 5번↓.
+    명세서·현황조사서는 자동차·중기·조회불가를 뺀다(원래 없다). '이번 입찰용' = 받은 날이 기일 8일 전 이후(수집기 'stale' 과 같은 기준)."""
+    if DB is None:
+        return []
+    out: list[str] = []
+    veh = ("(COALESCE(category,'') LIKE '%자동차%' OR COALESCE(category,'') LIKE '%중기%' "
+           "OR COALESCE(case_type,'') LIKE '%자동차%' OR COALESCE(case_type,'') LIKE '%건설기계%')")
+    sale = "REPLACE(SUBSTR(sale_date,1,10),'.','-')"
+    try:
+        con = ro_connect(30)
+        q = lambda sql, *a: con.execute(sql, a).fetchone()[0]  # noqa: E731
+        pushed = q("SELECT MAX(pushed_at) FROM web_sync WHERE kind='snapshot'")
+        age = (datetime.now(timezone.utc) - datetime.fromisoformat(pushed)).total_seconds() / 3600 if pushed else None
+        n7 = q(f"SELECT COUNT(*) FROM auction_items WHERE is_active=1 AND detail_status!='unavailable' AND NOT {veh} "
+               f"AND {sale} BETWEEN date('now','localtime') AND date('now','localtime','+7 day')")
+        f7 = q(f"""SELECT COUNT(*) FROM auction_items i JOIN auction_documents d ON d.item_key=i.item_key
+                   AND d.document_type='매각물건명세서' AND d.status='collected'
+                   AND SUBSTR(d.collected_at,1,10) >= date({sale.replace('sale_date', 'i.sale_date')}, '-8 day')
+                 WHERE i.is_active=1 AND i.detail_status!='unavailable' AND NOT {veh.replace('category', 'i.category').replace('case_type', 'i.case_type')}
+                   AND {sale.replace('sale_date', 'i.sale_date')} BETWEEN date('now','localtime') AND date('now','localtime','+7 day')""")
+        n14 = q(f"SELECT COUNT(*) FROM auction_items WHERE is_active=1 AND detail_status!='unavailable' AND NOT {veh} "
+                f"AND {sale} BETWEEN date('now','localtime') AND date('now','localtime','+14 day')")
+        f14 = q(f"""SELECT COUNT(*) FROM auction_items i JOIN auction_documents d ON d.item_key=i.item_key
+                    AND d.document_type='현황조사서' AND d.status='collected'
+                  WHERE i.is_active=1 AND i.detail_status!='unavailable' AND NOT {veh.replace('category', 'i.category').replace('case_type', 'i.case_type')}
+                    AND {sale.replace('sale_date', 'i.sale_date')} BETWEEN date('now','localtime') AND date('now','localtime','+14 day')""")
+        new = con.execute("""SELECT first_seen_at, detail_collected_at FROM auction_items
+                              WHERE first_seen_at BETWEEN datetime('now','-4 day') AND datetime('now','-1 day')""").fetchall()
+        con.close()
+    except sqlite3.Error:
+        return []
+    fast = sum(1 for a, b in new if a and b and (datetime.fromisoformat(b) - datetime.fromisoformat(a)).total_seconds() <= 86400)
+    log = ROOT / "logs" / "collect-details.log"
+    blocks = log.read_text(encoding="utf-8", errors="replace").count("자가 복구: 차단 의심") if log.exists() else 0
+
+    def row(name: str, value: str, ok: bool | None, goal: str) -> str:
+        mark = "✅" if ok else ("⚠" if ok is not None else "·")
+        return f"  {mark} {name}: {value} (목표 {goal})"
+    pct = lambda a, b: f"{a / b * 100:.1f}%" if b else "-"  # noqa: E731
+    out.append("- 신선도 목표:")
+    out.append(row("웹 목록", f"{age:.1f}시간 전 갱신" if age is not None else "기록 없음", age is not None and age <= 4, "4시간 이내"))
+    out.append(row("이번 입찰용 명세서(입찰 7일 안)", f"{pct(f7, n7)} ({f7:,}/{n7:,})", (f7 / n7 >= 0.95) if n7 else None, "95% 이상"))
+    out.append(row("현황조사서(땅·건물, 입찰 14일 안)", f"{pct(f14, n14)} ({f14:,}/{n14:,})", (f14 / n14 >= 0.97) if n14 else None, "97% 이상"))
+    out.append(row("새 물건 24시간 안 상세(1~4일 전 처음 본 것)", f"{pct(fast, len(new))} ({fast:,}/{len(new):,})",
+                   (fast / len(new) >= 0.95) if new else None, "95% 이상"))
+    out.append(row("오늘 법원 막힘", f"{blocks}번", blocks <= 5, "5번 이하"))
+    return out
+
+
 def live_status() -> list[str]:
     """**지금 벌어지는 일**을 실시간으로 보여준다. DEVLOG 는 사람이 기억해서 쓰는
     통로라 놓치기 쉽다(09-19/20 을 이틀 놓쳤다). 이건 자동으로 재므로 안 놓친다.
@@ -695,6 +747,7 @@ def live_status() -> list[str]:
         except Exception:
             pass
 
+    out.extend(freshness_lines())
     out.append("")
     return out
 

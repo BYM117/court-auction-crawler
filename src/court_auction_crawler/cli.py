@@ -541,7 +541,9 @@ def main(argv: list[str] | None = None) -> int:
             if summary.aborted:
                 # 1.5분(2026-10-02, 0.5분에서): 법원 보안 차단이면 이제 헛요청 없이 바로 패스를 접는다.
                 # 전엔 막힌 세션에 4번을 더 보내느라 약 1분이 더 걸렸다 — 새 세션을 여는 간격은 그대로 둔다.
-                wait_minutes = 1.5
+                # 30분(사용자 결정 2026-10-12): 법원 '보안정책 차단' 을 곧바로 새 접속으로 넘지 않는다. 탭을 끈 뒤 막힘은
+                # 하루 0~2번이라(G20) 쉬어도 수집량에 거의 영향이 없다.
+                wait_minutes = 30
             elif summary.targets:
                 wait_minutes = 1.0
             else:
