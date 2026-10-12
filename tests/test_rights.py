@@ -370,5 +370,26 @@ class 백필루프(unittest.TestCase):
         self.assertLessEqual(store.asked, 501)
 
 
+class Jev긴글(unittest.TestCase):
+    def test_긴_글은_조각마다_그_조각에_나오는_후보만_묻는다(self):
+        from unittest import mock
+        from court_auction_crawler import jev as J
+        text = "홍길동이 신고함. " * 900 + "김철수가 점유함. " * 300      # 약 1만 2천 자 — 첫 조각엔 홍길동만
+        asked = []
+
+        def fake_ask(piece, questions):
+            self.assertLessEqual(len(piece), J.TEXT_LIMIT)
+            asked.append((len(piece), sorted(questions)))
+            return {k: {"noul": 0.9} for k in questions}
+
+        with mock.patch.object(J, "ask", fake_ask):
+            got = J.find_names(text, ["홍길동", "김철수", "없는이름"])
+        self.assertEqual(sorted(got), ["김철수", "홍길동"])
+        self.assertGreater(len(asked), 1)                     # 한 번에 안 보냈다
+        with mock.patch.object(J, "ask", fake_ask):
+            asked.clear(); J.find_names("홍길동이 신고함.", ["홍길동"])
+        self.assertEqual(len(asked), 1)                       # 짧은 글은 예전처럼 한 번
+
+
 if __name__ == "__main__":
     unittest.main()

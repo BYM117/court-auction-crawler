@@ -122,12 +122,44 @@ def pick_senior(window: str, candidates: list[str]) -> dict[str, Any] | None:
     return {"date": f"{y:04d}-{mo:02d}-{d:02d}", "kind": "", "confidence": answer.get("confidence")}
 
 
+# Jev 는 너무 긴 글을 HTTP 400 max_tokens_exceeded 로 거절한다. 물건이 여럿인 큰 사건은 현황조사서 메모가
+# 4만 자를 넘어(10-12: 대구서부 2022타경1821 물건 35개) 회차마다 같은 35건이 실패하고 다시 불렸다.
+TEXT_LIMIT = 8000
+
+
+def _pieces(text: str, limit: int = TEXT_LIMIT) -> list[str]:
+    """문장 경계에서 limit 자 이하 조각으로 자른다(짧으면 그대로 한 조각)."""
+    if len(text) <= limit:
+        return [text]
+    out: list[str] = []
+    cur = ""
+    for part in re.split(r"(?<=[.。…])\s+", text):
+        while len(part) > limit:
+            if cur:
+                out.append(cur)
+                cur = ""
+            out.append(part[:limit])
+            part = part[limit:]
+        if cur and len(cur) + 1 + len(part) > limit:
+            out.append(cur)
+            cur = part
+        else:
+            cur = f"{cur} {part}".strip()
+    if cur:
+        out.append(cur)
+    return out
+
+
 def find_names(text: str, candidates: list[str], chunk: int = 40) -> list[str]:
+    """후보 중 사람 이름. 긴 글은 조각마다 그 조각에 나오는 후보만 묻고, 한 조각이라도 이름이라 하면 이름 —
+    가리는 쪽으로 기운다(실명이 새는 것보다 낫다)."""
     found: list[str] = []
-    for start in range(0, len(candidates), chunk):
-        part = candidates[start:start + chunk]
-        answers = ask(text, {f"c{n}": _q("name", c=c) for n, c in enumerate(part)})
-        found += [c for n, c in enumerate(part) if answers[f"c{n}"]["noul"] >= 0.5]
+    for piece in _pieces(text):
+        here = [c for c in candidates if c in piece and c not in found]
+        for start in range(0, len(here), chunk):
+            part = here[start:start + chunk]
+            answers = ask(piece, {f"c{n}": _q("name", c=c) for n, c in enumerate(part)})
+            found += [c for n, c in enumerate(part) if answers[f"c{n}"]["noul"] >= 0.5]
     return found
 
 
