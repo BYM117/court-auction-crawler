@@ -40,9 +40,11 @@ FILING_TAB_SELECTOR = "#mf_wfm_mainFrame_tac_srchRsltDvs_tab_tabs3_tabHTML"
 # 표는 그대로 읽는다. 잃는 것: 사건 화면 기일내역(낙찰가 보충·웹 '기일내역 원문'), 문건송달(안 씀). 매각결과 보충 모드
 # (results_only)만 기일내역 탭을 누른다 — 그것만이 목적이라서.
 CASE_TABS = False
-# 목록에서 사라진 물건을 '한 번 더 보기'(G03 종국 훑기) 기간. 0 = 끔(2026-10-06). 종국결과는 2만 건 넘게 훑어 0건이었고,
-# 실제로 건지던 낙찰가(10-01 뒤 하루 약 40건)는 기일내역 탭에서만 나온다 — 탭을 끄면 이 방문은 헛걸음이다.
-CLOSING_SWEEP_DAYS = 0
+# 종국 훑기(G03, store.CLOSING_SWEEP_SQL) 하루 상한. 10-06 에 껐다(2만 번에 종국 0건 — 실은 종국결과를 버리던 버그, 89c2ce3).
+# 10-12 사용자 결정으로 다시 켠다: 기일 전에 사라진 것만, 3·30·90일에 한 번씩, 탭 없이. 밀린 11,005건(사건 8,558)을
+# 3일에 풀고(하루 약 3,700) 새로 사라지는 하루 100~300건을 더해 4,500. 10-06~08 하루 4~5천 사건을 막힘 0~2번으로 처리했다.
+# 다 풀린 뒤에는 상한에 닿지 않는다(하루 수백 건).
+CLOSING_SWEEP_PER_DAY = 4500
 # 요항표(감정평가 요약) 보충으로만 여는 물건의 하루 상한(사용자 결정 2026-10-04). 새 물건·진짜 바뀐 물건·서류 방문 때는
 # 요항표가 어차피 같이 채워지므로, 이것은 '그것만 받으러 가는' 방문만 묶는다.
 # 10-08 1000 → 3000(사용자 결정): 급한 일·새 물건을 다 받고 대기열이 572건으로 비어 일손이 남는다. 남은 8,646건을 약 3일에.
@@ -435,7 +437,7 @@ class CourtAuctionDetailCrawler:
                 include_inactive=include_inactive,
                 force=force,
                 item_key=item_key,
-                closing_sweep_days=CLOSING_SWEEP_DAYS,
+                closing_sweep_per_day=CLOSING_SWEEP_PER_DAY,
                 summary_backfill_per_day=SUMMARY_BACKFILL_PER_DAY,
             )
         )

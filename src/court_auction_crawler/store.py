@@ -25,25 +25,28 @@ from .utils import clean_text, parse_date, parse_money, parse_sale_result
 SCHEMA_VERSION = 4
 
 
-# 목록에서 사라진 뒤로 상세를 한 번도 안 받은 물건. 받고 나면
-# detail_collected_at > last_seen_at이 되어 스스로 큐에서 빠진다.
-# collected_at이 아니라 **checked_at**이다. 조회불가·실패로 끝난 물건은 collected_at이
-# 안 올라가서, 그걸로 걸면 같은 물건이 영영 큐 앞에 남는다(매각결과 보충에서 이미
-# 한 번 겪은 정체다). checked_at은 성공·실패·조회불가 모두에서 올라간다.
+# 종국 훑기(G03) — 기일 **전에** 목록에서 사라진 물건(취하·기각·변경 후보)을 사라진 뒤 3일·30일·90일에 한 번씩만
+# 다시 본다(사용자 결정 2026-10-12). 종국결과가 잡히면 더 안 본다. 120일이 지나면 손 뗀다.
+# - 기일 전에 사라진 것만: 기일 날·뒤에 사라진 것은 매각결과 화면이 낙찰가·유찰을 준다(97~100%, G20 L1).
+#   기일은 KST 날짜, last_seen_at 은 UTC 라 +9시간 해서 댄다(02:30 회차가 UTC 로는 전날이다).
+# - 단계마다 한 번: 그 단계 시각 뒤에 본 적(detail_checked_at)이 있으면 그 단계는 끝. checked_at 은 성공·실패·조회불가
+#   모두에서 올라가 같은 물건을 되풀이하지 않는다(09월 끝난 사건 하루 151번 되풀이가 법원을 자극했다).
+# - 30일 뒤에도 종국결과는 사건 기본사항에 남는다(10-12 탐침 — 평택 2024타경1116·인천 2025타경1424). 탭은 안 누른다.
+# 시각 비교는 julianday — ISO('T'·'+00:00')와 SQLite datetime(' ') 문자열을 그대로 대면 같은 날 안에서 틀린다.
+CLOSING_SWEEP_STAGES = (3, 30, 90)
 CLOSING_SWEEP_SQL = (
     "is_active = 0"
-    " AND COALESCE(last_seen_at, '') >= ?"
-    " AND (detail_checked_at IS NULL OR detail_checked_at < last_seen_at)"
+    " AND COALESCE(closing_result, '') IN ('', '미종국')"
+    " AND REPLACE(SUBSTR(sale_date, 1, 10), '.', '-') > date(last_seen_at, '+9 hours')"
+    " AND julianday('now') - julianday(last_seen_at) BETWEEN 3 AND 120"
+    " AND (" + " OR ".join(
+        f"(julianday('now') - julianday(last_seen_at) >= {d}"
+        f" AND COALESCE(julianday(detail_checked_at), 0) < julianday(last_seen_at) + {d})"
+        for d in CLOSING_SWEEP_STAGES) + ")"
 )
 # 수집기가 물건상세의 감정평가 요항표를 담기 시작한 때(UTC). DB 에서 요항표가 있는 가장 이른
 # 상세가 2026-09-18T10:45:17 이고 그 전 상세는 전부 없다(09-30 실측).
 APPRAISAL_SUMMARY_SINCE = "2026-09-18T10:45:00+00:00"
-
-
-def closing_sweep_cutoff(days: int) -> str:
-    """이보다 오래 전에 사라진 물건은 훑지 않는다. 사건이 종국되면 기일 정보가 끊기고,
-    30일이 더 지나면 기본정보만 남는다. 뒤늦게 파도 얻을 게 줄어든다."""
-    return (datetime.now(timezone.utc) - timedelta(days=days)).isoformat(timespec="seconds")
 
 
 ITEM_LIST_SELECT = """
@@ -978,20 +981,17 @@ class AuctionStore:
         include_inactive: bool = False,
         force: bool = False,
         item_key: str = "",
-        closing_sweep_days: int = 30,
+        closing_sweep_per_day: int | None = None,
         summary_backfill_per_day: int | None = None,
     ) -> list[dict[str, Any]]:
         clauses = ["court != ''", "case_no != ''", "item_no != ''"]
         params: list[Any] = []
         if not include_inactive:
             # 물건이 왜 사라졌는지는 사건 화면의 종국결과(취하·기각·취소)만 말해 준다.
-            # 목록 상태는 '신건'과 '유찰 N회'뿐이라 취하는 흔적 없이 사라진다(G03).
-            # 사라진 뒤로 한 번도 안 들여다본 물건을 딱 한 번 더 본다 —
-            # 보고 나면 detail_checked_at > last_seen_at이 되어 스스로 빠진다.
-            # 오래 전에 사라진 것까지 파헤치지 않는다(사건이 종국되면 창이 닫힌다).
-            if closing_sweep_days > 0:
+            # 목록 상태는 '신건'과 '유찰 N회'뿐이라 취하는 흔적 없이 사라진다(G03). CLOSING_SWEEP_SQL 참고.
+            # closing_sweep_per_day: None = 상한 없음, 0 = 끔.
+            if closing_sweep_per_day != 0:
                 clauses.append(f"is_active = 1 OR ({CLOSING_SWEEP_SQL})")
-                params.append(closing_sweep_cutoff(closing_sweep_days))
             else:
                 clauses.append("is_active = 1")
         if item_key:
@@ -1080,7 +1080,7 @@ class AuctionStore:
                     OR ({closing_sweep})
                 )
                 """.format(
-                    closing_sweep=CLOSING_SWEEP_SQL if closing_sweep_days > 0 else "0",
+                    closing_sweep=CLOSING_SWEEP_SQL if closing_sweep_per_day != 0 else "0",
                     restricted=", ".join(f"'{name}'" for name in RESTRICTED_DOCUMENTS),
                     summary_since=APPRAISAL_SUMMARY_SINCE,
                     vehicle=VEHICLE_SQL,
@@ -1088,8 +1088,6 @@ class AuctionStore:
             )
             now = utc_now()
             params.extend([now, now, now, now])
-            if closing_sweep_days > 0:
-                params.append(closing_sweep_cutoff(closing_sweep_days))
             # 물건에 다음 방문 시각이 잡혀 있으면 어느 이유로도 그 전엔 부르지 않는다. '밀린 문서' 조건과
             # 요항표 보충 조건이 이걸 안 봐서, '물건 목록 없음' 으로 10-06 까지 미룬 물건을 명세서가 pending
             # 이라는 이유로 패스마다 다시 불렀다(10-01 10:53~17:50 같은 사건 10~11번, 관제실 발견).
@@ -1105,15 +1103,8 @@ class AuctionStore:
                        detail_fail_count, last_changed_at, address, category, is_active, case_type
                   FROM auction_items
                  WHERE {' AND '.join(f'({clause})' for clause in clauses)}
-                 -- **시한이 있는 것이 먼저다.** 사라진 물건은 종국 후 30일이 지나면
-                 -- 법원이 기일정보를 안 준다(함정 ⑥) — 그때 놓치면 취하·기각을
-                 -- 영영 모른다. 산 물건은 내일도 거기 있다. 만료가 임박한 훑기만
-                 -- 앞세우고 나머지는 종전대로 산 물건을 먼저 본다.
-                 --
-                 -- 2026-09-18 실측: 감정평가서 상태 교정으로 활성 32,875건이 큐에
-                 -- 들어오자 훑기 4,194건이 통째로 뒤로 밀려 종국 확인이 0건이었다.
-                 ORDER BY (is_active = 0 AND COALESCE(last_seen_at, '') < ?) DESC,
-                          is_active DESC,
+                 -- 산 물건이 먼저, 종국 훑기는 맨 뒤다. 종국결과는 30일 뒤에도 기본사항에 남아(10-12 탐침) 서두를 시한이 없다.
+                 ORDER BY is_active DESC,
                           -- 기일이 오늘~모레인 물건이 먼저다. 명세서·현황조사서는 기일이 지나면
                           -- 영영 못 받는데(함정 ⑦), 새 물건(상세 미수집)을 먼저 보게 두면 그 뒤로
                           -- 밀린다(2026-09-29: 09-30 기일 명세서 1,414건이 10-08·12 새 물건 뒤였다).
@@ -1136,7 +1127,6 @@ class AuctionStore:
                 # 앞에 두면 WHERE 자리로 흘러 들어가 조용히 다른 비교가 된다.
                 # 만료 7일 전부터 급한 것으로 본다(훑기 창 30일 → 23일 이상).
                 [*params,
-                 closing_sweep_cutoff(max(closing_sweep_days - 7, 1)),
                  # 오늘도 넣는다 — 기일 당일 오전까지 서류를 볼 수 있다. 자정이 지나 D+1 이 '오늘' 이
                  # 되자 그날 기일 물건이 우선순위에서 빠졌다(2026-09-30 01:33, 일시 실패 46건).
                  date.today().isoformat(),
@@ -1145,7 +1135,26 @@ class AuctionStore:
                  (date.today() + timedelta(days=7)).isoformat(),
                  date.today().isoformat(), row_limit],
             ).fetchall()
-        return self._cap_summary_backfill([dict(row) for row in rows], summary_backfill_per_day)
+        rows = self._cap_summary_backfill([dict(row) for row in rows], summary_backfill_per_day)
+        if closing_sweep_per_day:
+            # 하루 상한 — 오늘(KST) 본 사라진 물건 수로 잰다(결과 기준이라 따로 셀 필요가 없다).
+            left = closing_sweep_per_day - self.closing_sweep_used()
+            kept = []
+            for row in rows:
+                if not row.get("is_active"):
+                    if left <= 0:
+                        continue
+                    left -= 1
+                kept.append(row)
+            rows = kept
+        return rows
+
+    def closing_sweep_used(self) -> int:
+        """오늘(KST 0시 이후) 상세를 들여다본 사라진 물건 수."""
+        start = datetime.combine(date.today(), datetime.min.time()).astimezone(timezone.utc).isoformat(timespec="seconds")
+        with self.connect() as conn:
+            return conn.execute("SELECT COUNT(*) FROM auction_items WHERE is_active = 0 AND detail_checked_at >= ?",
+                                (start,)).fetchone()[0]
 
     def save_item_detail(self, item_key: str, detail: dict[str, Any]) -> None:
         now = utc_now()

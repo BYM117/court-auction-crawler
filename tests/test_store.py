@@ -170,46 +170,80 @@ class StoreTests(unittest.TestCase):
         self.store.update_rights(key, {"v": 8, "lien": "남음"})
         self.assertGreater(at()[0], "2026-10-01T00:00:00+00:00")  # 바뀌면 지금 시각
 
+    @staticmethod
+    def _ago(days: float) -> str:
+        from datetime import datetime, timedelta, timezone
+        return (datetime.now(timezone.utc) - timedelta(days=days)).isoformat(timespec="seconds")
+
+    def _gone_before_sale(self, *, days_ago: float, checked_days_after: float | None = -20):
+        """기일 열흘 전에 사라진 물건(취하 후보). 상세는 사라지기 전(checked_days_after<0)에 받아 둔 것으로 둔다."""
+        from datetime import datetime, timedelta, timezone
+        seen = datetime.now(timezone.utc) - timedelta(days=days_ago)
+        sale = (seen + timedelta(days=10)).strftime("%Y.%m.%d")
+        key = "auction:서울중앙지방법원:2025타경1234:1"
+        self.store.upsert_items([self._item(sale_date=sale)])
+        checked = None if checked_days_after is None else (seen + timedelta(days=checked_days_after)).isoformat(timespec="seconds")
+        self._vanish(key, seen=seen.isoformat(timespec="seconds"), collected=checked)
+        return key
+
+    def _queued(self, **kw):
+        return [row["item_key"] for row in self.store.list_detail_targets(limit=50, **kw)]
+
     def test_vanished_item_is_looked_at_once_more(self):
         """취하된 물건은 상태 변화 없이 그냥 사라진다. 왜 사라졌는지는 사건 화면의
-        종국결과만 안다(G03). 사라진 뒤로 상세를 안 받았으면 딱 한 번 더 받는다."""
-        key = "auction:서울중앙지방법원:2025타경1234:1"
-        self.store.upsert_items([self._item()])
-        self._vanish(key, seen="2026-09-16T00:00:00+00:00", collected="2026-09-01T00:00:00+00:00")
+        종국결과만 안다(G03). 사라지고 3일 뒤 한 번 본다."""
+        self.assertIn(self._gone_before_sale(days_ago=5), self._queued())
 
-        keys = [row["item_key"] for row in self.store.list_detail_targets(limit=50)]
-        self.assertIn(key, keys)
+    def test_not_before_three_days(self):
+        self.assertNotIn(self._gone_before_sale(days_ago=1), self._queued())
 
-    def test_it_is_not_looked_at_again_after_that(self):
-        """한 번 보고 나면 스스로 큐에서 빠져야 한다. 안 그러면 대기열이 영영 안 나간다."""
-        key = "auction:서울중앙지방법원:2025타경1234:1"
-        self.store.upsert_items([self._item()])
-        self._vanish(key, seen="2026-09-16T00:00:00+00:00", collected="2026-09-01T00:00:00+00:00")
+    def test_it_is_not_looked_at_again_in_the_same_stage(self):
+        """한 번 보고 나면 그 단계는 끝이다. 안 그러면 같은 사건을 되풀이한다(9월 하루 151번)."""
+        key = self._gone_before_sale(days_ago=5)
         self.store.save_item_detail(key, {"case": {}})
+        self.assertNotIn(key, self._queued())
 
-        keys = [row["item_key"] for row in self.store.list_detail_targets(limit=50)]
-        self.assertNotIn(key, keys)
+    def test_it_comes_back_at_thirty_and_ninety_days(self):
+        self.assertIn(self._gone_before_sale(days_ago=31, checked_days_after=4), self._queued())
+        self.assertIn(self._gone_before_sale(days_ago=95, checked_days_after=31), self._queued())
+        self.assertNotIn(self._gone_before_sale(days_ago=95, checked_days_after=91), self._queued())
 
     def test_unavailable_item_also_leaves_the_queue(self):
-        """상세조회가 막힌 물건(종결·취하)은 collected_at이 안 올라간다. 그걸로 걸면
-        같은 물건이 영영 큐 앞에 남아 대기열이 안 나간다."""
-        key = "auction:서울중앙지방법원:2025타경1234:1"
-        self.store.upsert_items([self._item()])
-        self._vanish(key, seen="2026-09-16T00:00:00+00:00", collected="2026-09-01T00:00:00+00:00")
+        """상세조회가 막힌 물건(종결·취하)은 collected_at이 안 올라간다. checked_at 으로 걸어야 큐에서 빠진다."""
+        key = self._gone_before_sale(days_ago=5)
         self.store.mark_detail_unavailable(key, "상세조회 버튼 없음")
-
-        keys = [row["item_key"] for row in self.store.list_detail_targets(limit=50)]
-        self.assertNotIn(key, keys)
+        self.assertNotIn(key, self._queued())
 
     def test_long_gone_items_are_left_alone(self):
-        """사건이 종국되면 기일 정보가 끊기고 30일이 더 지나면 기본정보만 남는다.
-        뒤늦게 파도 얻을 게 없으므로 훑지 않는다."""
-        key = "auction:서울중앙지방법원:2025타경1234:1"
-        self.store.upsert_items([self._item()])
-        self._vanish(key, seen="2025-01-01T00:00:00+00:00", collected="2024-12-01T00:00:00+00:00")
+        self.assertNotIn(self._gone_before_sale(days_ago=130), self._queued())
 
-        keys = [row["item_key"] for row in self.store.list_detail_targets(limit=50)]
-        self.assertNotIn(key, keys)
+    def test_closed_case_is_not_looked_at_again(self):
+        key = self._gone_before_sale(days_ago=31, checked_days_after=4)
+        with self.store.connect() as conn:
+            conn.execute("UPDATE auction_items SET closing_result='취하' WHERE item_key=?", (key,))
+        self.assertNotIn(key, self._queued())
+
+    def test_item_gone_on_sale_day_is_not_swept(self):
+        """기일 날 사라진 것은 매각결과 화면이 결과를 준다. 02:30(KST) 회차는 UTC 로 전날이라 +9시간으로 댄다."""
+        from datetime import datetime, timedelta, timezone
+        seen = (datetime.now(timezone.utc) - timedelta(days=5)).replace(hour=17, minute=30)  # KST 다음날 02:30
+        sale = (seen + timedelta(hours=9)).strftime("%Y.%m.%d")
+        key = "auction:서울중앙지방법원:2025타경1234:1"
+        self.store.upsert_items([self._item(sale_date=sale)])
+        self._vanish(key, seen=seen.isoformat(timespec="seconds"), collected=self._ago(30))
+        self.assertNotIn(key, self._queued())
+
+    def test_sweep_off_and_daily_cap(self):
+        key = self._gone_before_sale(days_ago=5)
+        self.assertNotIn(key, self._queued(closing_sweep_per_day=0))
+        self.assertIn(key, self._queued(closing_sweep_per_day=5))
+        with self.store.connect() as conn:  # 오늘 이미 다른 사라진 물건 5건을 봤다
+            for i in range(5):
+                conn.execute("INSERT INTO auction_items (item_key, source, case_no, item_no, court, address, category, raw_json,"
+                             " content_hash, first_seen_at, last_seen_at, updated_at, is_active, detail_checked_at)"
+                             " VALUES (?, '진행', '2025타경9', '1', '법원', '', '', '{}', 'h', ?, ?, ?, 0, ?)",
+                             (f"봄{i}", self._ago(40), self._ago(40), self._ago(40), self._ago(0)))
+        self.assertNotIn(key, self._queued(closing_sweep_per_day=5))
 
     def test_closing_result_is_read_from_the_case_screen(self):
         from court_auction_crawler.enrichment import parse_case_closing
@@ -1430,28 +1464,15 @@ class 훑기우선순위Test(unittest.TestCase):
             conn.execute(
                 "INSERT INTO auction_items (item_key, source, case_no, item_no, court,"
                 " address, category, raw_json, content_hash, first_seen_at, last_seen_at,"
-                " updated_at, is_active, detail_status, detail_checked_at)"
-                " VALUES (?,'진행','2025타경1','1','법원','주소','아파트','{}','h',?,?,?,?,?,?)",
+                " updated_at, is_active, detail_status, detail_checked_at, sale_date)"
+                " VALUES (?,'진행','2025타경1','1','법원','주소','아파트','{}','h',?,?,?,?,?,?,'2099.01.01')",
                 (key, 본때, 본때, 본때, 1 if active else 0, "pending",
                  본때 if 확인함 else None))
 
-    def test_만료_임박한_훑기가_산_물건보다_먼저다(self):
+    def test_훑기는_산_물건_뒤다(self):
+        """종국결과는 30일 뒤에도 기본사항에 남아(10-12) 서두를 시한이 없다. 산 물건을 굶기지 않는다."""
         for i in range(30):
             self._넣기(f"산것{i}", active=True, 며칠전=0)
-        self._넣기("곧만료", active=False, 며칠전=27)
+        self._넣기("훑기", active=False, 며칠전=27)
         큐 = [r["item_key"] for r in self.store.list_detail_targets(limit=40)]
-        self.assertIn("곧만료", 큐)
-        self.assertLess(큐.index("곧만료"), 5, "임박한 훑기가 뒤로 밀렸다")
-
-    def test_아직_여유_있는_훑기는_산_물건_뒤다(self):
-        for i in range(30):
-            self._넣기(f"산것{i}", active=True, 며칠전=0)
-        self._넣기("여유", active=False, 며칠전=3)
-        큐 = [r["item_key"] for r in self.store.list_detail_targets(limit=40)]
-        self.assertIn("여유", 큐)
-        self.assertGreater(큐.index("여유"), 5, "여유 있는 훑기가 산 물건을 굶긴다")
-
-    def test_창_밖으로_나간_것은_아예_안_잡는다(self):
-        self._넣기("너무오래", active=False, 며칠전=45)
-        큐 = [r["item_key"] for r in self.store.list_detail_targets(limit=40)]
-        self.assertNotIn("너무오래", 큐)
+        self.assertEqual(큐[-1], "훑기")

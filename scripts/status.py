@@ -60,6 +60,14 @@ def find_db() -> Path | None:
 
 DB = find_db()
 
+# 종국 훑기 대기(store.CLOSING_SWEEP_SQL 과 같은 조건 — 이 도구는 시스템 파이썬이라 store 를 못 불러와 옮겨 적는다. 바꾸면 같이).
+SWEEP_DUE = ("is_active = 0 AND COALESCE(closing_result, '') IN ('', '미종국')"
+             " AND REPLACE(SUBSTR(sale_date, 1, 10), '.', '-') > date(last_seen_at, '+9 hours')"
+             " AND julianday('now') - julianday(last_seen_at) BETWEEN 3 AND 120 AND ("
+             + " OR ".join(f"(julianday('now') - julianday(last_seen_at) >= {d}"
+                           f" AND COALESCE(julianday(detail_checked_at), 0) < julianday(last_seen_at) + {d})"
+                           for d in (3, 30, 90)) + ")")
+
 DONE, WIP, TODO, FIXED_LIMIT, UNKNOWN = "해결됨", "진행 중", "미해결", "제약", "확인불가"
 
 
@@ -363,9 +371,7 @@ def checks() -> list[dict]:
     sweep_done = """is_active = 0
           AND last_seen_at >= date('now', '-30 day')
           AND detail_checked_at IS NOT NULL AND detail_checked_at > last_seen_at"""
-    sweep_left = """is_active = 0
-          AND last_seen_at >= date('now', '-30 day')
-          AND (detail_checked_at IS NULL OR detail_checked_at < last_seen_at)"""
+    sweep_left = SWEEP_DUE
     closed = q1("SELECT COUNT(*) FROM auction_items WHERE closing_result NOT IN ('','미종국')")
     scanned = q1(f"SELECT COUNT(*) FROM auction_items WHERE {sweep_done}")
     left = q1(f"SELECT COUNT(*) FROM auction_items WHERE {sweep_left}")
@@ -733,9 +739,7 @@ def live_status() -> list[str]:
             활성 = n("SELECT COUNT(*) FROM auction_items WHERE is_active=1")
             실거래큐 = n("SELECT COUNT(*) FROM auction_items "
                        "WHERE is_active=1 AND transactions_status=''")
-            훑기 = n("SELECT COUNT(*) FROM auction_items WHERE is_active=0 "
-                    "AND last_seen_at >= date('now','-30 day') "
-                    "AND (detail_checked_at IS NULL OR detail_checked_at < last_seen_at)")
+            훑기 = n(f"SELECT COUNT(*) FROM auction_items WHERE {SWEEP_DUE}")
             con.close()
             부분 = []
             if 실거래큐 > 0:
