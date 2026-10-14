@@ -62,7 +62,9 @@ DB = find_db()
 
 # 종국 훑기 대기(store.CLOSING_SWEEP_SQL 과 같은 조건 — 이 도구는 시스템 파이썬이라 store 를 못 불러와 옮겨 적는다. 바꾸면 같이).
 SWEEP_DUE = ("is_active = 0 AND COALESCE(closing_result, '') IN ('', '미종국')"
-             " AND REPLACE(SUBSTR(sale_date, 1, 10), '.', '-') > date(last_seen_at, '+9 hours')"
+             " AND (REPLACE(SUBSTR(sale_date, 1, 10), '.', '-') > date(last_seen_at, '+9 hours')"
+             "      OR NOT EXISTS (SELECT 1 FROM auction_sale_results AS sr"
+             "                      WHERE sr.item_key = auction_items.item_key AND sr.sale_date = auction_items.sale_date))"
              " AND julianday('now') - julianday(last_seen_at) BETWEEN 3 AND 120 AND ("
              + " OR ".join(f"(julianday('now') - julianday(last_seen_at) >= {d}"
                            f" AND COALESCE(julianday(detail_checked_at), 0) < julianday(last_seen_at) + {d})"

@@ -223,15 +223,44 @@ class StoreTests(unittest.TestCase):
             conn.execute("UPDATE auction_items SET closing_result='취하' WHERE item_key=?", (key,))
         self.assertNotIn(key, self._queued())
 
-    def test_item_gone_on_sale_day_is_not_swept(self):
-        """기일 날 사라진 것은 매각결과 화면이 결과를 준다. 02:30(KST) 회차는 UTC 로 전날이라 +9시간으로 댄다."""
+    def _gone_on_sale_day(self):
         from datetime import datetime, timedelta, timezone
         seen = (datetime.now(timezone.utc) - timedelta(days=5)).replace(hour=17, minute=30)  # KST 다음날 02:30
         sale = (seen + timedelta(hours=9)).strftime("%Y.%m.%d")
         key = "auction:서울중앙지방법원:2025타경1234:1"
         self.store.upsert_items([self._item(sale_date=sale)])
         self._vanish(key, seen=seen.isoformat(timespec="seconds"), collected=self._ago(30))
+        return key, sale
+
+    def test_item_gone_on_sale_day_with_a_result_is_not_swept(self):
+        """기일 날 사라졌고 매각결과 화면이 결과를 줬으면 볼 게 없다. 02:30(KST) 회차는 UTC 로 전날이라 +9시간으로 댄다."""
+        key, sale = self._gone_on_sale_day()
+        with self.store.connect() as conn:
+            conn.execute("INSERT INTO auction_sale_results (court, case_no, item_no, sale_date, result, item_key, collected_at)"
+                         " VALUES ('서울중앙지방법원', '2025타경1234', '1', ?, '유찰', ?, ?)", (sale, key, self._ago(4)))
         self.assertNotIn(key, self._queued())
+
+    def test_item_gone_on_sale_day_without_a_result_is_swept(self):
+        """결과가 없으면 그날 안 열린 것(당일 변경·취하)이거나 수집기가 멈춰 놓친 것 — 종국결과로 가린다(10-14)."""
+        key, _ = self._gone_on_sale_day()
+        self.assertIn(key, self._queued())
+
+    def test_closing_check_reads_only_the_closing_and_ends_the_stage(self):
+        """훑기는 사건 첫 화면만 본다. 상세 상태는 그대로, 종국결과와 본 시각만 — 그 단계는 끝나야 한다."""
+        key = self._gone_before_sale(days_ago=5)
+        before = self.store.get_item(key)["detail_status"]
+        case = {"case_tables": [{"caption": "사건기본내역", "rows": [["종국결과", "기각", "종국일자", "2026.10.01"]]}]}
+        self.store.mark_closing_checked(key, case)
+        item = self.store.get_item(key)
+        self.assertEqual((item["closing_result"], item["closing_date"], item["detail_status"]), ("기각", "2026.10.01", before))
+        self.assertNotIn(key, self._queued())
+
+    def test_unknown_closing_word_is_not_taken(self):
+        """화면이 깨지면 값 칸이 비고 옆 버튼 글자가 읽힌다 — '송달료조회' 6건이 종국으로 닫혔다(10-12~14)."""
+        from court_auction_crawler.enrichment import parse_case_closing
+
+        broken = {"caption": "사건기본내역", "rows": [["종국결과", "송달료조회", "종국일자"]]}
+        self.assertEqual(parse_case_closing({"case": {"case_tables": [broken]}})["result"], "")
 
     def test_sweep_off_and_daily_cap(self):
         key = self._gone_before_sale(days_ago=5)

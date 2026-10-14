@@ -27,8 +27,10 @@ SCHEMA_VERSION = 4
 
 # 종국 훑기(G03) — 기일 **전에** 목록에서 사라진 물건(취하·기각·변경 후보)을 사라진 뒤 3일·30일·90일에 한 번씩만
 # 다시 본다(사용자 결정 2026-10-12). 종국결과가 잡히면 더 안 본다. 120일이 지나면 손 뗀다.
-# - 기일 전에 사라진 것만: 기일 날·뒤에 사라진 것은 매각결과 화면이 낙찰가·유찰을 준다(97~100%, G20 L1).
+# - 기일 전에 사라진 것 + 기일 날·뒤에 사라졌는데 **그 기일 결과가 없는 것**(2026-10-14 더함). 결과가 있으면 매각결과 화면이
+#   낙찰가·유찰을 준 것이라 볼 게 없다(97~100%, G20 L1). 없는 것은 그날 안 열렸거나(당일 변경·취하) 수집기가 멈춰 놓친 것.
 #   기일은 KST 날짜, last_seen_at 은 UTC 라 +9시간 해서 댄다(02:30 회차가 UTC 로는 전날이다).
+# - 사건 첫 화면만 읽는다(detail_crawler.closing_only) — 물건 버튼·탭은 안 누른다.
 # - 단계마다 한 번: 그 단계 시각 뒤에 본 적(detail_checked_at)이 있으면 그 단계는 끝. checked_at 은 성공·실패·조회불가
 #   모두에서 올라가 같은 물건을 되풀이하지 않는다(09월 끝난 사건 하루 151번 되풀이가 법원을 자극했다).
 # - 30일 뒤에도 종국결과는 사건 기본사항에 남는다(10-12 탐침 — 평택 2024타경1116·인천 2025타경1424). 탭은 안 누른다.
@@ -37,7 +39,9 @@ CLOSING_SWEEP_STAGES = (3, 30, 90)
 CLOSING_SWEEP_SQL = (
     "is_active = 0"
     " AND COALESCE(closing_result, '') IN ('', '미종국')"
-    " AND REPLACE(SUBSTR(sale_date, 1, 10), '.', '-') > date(last_seen_at, '+9 hours')"
+    " AND (REPLACE(SUBSTR(sale_date, 1, 10), '.', '-') > date(last_seen_at, '+9 hours')"
+    "      OR NOT EXISTS (SELECT 1 FROM auction_sale_results AS sr"
+    "                      WHERE sr.item_key = auction_items.item_key AND sr.sale_date = auction_items.sale_date))"
     " AND julianday('now') - julianday(last_seen_at) BETWEEN 3 AND 120"
     " AND (" + " OR ".join(
         f"(julianday('now') - julianday(last_seen_at) >= {d}"
@@ -1304,6 +1308,25 @@ class AuctionStore:
                     now.isoformat(timespec="seconds"),
                     item_key,
                 ),
+            )
+
+    def mark_closing_checked(self, item_key: str, case: dict[str, Any]) -> None:
+        """종국 훑기(G03) — 사라진 물건의 사건 첫 화면만 본 기록. 상세 상태는 그대로 두고 본 시각(그 단계 끝)과
+        종국결과만 적는다. 값이 바뀔 때만 updated_at 을 올린다(웹 푸시 후보가 쓸데없이 늘지 않게)."""
+        closing = parse_case_closing({"case": case})
+        if not closing["result"]:
+            return
+        now = utc_now()
+        with self.connect() as conn:
+            conn.execute(
+                """
+                UPDATE auction_items
+                   SET detail_checked_at = ?,
+                       updated_at = CASE WHEN closing_result != ? OR closing_date != ? THEN ? ELSE updated_at END,
+                       closing_result = ?, closing_date = ?
+                 WHERE item_key = ?
+                """,
+                (now, closing["result"], closing["date"], now, closing["result"], closing["date"], item_key),
             )
 
     def mark_detail_unavailable(self, item_key: str, reason: str, case: dict[str, Any] | None = None) -> None:

@@ -416,6 +416,7 @@ class CourtAuctionDetailCrawler:
         self.collect_documents = collect_documents
         self.download_document_files = download_document_files
         self.results_only = False
+        self.closing_only = False
         self.stop_in_quiet_hours = False
 
     async def collect_due(
@@ -429,6 +430,8 @@ class CourtAuctionDetailCrawler:
         results_only: bool = False,
     ) -> DetailCollectionSummary:
         self.results_only = results_only
+        # 평상 큐에서 온 사라진 물건 = 종국 훑기(G03). 손으로 --include-inactive·--item-key 로 부른 것은 상세까지 받는다.
+        self.closing_only = not (results_only or include_inactive or item_key)
         targets = (
             self.store.list_missing_result_targets(limit=limit)
             if results_only
@@ -579,6 +582,26 @@ class CourtAuctionDetailCrawler:
             raise ValueError(f"사건번호 형식 오류: {case_no}")
 
         await self._search_case(page, court, match)
+
+        if self.closing_only and not any(row.get("is_active") for row in targets):
+            # 종국 훑기(G03): 사라진 물건은 사건 첫 화면의 종국결과만 읽는다. 물건 버튼은 안 누른다 — 버튼이 살아 있는
+            # 사건이면 물건 상세·사진·인근매각까지 다 열어 무거운 방문이 된다(9월 큐를 부풀렸다 막힌 모양). 탭도 안 누른다(⑪).
+            # 종국결과를 못 읽으면 화면이 깨진 것이라 평소처럼 실패로 센다 — 차단 감지(세션 거절)가 그대로 돈다.
+            case = {"case_tables": await extract_tables(page)}
+            closing = parse_case_closing({"case": case})["result"]
+            if not closing:
+                raise case_search_error(
+                    court,
+                    case_no,
+                    await screen_text(page),
+                    await site_message(page),
+                    collected_before=any(row.get("detail_collected_at") for row in targets),
+                )
+            for target in targets:
+                self.store.mark_closing_checked(target["item_key"], case)
+            print(f"  종국결과 {closing}")
+            return {"collected": 0, "failed": 0, "unavailable": 0, "documents_collected": 0,
+                    "documents_pending": 0, "results_filled": 0}
 
         buttons = page.locator(ITEM_DETAIL_BUTTON_SELECTOR)
         button_count = await buttons.count()

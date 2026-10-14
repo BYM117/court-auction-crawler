@@ -164,6 +164,11 @@ def parse_case_type(detail: Any) -> str:
     return ""
 
 
+# 법원이 종국결과 칸에 쓰는 낱말. 이것만 받는다 — 화면이 깨지면 값 칸이 비고 옆 버튼 글자('송달료조회')가 읽혀,
+# 2026-10-12~14 에 6건이 '종국됨' 으로 닫혔다(그중 5건은 기일이 남은 활성 물건이라 명세서를 더 안 받으러 갔다).
+CLOSING_RESULTS = frozenset({"미종국", "취하", "기각", "각하", "배당종결", "취소", "이송", "기타", "모사건종결", "종결"})
+
+
 def parse_case_closing(detail: Any) -> dict[str, str]:
     """사건 기본내역에서 종국결과·종국일자를 뽑는다.
 
@@ -172,6 +177,8 @@ def parse_case_closing(detail: Any) -> dict[str, str]:
 
         ['종국결과', '미종국', '종국일자']
         ['종국결과', '취하', '종국일자', '2026.09.09']
+
+    모르는 값은 빈칸으로 둔다(CLOSING_RESULTS) — 호출자는 빈칸을 '화면을 못 읽음' 으로 다룬다.
     """
     found = {"result": "", "date": ""}
     for table in _case_tables(detail, "사건기본내역"):
@@ -181,7 +188,8 @@ def parse_case_closing(detail: Any) -> dict[str, str]:
             for index, cell in enumerate(row[:-1]):
                 label = str(cell).strip()
                 if label == "종국결과" and not found["result"]:
-                    found["result"] = str(row[index + 1]).strip()
+                    value = str(row[index + 1]).strip()
+                    found["result"] = value if value in CLOSING_RESULTS else ""
                 elif label == "종국일자" and not found["date"]:
                     found["date"] = str(row[index + 1]).strip()
         if found["result"]:
