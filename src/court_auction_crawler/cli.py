@@ -1199,6 +1199,13 @@ def run_collect_loop(
                 print(f"===== 자동 수집 실패({consecutive_failures}/{max_consecutive_failures}): {exc} =====", flush=True)
                 if consecutive_failures >= max_consecutive_failures:
                     self_restart("===== 연속 실패 지속 -> 프로세스 종료(launchd 재시작) =====")
+                # 출발하자마자 접속이 끊긴 것이면 10분 뒤 **한 번만** 다시 간다. 전에는 다음 칸까지 4시간 반~12시간을
+                # 그냥 쉬어 회차를 통째로 잃었다(9월 뒤 4번, 10-16 08:00 은 21초 만에 ERR_CONNECTION_CLOSED).
+                # 한 번으로 묶는다 — 사이트가 오래 멈춘 날 10분마다 두드리지 않게.
+                if consecutive_failures == 1 and datetime.now().astimezone() - cycle_started < timedelta(minutes=10):
+                    print("===== 출발 직후 실패 — 10분 뒤 한 번 더 =====", flush=True)
+                    time.sleep(600)
+                    continue
 
             # 끝나고 3시간 쉬던 것을 정해진 시각 출발로 바꿨다(2026-09-30) — 출발이 날마다 밀려
             # 오후·저녁에 3만 건을 읽고 바뀐 것 0건으로 돌아오는 회차가 하루 두세 번이었다.

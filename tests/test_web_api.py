@@ -328,6 +328,11 @@ class WebApiTests(unittest.TestCase):
         # 출발 시각 기준이라, 02:30 회차가 08:10 에 끝나면 다음 칸(08:00)은 이미 지났다 —
         # 호출자는 기다리지 않고 곧바로 돈다(밀린 칸이 여럿이어도 한 번만)
         self.assertLess(runner.next_run_at(at(9, 30, 2, 30)), at(9, 30, 8, 10))
+        # 출발 직전에 재시작해 먼저 출발한 회차는 그 칸을 대신한다 — 02:25 에 켜면 다음은 08:00(02:30 아님, 10월 7번)
+        self.assertEqual(runner.next_run_at(at(10, 15, 2, 25)), at(10, 15, 8, 0))
+        self.assertEqual(runner.next_run_at(at(10, 12, 12, 26)), at(10, 13, 2, 30))
+        # 칸에서 한 시간보다 멀면 그 칸은 그대로 돈다(쉬는 중 재시작은 여전히 회차가 하나 더)
+        self.assertEqual(runner.next_run_at(at(10, 15, 6, 0)), at(10, 15, 8, 0))
         # UTC 로 들어와도 KST 로 계산한다
         self.assertEqual(runner.next_run_at(datetime(2026, 9, 29, 17, 30, tzinfo=timezone.utc)), at(9, 30, 8, 0))
 

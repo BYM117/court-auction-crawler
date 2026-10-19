@@ -27,6 +27,8 @@ KST = timezone(timedelta(hours=9))
 # 회차에 잡혔고, 그날 오전 회차 뒤에 돈 오후·저녁 회차 34개가 새로 잡은 실변경은 다 합쳐 24건이었다.
 # 12:30 은 늦게 올라오는 날(09-17: 11시 회차가 784건을 더 잡았다)과 망가진 회차의 보험이다.
 COLLECT_RUN_AT_KST = ("02:30", "08:00", "12:30")
+# 이 안에 든 칸은 먼저 출발한 회차가 대신한다(next_run_at). 칸 사이가 가장 짧은 것이 4시간 반이라 겹치지 않는다.
+SLOT_COVERED_BY_EARLY_START = timedelta(hours=1)
 
 
 def _date_after(days: int) -> str:
@@ -214,14 +216,17 @@ class CollectorControlRunner:
 
     def next_run_at(self, started_at: datetime) -> datetime:
         """이번 회차가 출발한 뒤 첫 정해진 시각. 회차가 길어져 그 시각을 넘겼으면 호출자가
-        곧바로 돌게 된다 — 밀린 칸이 여럿이어도 한 번만 따라잡는다."""
+        곧바로 돌게 된다 — 밀린 칸이 여럿이어도 한 번만 따라잡는다.
+
+        출발 뒤 1시간 안의 칸은 이번 회차가 대신한 것으로 본다. 재시작하면 곧바로 출발하는데(함정 ⑩),
+        02:25 에 켜면 02:30 이 '다음 칸' 이 되어 회차가 끝나자마자 한 바퀴를 더 돌았다(10월에만 7번)."""
         started_at = started_at.astimezone(KST)
         slots = [
             started_at.replace(hour=int(hh), minute=int(mm), second=0, microsecond=0) + timedelta(days=day)
             for day in (0, 1)
             for hh, mm in (slot.split(":") for slot in COLLECT_RUN_AT_KST)
         ]
-        return min(slot for slot in slots if slot > started_at)
+        return min(slot for slot in slots if slot > started_at + SLOT_COVERED_BY_EARLY_START)
 
     def _write_log(self, line: str) -> None:
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
