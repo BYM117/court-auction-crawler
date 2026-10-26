@@ -542,6 +542,15 @@ class StoreTests(unittest.TestCase):
                 ("auction:x:1:1",)))
         self.assertIn("idx_auction_events_item", plan)
 
+    def test_notice_gap_lookup_uses_an_index(self):
+        # 공고마다 물건을 case_no 로 찾는다 — 색인이 없으면 공고 수집 마무리가 1시간 넘게 걸린다(2026-10-26).
+        with self.store.connect() as conn:
+            plan = " ".join(str(row[3]) for row in conn.execute(
+                "EXPLAIN QUERY PLAN SELECT n.case_no FROM auction_notices AS n WHERE NOT EXISTS ("
+                "SELECT 1 FROM auction_items AS i WHERE i.case_no = n.case_no)"))
+        self.assertIn("idx_auction_items_case_no", plan)
+        self.assertNotIn("SCAN i", plan)
+
     def test_detail_targets_complete_and_retry_on_due_document(self):
         item = AuctionItem(
             {

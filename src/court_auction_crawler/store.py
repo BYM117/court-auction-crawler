@@ -498,6 +498,9 @@ class AuctionStore:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_auction_events_item ON auction_events(item_key, created_at)"
             )
+            # 공고 격차(notices_not_in_items·notice_funnel)가 공고마다 물건 표를 처음부터 훑었다 —
+            # 공고 2.9만 × 물건 7.5만, 공고 수집 마무리가 1시간 15분(2026-10-26 16:47→18:02).
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_auction_items_case_no ON auction_items(case_no)")
             conn.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_auction_documents_item
