@@ -188,7 +188,21 @@ class CourtAuctionCrawler:
 
             items: list[AuctionItem] = []
             seen: set[tuple[tuple[str, str], ...]] = set()
-            consecutive_empty = 0
+            empty_run: list[tuple[SearchPageConfig, CrawlPartition]] = []
+
+            def keep(partition: CrawlPartition, partition_items: list[AuctionItem]) -> bool:
+                """구간 결과를 반영한다. max_items 에 닿으면 True."""
+                if on_partition:
+                    on_partition(partition, partition_items)
+                for item in partition_items:
+                    key = tuple(sorted(item.normalized().items()))
+                    if key and key not in seen:
+                        seen.add(key)
+                        items.append(item)
+                        if self.options.max_items and len(items) >= self.options.max_items:
+                            return True
+                return False
+
             for index, (config, partition) in enumerate(collection_plan, start=1):
                 print(f"[{index}/{len(collection_plan)}] {config.label} {partition.label()} 수집 중")
                 partition_items: list[AuctionItem] = []
@@ -202,34 +216,35 @@ class CourtAuctionCrawler:
                 # 페이지가 한 번 망가지면 이후 구간이 전부 조용히 0건이 된다. 예외가
                 # 나지 않아 '구간 실패'로도 안 잡히므로 그대로 두면 사이클 절반을
                 # 통째로 잃는다(실측: 진행 60구간 중 뒤쪽 31개가 연속 0건, 7,600건 손실).
-                # 연속 0건을 세다가 임계치에 닿으면 창을 새로 띄우고 그 구간을 다시 친다.
+                # 연속 0건을 세다가 임계치에 닿으면 창을 새로 띄우고 **연속 0건 구간을 전부** 다시 친다.
+                # 전에는 세 번째 구간만 다시 쳐서 앞의 둘은 0건으로 남았다(10-28 01:52 마산 277·진주 413 → 0).
                 if partition_items:
-                    consecutive_empty = 0
+                    empty_run = []
                 else:
-                    consecutive_empty += 1
-                    if consecutive_empty >= EMPTY_STREAK_LIMIT:
-                        print(f"  !! 연속 {consecutive_empty}구간 0건 — 창을 새로 띄우고 재시도")
+                    empty_run.append((config, partition))
+                    if len(empty_run) >= EMPTY_STREAK_LIMIT:
+                        print(f"  !! 연속 {len(empty_run)}구간 0건 — 창을 새로 띄우고 재시도")
                         page = await self._restart_page(browser, page)
-                        consecutive_empty = 0
-                        try:
-                            partition_items = await self._collect_partition(page, partition, config)
-                            failed = False
-                        except Exception as exc:
-                            print(f"  !! 재시도 실패: {config.label} {partition.label()} - {exc}")
-                            failed = True
+                        retry, empty_run = empty_run, []
+                        for retry_config, retry_partition in retry:
+                            try:
+                                retry_items = await self._collect_partition(page, retry_partition, retry_config)
+                            except Exception as exc:
+                                print(f"  !! 재시도 실패: {retry_config.label} {retry_partition.label()} - {exc}")
+                                continue
+                            if retry_partition is partition:
+                                partition_items, failed = retry_items, False
+                            elif retry_items:
+                                print(f"  -> 재시도로 되찾음: {retry_config.label} {retry_partition.label()}")
+                                if keep(retry_partition, retry_items):
+                                    await browser.close()
+                                    return items
 
                 if failed:
                     continue
-                if on_partition:
-                    on_partition(partition, partition_items)
-                for item in partition_items:
-                    key = tuple(sorted(item.normalized().items()))
-                    if key and key not in seen:
-                        seen.add(key)
-                        items.append(item)
-                        if self.options.max_items and len(items) >= self.options.max_items:
-                            await browser.close()
-                            return items
+                if keep(partition, partition_items):
+                    await browser.close()
+                    return items
 
             if self.options.collect_details:
                 await self._collect_details(browser, items)
